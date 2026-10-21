@@ -8,17 +8,24 @@ import { reconcileAttachments } from './reconcile-attachments.mjs';
 function recoveryDiagnostic(stderr, input = '') {
   const match = String(stderr).match(/(?:psql:<stdin>:(\d+):\s*)?(?:ERROR|FATAL):\s+([A-Z0-9]{5})(?=\s|$)/);
   const line = match?.[1] ? Number(match[1]) : null;
+  const failedLine = line === null ? '' : String(input).split('\n')[line - 1] ?? '';
+  // Emit fixed header vocabulary only: never copy an arbitrary SQL identifier or value.
+  const setting = failedLine.match(/^SET\s+(statement_timeout|lock_timeout|idle_in_transaction_session_timeout|transaction_timeout|client_encoding|standard_conforming_strings|check_function_bodies|xmloption|client_min_messages|escape_string_warning|row_security|default_tablespace|default_table_access_method)\s*=/i);
+  const fixedStatement = setting ? 'SET' : /^SELECT pg_catalog\.set_config\('search_path',/.test(failedLine) ? 'SELECT search_path configuration' : null;
   const statements = String(input).split('\n').slice(0, line ?? 0).reverse();
   const ddl = statements.map((value) => value.match(/^\s*(CREATE|ALTER|DROP)\s+(?:OR REPLACE\s+)?(TABLE|FUNCTION|SCHEMA|EXTENSION|TYPE|POLICY|TRIGGER|SEQUENCE|PUBLICATION|VIEW|INDEX|DOMAIN|AGGREGATE|OPERATOR|COLLATION)\b/))
     .find(Boolean);
-  return { recovery_command_failed: true, sqlstate: match?.[2] ?? null, input_line: line, preceding_ddl: ddl ? `${ddl[1]} ${ddl[2]}` : null };
+  return { recovery_command_failed: true, sqlstate: match?.[2] ?? null, input_line: line, preceding_ddl: ddl ? `${ddl[1]} ${ddl[2]}` : null, failed_statement: fixedStatement, parameter: setting?.[1]?.toLowerCase() ?? null };
 }
 if (process.argv[2] === '--diagnostics-self-test') {
   const secret = 'synthetic-secret-DO-NOT-PRINT';
   const diagnostic = recoveryDiagnostic(`psql:<stdin>:2: ERROR: 42501\nDETAIL: ${secret}`, `DROP TABLE public.fixture;\n${secret}`);
-  assert.deepEqual(diagnostic, { recovery_command_failed: true, sqlstate: '42501', input_line: 2, preceding_ddl: 'DROP TABLE' });
+  assert.deepEqual(diagnostic, { recovery_command_failed: true, sqlstate: '42501', input_line: 2, preceding_ddl: 'DROP TABLE', failed_statement: null, parameter: null });
   assert(!JSON.stringify(diagnostic).includes(secret));
-  assert.deepEqual(recoveryDiagnostic(`ERROR: ${secret}`), { recovery_command_failed: true, sqlstate: null, input_line: null, preceding_ddl: null });
+  assert.deepEqual(recoveryDiagnostic(`ERROR: ${secret}`), { recovery_command_failed: true, sqlstate: null, input_line: null, preceding_ddl: null, failed_statement: null, parameter: null });
+  const header = recoveryDiagnostic(`psql:<stdin>:1: ERROR: 42501`, `SET transaction_timeout = '${secret}';`);
+  assert.equal(header.failed_statement, 'SET'); assert.equal(header.parameter, 'transaction_timeout'); assert(!JSON.stringify(header).includes(secret));
+  assert.equal(recoveryDiagnostic('psql:<stdin>:1: ERROR: 42501', `SET ${secret} = 0;`).parameter, null);
   console.log('Recovery SQLSTATE-only diagnostic self-check passed'); process.exit(0);
 }
 const started = performance.now();
