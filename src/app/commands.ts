@@ -55,12 +55,12 @@ type SaveRequestCreateArgs = { ctx: CommandContext; id: string | null; asset_id:
 function rpcWithNullableCreateKey(client: SupabaseClient<Database>, name: 'save_asset', args: SaveAssetCreateArgs): PromiseLike<RpcResponse> {
   // The generated PostgREST Args type marks this UUID non-null, while the SQL create path intentionally uses NULL as its target sentinel.
   const rpc = client.rpc as unknown as (functionName: 'save_asset', parameters: SaveAssetCreateArgs) => PromiseLike<RpcResponse>;
-  return rpc(name, args);
+  return rpc.call(client, name, args);
 }
 function rpcWithNullableRequestId(client: SupabaseClient<Database>, name: 'save_request', args: SaveRequestCreateArgs): PromiseLike<RpcResponse> {
   // The SQL contract uses NULL to create a request; the generated function Args type cannot express that sentinel.
   const rpc = client.rpc as unknown as (functionName: 'save_request', parameters: SaveRequestCreateArgs) => PromiseLike<RpcResponse>;
-  return rpc(name, args);
+  return rpc.call(client, name, args);
 }
 
 export function contextFor(organizationId: string, requestId: string, expectedVersion?: number): CommandContext {
