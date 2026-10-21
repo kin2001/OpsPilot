@@ -5,6 +5,22 @@ import { readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { createClient } from '@supabase/supabase-js';
 import { reconcileAttachments } from './reconcile-attachments.mjs';
 
+function recoveryDiagnostic(stderr, input = '') {
+  const match = String(stderr).match(/(?:psql:<stdin>:(\d+):\s*)?(?:ERROR|FATAL):\s+([A-Z0-9]{5})(?=\s|$)/);
+  const line = match?.[1] ? Number(match[1]) : null;
+  const statements = String(input).split('\n').slice(0, line ?? 0).reverse();
+  const ddl = statements.map((value) => value.match(/^\s*(CREATE|ALTER|DROP)\s+(?:OR REPLACE\s+)?(TABLE|FUNCTION|SCHEMA|EXTENSION|TYPE|POLICY|TRIGGER|SEQUENCE|PUBLICATION|VIEW|INDEX|DOMAIN|AGGREGATE|OPERATOR|COLLATION)\b/))
+    .find(Boolean);
+  return { recovery_command_failed: true, sqlstate: match?.[2] ?? null, input_line: line, preceding_ddl: ddl ? `${ddl[1]} ${ddl[2]}` : null };
+}
+if (process.argv[2] === '--diagnostics-self-test') {
+  const secret = 'synthetic-secret-DO-NOT-PRINT';
+  const diagnostic = recoveryDiagnostic(`psql:<stdin>:2: ERROR: 42501\nDETAIL: ${secret}`, `DROP TABLE public.fixture;\n${secret}`);
+  assert.deepEqual(diagnostic, { recovery_command_failed: true, sqlstate: '42501', input_line: 2, preceding_ddl: 'DROP TABLE' });
+  assert(!JSON.stringify(diagnostic).includes(secret));
+  assert.deepEqual(recoveryDiagnostic(`ERROR: ${secret}`), { recovery_command_failed: true, sqlstate: null, input_line: null, preceding_ddl: null });
+  console.log('Recovery SQLSTATE-only diagnostic self-check passed'); process.exit(0);
+}
 const started = performance.now();
 const url = process.env.TEST_SUPABASE_URL; const anon = process.env.TEST_SUPABASE_ANON_KEY; const service = process.env.TEST_SUPABASE_SERVICE_KEY;
 const run = process.env.GITHUB_RUN_ID; const attempt = process.env.GITHUB_RUN_ATTEMPT;
@@ -13,6 +29,7 @@ assert(url === 'http://127.0.0.1:54321' && anon && service, 'Unexpected recovery
 const network = `por23-${run}-${attempt}`; const container = 'supabase_db_opspilot-t1';
 function execute(args, input) {
   const result = spawnSync('docker', args, { input, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+  if (result.status !== 0 && args.includes('psql')) console.error(JSON.stringify(recoveryDiagnostic(result.stderr, input)));
   assert.equal(result.status, 0, 'Job-owned recovery command failed; output withheld'); return result.stdout;
 }
 const inventory = JSON.parse(execute(['inspect', container]));
@@ -22,7 +39,7 @@ assert(Object.hasOwn(inventory[0].NetworkSettings.Networks, network));
 const networkInfo = JSON.parse(execute(['network', 'inspect', network]))[0];
 assert.equal(networkInfo.Options['com.docker.network.bridge.host_binding_ipv4'], '127.0.0.1');
 for (const bindings of Object.values(inventory[0].NetworkSettings.Ports)) for (const binding of bindings ?? []) assert(['127.0.0.1', '::1'].includes(binding.HostIp));
-function sql(statement) { return execute(['exec', '-i', container, 'psql', '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-q', '-At'], statement); }
+function sql(statement) { return execute(['exec', '-i', container, 'psql', '-X', '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-v', 'VERBOSITY=sqlstate', '-v', 'SHOW_CONTEXT=never', '-v', 'ECHO=none', '-q', '-At', '--file=-'], statement); }
 const options = { auth: { persistSession: false, autoRefreshToken: false }, global: { fetch: (input, init) => fetch(input, { ...init, cache: 'no-store' }) } };
 const admin = createClient(url, service, options); const owner = createClient(url, anon, options); const revoked = createClient(url, anon, options);
 const people = [];
