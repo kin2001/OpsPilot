@@ -5,6 +5,19 @@ import { readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { createClient } from '@supabase/supabase-js';
 import { reconcileAttachments } from './reconcile-attachments.mjs';
 
+function assertRestoreBinding(inventory, networkInfo, network) {
+  assert.equal(inventory.length, 1, 'Expected exactly one job-owned database');
+  const database = inventory[0];
+  assert.equal(database.Config.Labels['com.supabase.cli.project'], 'opspilot-t1');
+  assert(Object.hasOwn(database.NetworkSettings.Networks, network), 'Job network binding missing');
+  assert.equal(networkInfo.Name, network);
+  assert.equal(networkInfo.Options['com.docker.network.bridge.host_binding_ipv4'], '127.0.0.1');
+  for (const bindings of Object.values(database.NetworkSettings.Ports)) for (const binding of bindings ?? []) assert(['127.0.0.1', '::1'].includes(binding.HostIp));
+}
+function assertRestoreAuthority(inventory, networkInfo, network, identity) {
+  assertRestoreBinding(inventory, networkInfo, network);
+  assert.deepEqual(identity, { expected_identity: true, superuser: true }, 'Existing local provider administrator unavailable');
+}
 function recoveryDiagnostic(stderr, input = '') {
   const match = String(stderr).match(/(?:psql:<stdin>:(\d+):\s*)?(?:ERROR|FATAL):\s+([A-Z0-9]{5})(?=[:\s]|$)([^\r\n]*)/);
   const line = match?.[1] ? Number(match[1]) : null;
@@ -47,6 +60,12 @@ if (process.argv[2] === '--diagnostics-self-test') {
   for (const [message, expected] of [['permission denied to set parameter', 'denied-setparameter'], ['must be superuser', 'superuser-only'], ['must be member of role', 'denied-role'], ['permission denied for schema', 'denied-table-schema']]) {
     assert.equal(recoveryDiagnostic(`ERROR: 42501: ${message} ${secret}`).category, expected);
   }
+  const owned = [{ Config: { Labels: { 'com.supabase.cli.project': 'opspilot-t1' } }, NetworkSettings: { Networks: { 'synthetic-job': {} }, Ports: { db: [{ HostIp: '127.0.0.1' }] } } }];
+  const bound = { Name: 'synthetic-job', Options: { 'com.docker.network.bridge.host_binding_ipv4': '127.0.0.1' } };
+  assertRestoreAuthority(owned, bound, 'synthetic-job', { expected_identity: true, superuser: true });
+  assert.throws(() => assertRestoreAuthority(owned, bound, 'synthetic-job', { expected_identity: true, superuser: false }));
+  assert.throws(() => assertRestoreAuthority(owned, bound, 'missing-job', { expected_identity: true, superuser: true }));
+  assert.throws(() => assertRestoreAuthority(owned, bound, 'synthetic-job', { expected_identity: false, superuser: true }));
   console.log('Recovery SQLSTATE-only diagnostic self-check passed'); process.exit(0);
 }
 const started = performance.now();
@@ -67,7 +86,10 @@ assert(Object.hasOwn(inventory[0].NetworkSettings.Networks, network));
 const networkInfo = JSON.parse(execute(['network', 'inspect', network]))[0];
 assert.equal(networkInfo.Options['com.docker.network.bridge.host_binding_ipv4'], '127.0.0.1');
 for (const bindings of Object.values(inventory[0].NetworkSettings.Ports)) for (const binding of bindings ?? []) assert(['127.0.0.1', '::1'].includes(binding.HostIp));
-function sql(statement) { return execute(['exec', '-i', container, 'psql', '-X', '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-v', 'VERBOSITY=verbose', '-v', 'SHOW_CONTEXT=never', '-v', 'ECHO=none', '-q', '-At', '--file=-'], statement); }
+function sql(statement, operator = 'postgres') {
+  assert(['postgres', 'supabase_admin'].includes(operator));
+  return execute(['exec', '-i', container, 'psql', '-X', '-U', operator, '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-v', 'VERBOSITY=verbose', '-v', 'SHOW_CONTEXT=never', '-v', 'ECHO=none', '-q', '-At', '--file=-'], statement);
+}
 const providerFlags = JSON.parse(sql("select json_build_object('server_version_num',current_setting('server_version_num')::integer,'postgres_superuser',(select rolsuper from pg_roles where rolname='postgres'),'postgres_login',(select rolcanlogin from pg_roles where rolname='postgres'),'provider_admin_superuser',(select rolsuper from pg_roles where rolname='supabase_admin'),'provider_admin_login',(select rolcanlogin from pg_roles where rolname='supabase_admin'));"));
 assert(Number.isInteger(providerFlags.server_version_num));
 for (const flag of ['postgres_superuser', 'postgres_login', 'provider_admin_superuser', 'provider_admin_login']) assert(providerFlags[flag] === null || typeof providerFlags[flag] === 'boolean');
@@ -122,7 +144,13 @@ const revokedUser = people[1].id;
 sql(`update public.organization_members set active=false where organization_id='${org}' and user_id='${revokedUser}'; update public.assets set name='Synthetic deliberate loss' where id='${asset}';`);
 assert.equal((await admin.storage.from('repair-evidence').remove([item.object_key])).error, null);
 const restoreStarted = performance.now();
-sql(dump);
+// Full provider DDL needs the existing local operator, never an application role or a hosted grant.
+const restoreInventory = JSON.parse(execute(['inspect', container]));
+const restoreNetwork = JSON.parse(execute(['network', 'inspect', network]))[0];
+assertRestoreBinding(restoreInventory, restoreNetwork, network);
+const restoreIdentity = JSON.parse(sql("select json_build_object('expected_identity',current_user='supabase_admin','superuser',(select rolsuper from pg_roles where rolname=current_user));", 'supabase_admin'));
+assertRestoreAuthority(restoreInventory, restoreNetwork, network, restoreIdentity);
+sql(dump, 'supabase_admin');
 assert.equal(owners(), ownerChecksum, 'Provider relation ownership/ACLs changed during restore');
 sql(`update public.organization_members set active=false,version=version+1 where organization_id='${org}' and user_id='${revokedUser}';`);
 for (const row of objectSnapshot) {

@@ -387,6 +387,32 @@ isOneToOne: false
       referencedColumns: ["organization_id","id"]
     }
                   ]
+                },"work_order_performer_declarations": {
+                  Row: {
+                    "created_at": string,"declared_by": string,"id": string,"organization_id": string,"repair_revision": number,"request_id": string,"user_id": string,"work_order_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "created_at"?: string,"declared_by": string,"id"?: string,"organization_id": string,"repair_revision": number,"request_id": string,"user_id": string,"work_order_id": string
+                  }
+                  Update: {
+                    "created_at"?: string,"declared_by"?: string,"id"?: string,"organization_id"?: string,"repair_revision"?: number,"request_id"?: string,"user_id"?: string,"work_order_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "work_order_performer_declarat_organization_id_work_order_i_fkey"
+      columns: ["organization_id","work_order_id"]
+isOneToOne: false
+      referencedRelation: "work_orders"
+      referencedColumns: ["organization_id","id"]
+    },{
+      foreignKeyName: "work_order_performer_declarations_organization_id_user_id_fkey"
+      columns: ["organization_id","user_id"]
+isOneToOne: false
+      referencedRelation: "organization_members"
+      referencedColumns: ["organization_id","user_id"]
+    }
+                  ]
                 },"work_order_reviews": {
                   Row: {
                     "created_at": string,"decision": string,"id": string,"organization_id": string,"reason": string,"repair_revision": number,"reviewer_id": string,"work_order_id": string
@@ -401,6 +427,26 @@ isOneToOne: false
                   Relationships: [
                     {
       foreignKeyName: "work_order_reviews_organization_id_work_order_id_fkey"
+      columns: ["organization_id","work_order_id"]
+isOneToOne: false
+      referencedRelation: "work_orders"
+      referencedColumns: ["organization_id","id"]
+    }
+                  ]
+                },"work_order_submission_attestations": {
+                  Row: {
+                    "acknowledgment": string,"actor_id": string,"created_at": string,"id": string,"organization_id": string,"performer_ids": (string)[],"repair_revision": number,"request_id": string,"work_order_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "acknowledgment": string,"actor_id": string,"created_at"?: string,"id"?: string,"organization_id": string,"performer_ids": (string)[],"repair_revision": number,"request_id": string,"work_order_id": string
+                  }
+                  Update: {
+                    "acknowledgment"?: string,"actor_id"?: string,"created_at"?: string,"id"?: string,"organization_id"?: string,"performer_ids"?: (string)[],"repair_revision"?: number,"request_id"?: string,"work_order_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "work_order_submission_attesta_organization_id_work_order_i_fkey"
       columns: ["organization_id","work_order_id"]
 isOneToOne: false
       referencedRelation: "work_orders"
@@ -498,8 +544,14 @@ isOneToOne: true
 "create_work_order":
 { Args: { "asset_id": string,"ctx": Json,"fields": Json }; Returns: Json
                            },
+"declare_work_order_performers":
+{ Args: { "ctx": Json,"id": string,"user_ids": (string)[] }; Returns: Json
+                           },
 "finalize_attachment":
 { Args: { "actor_id": string,"attachment_id": string,"checksum": string,"height": number,"organization_id": string,"width": number }; Returns: Json
+                           },
+"get_asset_history":
+{ Args: { "asset_id": string,"cursor"?: Json,"organization_id": string }; Returns: Json
                            },
 "get_dashboard":
 { Args: { "organization_id": string,"range": Json }; Returns: Json
@@ -553,6 +605,9 @@ isOneToOne: true
                            },
 "submit_request":
 { Args: { "ctx": Json,"id": string }; Returns: Json
+                           },
+"submit_work_order":
+{ Args: { "acknowledgment": string,"ctx": Json,"id": string }; Returns: Json
                            },
 "transfer_organization_ownership":
 { Args: { "ctx": Json,"new_owner_id": string }; Returns: Json
