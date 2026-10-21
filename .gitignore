@@ -1,0 +1,6 @@
+
+# spec-team:start
+/.spec-team/
+/.superpowers/
+/.worktrees/
+# spec-team:end

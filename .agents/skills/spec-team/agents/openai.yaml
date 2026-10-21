@@ -1,0 +1,6 @@
+interface:
+  display_name: "Spec Team"
+  short_description: "Coordinate approved product planning and delivery"
+  default_prompt: "Use $spec-team to prepare or continue this project's approved delivery workflow."
+policy:
+  allow_implicit_invocation: true

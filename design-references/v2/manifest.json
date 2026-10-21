@@ -1,0 +1,111 @@
+{
+  "generator": "built-in imagegen",
+  "requestedDimensions": [
+    3840,
+    2160
+  ],
+  "pages": [
+    {
+      "id": "01-dashboard",
+      "name": "Dashboard",
+      "file": "01-dashboard.png",
+      "source": "C:\\Users\\user\\.codex\\generated_images\\01a15d0c-4ed4-7593-80d3-a79caf4a5f9e\\exec-9ae9acbc-be2d-42ab-8a27-b8e814f9a617.png",
+      "width": 1673,
+      "height": 940
+    },
+    {
+      "id": "02-requests",
+      "name": "Requests",
+      "file": "02-requests.png",
+      "source": "C:\\Users\\user\\.codex\\generated_images\\01a15d0c-4ed4-7593-80d3-a79caf4a5f9e\\exec-0c51ff97-1dbd-471a-a35f-331b577419f0.png",
+      "width": 1672,
+      "height": 941
+    },
+    {
+      "id": "03-work-orders",
+      "name": "Work orders",
+      "file": "03-work-orders.png",
+      "source": "C:\\Users\\user\\.codex\\generated_images\\01a15d0c-4ed4-7593-80d3-a79caf4a5f9e\\exec-641eb034-3590-4859-a7aa-be9763737ff6.png",
+      "width": 1672,
+      "height": 941
+    },
+    {
+      "id": "06-assets",
+      "name": "Assets",
+      "file": "04-assets.png",
+      "source": "C:\\Users\\user\\.codex\\generated_images\\01a15d0c-4ed4-7593-80d3-a79caf4a5f9e\\exec-34846ce4-1b7e-45e4-b233-283ca66e44bf.png",
+      "width": 1672,
+      "height": 941
+    },
+    {
+      "id": "08-maintenance",
+      "name": "Maintenance",
+      "file": "05-maintenance.png",
+      "source": "C:\\Users\\user\\.codex\\generated_images\\01a15d0c-4ed4-7593-80d3-a79caf4a5f9e\\exec-efd3131e-351e-445e-b2fc-b5963571f393.png",
+      "width": 1672,
+      "height": 941
+    },
+    {
+      "id": "09-inspections",
+      "name": "Inspections",
+      "file": "06-inspections.png",
+      "source": "C:\\Users\\user\\.codex\\generated_images\\01a15d0c-4ed4-7593-80d3-a79caf4a5f9e\\exec-4787121c-fbfb-4818-9bd5-747da19f32c1.png",
+      "width": 1672,
+      "height": 941
+    },
+    {
+      "id": "11-inventory",
+      "name": "Inventory",
+      "file": "07-inventory.png",
+      "source": "C:\\Users\\user\\.codex\\generated_images\\01a15d0c-4ed4-7593-80d3-a79caf4a5f9e\\exec-21491632-e0ca-43a7-abd0-206d8a38e89f.png",
+      "width": 1672,
+      "height": 941
+    },
+    {
+      "id": "13-team",
+      "name": "Team",
+      "file": "08-team.png",
+      "source": "C:\\Users\\user\\.codex\\generated_images\\01a15d0c-4ed4-7593-80d3-a79caf4a5f9e\\exec-7471054c-e0e8-4d17-81fa-69e833f798ff.png",
+      "width": 1672,
+      "height": 941
+    },
+    {
+      "id": "14-reports",
+      "name": "Reports",
+      "file": "09-reports.png",
+      "source": "C:\\Users\\user\\.codex\\generated_images\\01a15d0c-4ed4-7593-80d3-a79caf4a5f9e\\exec-ad1adda3-2e82-4fb9-94a4-cda2ba59fe95.png",
+      "width": 1672,
+      "height": 941
+    },
+    {
+      "id": "15-assistant",
+      "name": "Assistant",
+      "file": "10-assistant.png",
+      "source": "C:\\Users\\user\\.codex\\generated_images\\01a15d0c-4ed4-7593-80d3-a79caf4a5f9e\\exec-98893f36-9065-481b-a37a-791feab813cd.png",
+      "width": 1672,
+      "height": 941
+    },
+    {
+      "id": "16-notifications",
+      "name": "Notifications",
+      "file": "11-notifications.png",
+      "source": "C:\\Users\\user\\.codex\\generated_images\\01a15d0c-4ed4-7593-80d3-a79caf4a5f9e\\exec-b4d62744-5c98-44a8-8a5d-dca9a79fa76f.png",
+      "width": 1672,
+      "height": 941
+    },
+    {
+      "id": "17-settings",
+      "name": "Settings",
+      "file": "12-settings.png",
+      "source": "C:\\Users\\user\\.codex\\generated_images\\01a15d0c-4ed4-7593-80d3-a79caf4a5f9e\\exec-c0b8e6ec-4247-41d3-8eab-f99b8c64c2ae.png",
+      "width": 1672,
+      "height": 941
+    }
+  ],
+  "logo": {
+    "file": "00-opspilot-logo.png",
+    "width": 2172,
+    "height": 724,
+    "transparent": true
+  }
+}

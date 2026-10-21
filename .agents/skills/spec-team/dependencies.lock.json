@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "families": [
+    {
+      "name": "superpowers",
+      "repository": "https://github.com/obra/superpowers",
+      "revision": "b739a8af570e10a95898f2bdf6cec97467fa6c12",
+      "license": "MIT",
+      "archive": "bundles/superpowers.zip",
+      "sha256": "dda8fa30ca746e1e2509cb5cd8120fea9eabe9c0f06c720d345baa4b2d9e3c4d",
+      "upstream_archive_sha256": "92998dff9195beeeecaadf4833658c9f0ed6b0a523935294bc777e486b878d38",
+      "skills": {
+        "brainstorming": "brainstorming",
+        "diagnosing-superpowers": "diagnosing-superpowers",
+        "dispatching-parallel-agents": "dispatching-parallel-agents",
+        "executing-plans": "executing-plans",
+        "finishing-a-development-branch": "finishing-a-development-branch",
+        "receiving-code-review": "receiving-code-review",
+        "requesting-code-review": "requesting-code-review",
+        "subagent-driven-development": "subagent-driven-development",
+        "systematic-debugging": "systematic-debugging",
+        "test-driven-development": "test-driven-development",
+        "using-git-worktrees": "using-git-worktrees",
+        "using-superpowers": "using-superpowers",
+        "verification-before-completion": "verification-before-completion",
+        "writing-plans": "writing-plans",
+        "writing-skills": "writing-skills"
+      }
+    },
+    {
+      "name": "ui-ux-pro-max",
+      "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+      "revision": "56ea9cf174ed86786187daa9de0e6247cb0747e4",
+      "license": "MIT",
+      "archive": "bundles/ui-ux-pro-max.zip",
+      "sha256": "ef38419ff2695ad17582baabf1ded8952df16f5455605c52ed526b8ae59f5ffa",
+      "upstream_archive_sha256": "c693d1e324801fff31476e35608bb65a04e09f3e2f9ce7f4369aa2dfeb7774d9",
+      "skills": {
+        "ui-ux-pro-max": "ui-ux-pro-max"
+      }
+    },
+    {
+      "name": "ponytail",
+      "repository": "https://github.com/DietrichGebert/ponytail",
+      "revision": "09c434ab73ca43761c5d8b0c5d341926c2fba710",
+      "license": "MIT",
+      "archive": "bundles/ponytail.zip",
+      "sha256": "c5c1f226c390967823ed382f345e04951267706d81da85c9922cf41f4cdc4828",
+      "upstream_archive_sha256": "d8f3c95caed24b32cd9cbdd9ef13e6f6a52d0ff12ed801b36a85e4160dde156a",
+      "skills": {
+        "ponytail": "ponytail",
+        "ponytail-audit": "ponytail-audit",
+        "ponytail-debt": "ponytail-debt",
+        "ponytail-gain": "ponytail-gain",
+        "ponytail-help": "ponytail-help",
+        "ponytail-review": "ponytail-review"
+      }
+    }
+  ]
+}

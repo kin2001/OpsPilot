@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "repository_id": null,
+  "controller_root": null,
+  "worktree": null,
+  "recipe_revision": null,
+  "environment": null,
+  "input_sha256": {},
+  "tools": [],
+  "services": [],
+  "checks": [],
+  "checked_at": null
+}

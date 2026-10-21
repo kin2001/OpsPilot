@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "run_id": null,
+  "repository_id": null,
+  "controller_root": null,
+  "owner_claim_id": null,
+  "phase_ids": [],
+  "state": "idea",
+  "stop_requested": false,
+  "approvals": {
+    "spec": null,
+    "plan": null
+  },
+  "current_phase": null,
+  "completed_phase_reports": []
+}

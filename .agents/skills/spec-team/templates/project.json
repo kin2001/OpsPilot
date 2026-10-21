@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "kit_version": "0.1.0",
+  "runtime": {
+    "host": null,
+    "dispatch": "native",
+    "capabilities": {
+      "native_dispatch": {"available": null, "evidence": null},
+      "role_selection": {"available": null, "evidence": null},
+      "model_selection": {"available": null, "evidence": null},
+      "permission_scoping": {"available": null, "evidence": null},
+      "linear": {"available": null, "evidence": null},
+      "git_provider": {"available": null, "evidence": null},
+      "worktrees": {"available": null, "evidence": null}
+    }
+  },
+  "linear": {
+    "workspace_id": null,
+    "team_id": null,
+    "project_id": null,
+    "assignee_id": null,
+    "lead_id": null,
+    "status_ids": {
+      "backlog": null,
+      "ready": null,
+      "in_progress": null,
+      "in_review": null,
+      "awaiting_acceptance": null,
+      "done": null
+    }
+  },
+  "git": {
+    "provider": null,
+    "repository_id": null,
+    "remote_url": null,
+    "base_branch": null,
+    "merge_strategy": null,
+    "codex_coauthor": {
+      "name": "Codex",
+      "email": "codex@openai.com"
+    }
+  },
+  "validation": {
+    "test": null,
+    "lint": null,
+    "build": null,
+    "acceptance": null
+  }
+}
