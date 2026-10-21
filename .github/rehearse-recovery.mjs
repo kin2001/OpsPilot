@@ -5,6 +5,30 @@ import { readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { createClient } from '@supabase/supabase-js';
 import { reconcileAttachments } from './reconcile-attachments.mjs';
 
+function canonicalPermissions(rows) {
+  return rows.map((row) => ({
+    key: JSON.stringify([row.schema, row.name, row.kind]), schema: row.schema, owner: row.owner,
+    grants: [...new Set((row.grants ?? row.defaults).map((tuple) => JSON.stringify(tuple)))].sort(),
+  })).sort((left, right) => left.key.localeCompare(right.key));
+}
+function permissionDifferences(before, after) {
+  const old = new Map(before.map((row) => [row.key, row])); const current = new Map(after.map((row) => [row.key, row]));
+  return ['public', 'auth', 'storage'].map((schema) => {
+    const counts = { schema, objects_added: 0, objects_removed: 0, owners_changed: 0, grants_added: 0, grants_removed: 0 };
+    for (const row of before.filter((item) => item.schema === schema)) {
+      const next = current.get(row.key);
+      if (!next) { counts.objects_removed++; counts.grants_removed += row.grants.length; continue; }
+      if (row.owner !== next.owner) counts.owners_changed++;
+      counts.grants_added += next.grants.filter((grant) => !row.grants.includes(grant)).length;
+      counts.grants_removed += row.grants.filter((grant) => !next.grants.includes(grant)).length;
+    }
+    for (const row of after.filter((item) => item.schema === schema && !old.has(item.key))) { counts.objects_added++; counts.grants_added += row.grants.length; }
+    return counts;
+  });
+}
+function assertPermissionsEqual(before, after) {
+  assert(JSON.stringify(before) === JSON.stringify(after), 'Provider relation owner or canonical ACL changed during restore; raw metadata withheld');
+}
 function assertRestoreBinding(inventory, networkInfo, network) {
   assert.equal(inventory.length, 1, 'Expected exactly one job-owned database');
   const database = inventory[0];
@@ -47,6 +71,18 @@ function recoveryDiagnostic(stderr, input = '') {
   return { recovery_command_failed: true, sqlstate: match?.[2] ?? null, input_line: line, preceding_ddl: ddl ? `${ddl[1]} ${ddl[2]}` : null, failed_statement: statementClass ? `${statementClass[1]} ${statementClass[2]}`.replace(/\s+/g, ' ').toUpperCase() : fixedStatement, parameter: setting?.[1]?.toLowerCase() ?? null, category };
 }
 if (process.argv[2] === '--diagnostics-self-test') {
+  const base = { schema: 'public', name: 'synthetic_relation', kind: 'r', owner: 10, defaults: [[10, 10, 'SELECT', false], [10, 10, 'UPDATE', false]], grants: null };
+  const original = canonicalPermissions([base]);
+  assertPermissionsEqual(original, canonicalPermissions([{ ...base, grants: [...base.defaults].reverse() }]));
+  for (const changed of [
+    { ...base, owner: 11 },
+    { ...base, grants: [[11, 10, 'SELECT', false], base.defaults[1]] },
+    { ...base, grants: [[10, 11, 'SELECT', false], base.defaults[1]] },
+    { ...base, grants: [[10, 10, 'SELECT', true], base.defaults[1]] },
+    { ...base, name: 'different_relation' },
+  ]) assert.throws(() => assertPermissionsEqual(original, canonicalPermissions([changed])));
+  assert.throws(() => assertPermissionsEqual(original, canonicalPermissions([])));
+  assert.equal(permissionDifferences(original, canonicalPermissions([{ ...base, owner: 11 }]))[0].owners_changed, 1);
   const secret = 'synthetic-secret-DO-NOT-PRINT';
   const diagnostic = recoveryDiagnostic(`psql:<stdin>:2: ERROR: 42501\nDETAIL: ${secret}`, `DROP TABLE public.fixture;\n${secret}`);
   assert.deepEqual(diagnostic, { recovery_command_failed: true, sqlstate: '42501', input_line: 2, preceding_ddl: 'DROP TABLE', failed_statement: null, parameter: null, category: 'other' });
@@ -124,7 +160,15 @@ assert.equal((await revoked.storage.from('repair-evidence').download(item.object
 
 // Snapshot bytes, Auth, schema/data, receipts and non-secret source configuration. Nothing is written as a dump/artifact.
 const owners = () => sql("select md5(string_agg(n.nspname||'.'||c.relname||':'||c.relowner::text||':'||coalesce(c.relacl::text,''),'|' order by n.nspname,c.relname)) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname in ('public','auth','storage') and c.relkind in ('r','v','m','S');").trim();
+const permissions = () => canonicalPermissions(JSON.parse(sql(`
+ select coalesce(jsonb_agg(jsonb_build_object('schema',n.nspname,'name',c.relname,'kind',c.relkind,'owner',c.relowner,
+ 'grants',case when c.relacl is null then null else (select coalesce(jsonb_agg(tuple order by tuple),'[]'::jsonb) from (select distinct jsonb_build_array(a.grantor,a.grantee,a.privilege_type,a.is_grantable) tuple from aclexplode(c.relacl) a) explicit_grants) end,
+ 'defaults',(select coalesce(jsonb_agg(tuple order by tuple),'[]'::jsonb) from (select distinct jsonb_build_array(a.grantor,a.grantee,a.privilege_type,a.is_grantable) tuple from aclexplode(acldefault(case when c.relkind='S' then 's'::"char" else 'r'::"char" end,c.relowner)) a) builtin_grants)
+ ) order by n.nspname,c.relname,c.relkind),'[]'::jsonb)
+ from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname in ('public','auth','storage') and c.relkind in ('r','v','m','S');
+ `)));
 const ownerChecksum = owners();
+const originalPermissions = permissions();
 const authConfig = await (await fetch(`${url}/auth/v1/settings`, { headers: { apikey: anon }, cache: 'no-store' })).json();
 // Restore in the same cluster with its existing provider roles: retain owners and ACLs.
 const dump = execute(['exec', container, 'pg_dump', '-U', 'postgres', '-d', 'postgres', '--clean', '--if-exists']);
@@ -151,7 +195,10 @@ assertRestoreBinding(restoreInventory, restoreNetwork, network);
 const restoreIdentity = JSON.parse(sql("select json_build_object('expected_identity',current_user='supabase_admin','superuser',(select rolsuper from pg_roles where rolname=current_user));", 'supabase_admin'));
 assertRestoreAuthority(restoreInventory, restoreNetwork, network, restoreIdentity);
 sql(dump, 'supabase_admin');
-assert.equal(owners(), ownerChecksum, 'Provider relation ownership/ACLs changed during restore');
+const restoredRawChecksum = owners(); const restoredPermissions = permissions();
+const canonicalHash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+console.log(JSON.stringify({ recovery_permission_comparison: permissionDifferences(originalPermissions, restoredPermissions), original_canonical_sha256: canonicalHash(originalPermissions), restored_canonical_sha256: canonicalHash(restoredPermissions), original_raw_fingerprint: ownerChecksum, restored_raw_fingerprint: restoredRawChecksum, representation_only: ownerChecksum !== restoredRawChecksum && JSON.stringify(originalPermissions) === JSON.stringify(restoredPermissions) }));
+assertPermissionsEqual(originalPermissions, restoredPermissions);
 sql(`update public.organization_members set active=false,version=version+1 where organization_id='${org}' and user_id='${revokedUser}';`);
 for (const row of objectSnapshot) {
   assert.equal((await admin.storage.from('repair-evidence').upload(row.object_key, row.bytes, { contentType: row.media_type, cacheControl: '0', upsert: true })).error, null);
