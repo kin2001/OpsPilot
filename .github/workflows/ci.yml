@@ -83,9 +83,10 @@ jobs:
                       assert binding['HostIp'] in ('127.0.0.1', '::1'), 'Non-loopback published port after reset'
           print('Post-reset published ports are loopback-only.')
           PY
-          npm run db:test
+          npm run db:test -- --local --network-id "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           npm run test:integration
           npm run test:e2e
+          # Type generation connects in-process and explicitly rejects --network-id.
           npm exec --no -- supabase gen types typescript --local >.cache/database.types.ts 2>.cache/typegen.log
           diff -u src/lib/database.types.ts .cache/database.types.ts
       - name: Stop only job-owned resources and discard generated credentials

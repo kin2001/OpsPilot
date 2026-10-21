@@ -1,4 +1,5 @@
 begin;
+set local search_path = public, extensions;
 select plan(8);
 select has_table('public', 'organizations', 'Workspace organization exists');
 select has_table('public', 'organization_members', 'Membership authority is relational');
