@@ -35,6 +35,7 @@ jobs:
           npm run typecheck
           npm run lint
           npm test
+          python3 .github/ci-diagnostics.py --self-test
           npm run build
           npm exec --no -- playwright install chromium
       - name: Start job-owned loopback services
@@ -43,7 +44,7 @@ jobs:
           set -euo pipefail
           docker network create --driver bridge --opt com.docker.network.bridge.host_binding_ipv4=127.0.0.1 "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null
           if ! npm exec --no -- supabase start --network-id "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >.cache/start.log 2>&1; then
-            echo 'Supabase startup failed; raw startup output withheld because it may contain credentials.'
+            python3 .github/ci-diagnostics.py .cache/start.log
             exit 1
           fi
           docker inspect $(docker ps -q --filter network="por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}") >.cache/containers.json
@@ -69,7 +70,19 @@ jobs:
           JS
       - name: Verify database and real service boundaries
         run: |
-          npm exec --no -- supabase db reset --local >.cache/reset.log 2>&1
+          if ! npm exec --no -- supabase db reset --local --network-id "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >.cache/reset.log 2>&1; then
+            python3 .github/ci-diagnostics.py .cache/reset.log
+            exit 1
+          fi
+          docker inspect $(docker ps -q --filter network="por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}") >.cache/containers.json
+          python3 - <<'PY'
+          import json
+          for container in json.load(open('.cache/containers.json')):
+              for bindings in container['NetworkSettings']['Ports'].values():
+                  for binding in bindings or []:
+                      assert binding['HostIp'] in ('127.0.0.1', '::1'), 'Non-loopback published port after reset'
+          print('Post-reset published ports are loopback-only.')
+          PY
           npm run db:test
           npm run test:integration
           npm run test:e2e
@@ -79,6 +92,22 @@ jobs:
         if: always()
         shell: bash
         run: |
-          npm exec --no -- supabase stop --no-backup >.cache/stop.log 2>&1 || true
-          docker network rm "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null 2>&1 || true
+          failed=0
+          if ! npm exec --no -- supabase stop --no-backup >.cache/stop.log 2>&1; then
+            python3 .github/ci-diagnostics.py .cache/stop.log
+            failed=1
+          fi
+          if [ -n "$(docker ps -aq --filter label=com.supabase.cli.project=opspilot-t1)" ]; then
+            echo 'Cleanup failed: project-owned containers remain.'
+            failed=1
+          fi
+          if docker network ls --format '{{.Name}}' | grep -Fxq "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"; then
+            docker network rm "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null || failed=1
+          fi
+          if docker network ls --format '{{.Name}}' | grep -Fxq "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"; then
+            echo 'Cleanup failed: job-owned network remains.'
+            failed=1
+          fi
           rm -f .cache/status.json .cache/status.log .cache/start.log .cache/reset.log .cache/stop.log .cache/containers.json
+          if [ "$failed" -ne 0 ]; then exit 1; fi
+          echo 'Verified absence of project-owned containers and job-owned network.'
