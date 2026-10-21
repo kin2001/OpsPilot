@@ -28,7 +28,7 @@ file_size_limit = "5MiB"
 [auth]
 enabled = true
 site_url = "http://127.0.0.1:5173"
-additional_redirect_urls = ["http://127.0.0.1:5173"]
+additional_redirect_urls = ["http://127.0.0.1:5173/invite**"]
 jwt_expiry = 3600
 enable_signup = true
 [auth.email]
@@ -39,3 +39,7 @@ enable_confirmations = true
 enabled = true
 [analytics]
 enabled = false
+[functions.organization-invite]
+verify_jwt = false
+import_map = "./functions/organization-invite/deno.json"
+entrypoint = "./functions/organization-invite/index.ts"

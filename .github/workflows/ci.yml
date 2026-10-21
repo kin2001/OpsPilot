@@ -68,7 +68,7 @@ jobs:
             appendFileSync(process.env.GITHUB_ENV, `${key}=${value}\n`);
           }
           JS
-      - name: Verify database and real service boundaries
+      - name: Reset and generate the actual schema contract
         run: |
           if ! npm exec --no -- supabase db reset --local --network-id "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >.cache/reset.log 2>&1; then
             python3 .github/ci-diagnostics.py .cache/reset.log
@@ -83,17 +83,44 @@ jobs:
                       assert binding['HostIp'] in ('127.0.0.1', '::1'), 'Non-loopback published port after reset'
           print('Post-reset published ports are loopback-only.')
           PY
+          # Type generation connects in-process and explicitly rejects --network-id.
+          if ! npm exec --no -- supabase gen types typescript --local >.cache/database.types.ts 2>.cache/typegen.log; then
+            python3 .github/ci-diagnostics.py .cache/typegen.log
+            exit 1
+          fi
+          test -s .cache/database.types.ts
+      - name: Retain only the synthetic generated schema contract
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: por23-database-types
+          path: .cache/database.types.ts
+          include-hidden-files: true
+          retention-days: 1
+          if-no-files-found: error
+      - name: Verify database and real service boundaries
+        run: |
+          curl --fail --silent http://127.0.0.1:54324/api/v1/messages >/dev/null
+          printf '%s\n' 'APP_ORIGIN=http://127.0.0.1:5173' 'INVITATION_EMAIL_ENABLED=true' >.cache/functions.env
+          npm exec --no -- supabase functions serve organization-invite --network-id "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --env-file .cache/functions.env >.cache/functions.log 2>&1 &
+          echo $! >.cache/functions.pid
+          ready=0
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --request OPTIONS --header 'Origin: http://127.0.0.1:5173' http://127.0.0.1:54321/functions/v1/organization-invite >/dev/null; then ready=1; break; fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then python3 .github/ci-diagnostics.py .cache/functions.log; exit 1; fi
           npm run db:test -- --local --network-id "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           npm run test:integration
+          docker logs supabase_db_opspilot-t1 >.cache/db-security.log 2>&1
+          grep -q 'opspilot_command_denied' .cache/db-security.log
           npm run test:e2e
-          # Type generation connects in-process and explicitly rejects --network-id.
-          npm exec --no -- supabase gen types typescript --local >.cache/database.types.ts 2>.cache/typegen.log
           diff -u src/lib/database.types.ts .cache/database.types.ts
       - name: Stop only job-owned resources and discard generated credentials
         if: always()
         shell: bash
         run: |
           failed=0
+          if [ -f .cache/functions.pid ]; then kill "$(cat .cache/functions.pid)" 2>/dev/null || true; fi
           if ! npm exec --no -- supabase stop --no-backup >.cache/stop.log 2>&1; then
             python3 .github/ci-diagnostics.py .cache/stop.log
             failed=1
@@ -124,6 +151,6 @@ jobs:
             echo 'Cleanup failed: final network inventory unavailable.'
             failed=1
           fi
-          rm -f .cache/status.json .cache/status.log .cache/start.log .cache/reset.log .cache/stop.log .cache/containers.json
+          rm -f .cache/status.json .cache/status.log .cache/start.log .cache/reset.log .cache/stop.log .cache/containers.json .cache/functions.env .cache/functions.log .cache/functions.pid .cache/db-security.log .cache/typegen.log
           if [ "$failed" -ne 0 ]; then exit 1; fi
           echo 'Verified absence of project-owned containers and job-owned network.'
