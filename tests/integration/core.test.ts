@@ -215,4 +215,40 @@ describe('real Auth/RPC/RLS trust boundaries', () => {
     failure((await people.ownerB.client.rpc('set_organization_member', { ctx: context(organizations.b), user_id: people.outsider.id, role: 'technician', active: true })).error, 'FORBIDDEN');
     failure((await people.outsider.client.rpc('set_organization_member', { ctx: context(organizations.b), user_id: people.outsider.id, role: 'owner', active: false })).error, 'CONFLICT');
   });
+  it('rejects invalid and wrong-user tokens at the actual Auth and Edge boundary', async () => {
+    const invalid = createClient(url, anon, { global: { headers: { Authorization: 'Bearer invalid.token.signature' } }, auth: { persistSession: false } });
+    expect((await invalid.from('organizations').select('id')).error !== null).toBe(true);
+    const input = { ctx: context(organizations.a), email: people.tech.email, role: 'technician' };
+    const malformed = await fetch(`${url}/functions/v1/organization-invite`, { method: 'POST', headers: { authorization: 'Bearer invalid.token.signature', 'content-type': 'application/json' }, body: JSON.stringify(input) });
+    expect(malformed.status === 401).toBe(true);
+    const wrongSession = await people.outsider.client.auth.getSession();
+    const wrong = await fetch(`${url}/functions/v1/organization-invite`, { method: 'POST', headers: { authorization: `Bearer ${wrongSession.data.session!.access_token}`, 'content-type': 'application/json' }, body: JSON.stringify(input) });
+    expect(wrong.status === 403).toBe(true);
+  });
+  it('rechecks current Auth user state for retained tokens and pending inviters', async () => {
+    const owner = people.ownerA;
+    const session = await owner.client.auth.getSession();
+    const retained = createClient(url, anon, { global: { headers: { Authorization: `Bearer ${session.data.session!.access_token}` } }, auth: { persistSession: false, autoRefreshToken: false } });
+    const lookup = { organization_id: organizations.a, asset_code: 'PUMP-01', asset_id: null };
+    expect((await retained.from('organizations').select('id').eq('id', organizations.a)).data?.length).toBe(1);
+    const pending = await invitation(people.outsider.email);
+    async function denied() {
+      expect((await retained.from('organizations').select('id').eq('id', organizations.a)).data?.length).toBe(0);
+      failure((await retained.rpc('lookup_request_asset', lookup)).error, 'FORBIDDEN');
+      failure((await retained.rpc('save_asset', { ctx: context(organizations.a), asset_id: null, fields: { code: 'DENIED', name: 'Denied', category: 'pump' } })).error, 'FORBIDDEN');
+    }
+    expect((await admin.auth.admin.updateUserById(owner.id, { ban_duration: '1h' })).error === null).toBe(true);
+    await denied();
+    failure((await people.outsider.client.rpc('accept_organization_invitation', { token: pending.token, request_id: randomUUID() })).error, 'FORBIDDEN');
+    expect((await admin.auth.admin.updateUserById(owner.id, { ban_duration: 'none' })).error === null).toBe(true);
+    expect((await retained.rpc('lookup_request_asset', lookup)).error === null).toBe(true);
+    sql(`update auth.users set email_confirmed_at=null where id='${owner.id}';`);
+    await denied();
+    failure((await people.outsider.client.rpc('accept_organization_invitation', { token: pending.token, request_id: randomUUID() })).error, 'FORBIDDEN');
+    sql(`update auth.users set email_confirmed_at=now() where id='${owner.id}';`);
+    expect((await retained.rpc('lookup_request_asset', lookup)).error === null).toBe(true);
+    expect((await admin.auth.admin.deleteUser(owner.id, true)).error === null).toBe(true);
+    await denied();
+    failure((await people.outsider.client.rpc('accept_organization_invitation', { token: pending.token, request_id: randomUUID() })).error, 'FORBIDDEN');
+  });
 });

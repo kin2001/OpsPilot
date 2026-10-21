@@ -153,9 +153,13 @@ create table private.command_receipts (
 );
 create index on private.command_receipts(organization_id,created_at);
 
+create function private.auth_user_active(actor uuid) returns boolean
+language sql stable security definer set search_path='' as $$
+  select exists(select 1 from auth.users where id=actor and email_confirmed_at is not null and deleted_at is null and coalesce(banned_until,'-infinity'::timestamptz)<=now())
+$$;
 create function private.member_role(org uuid) returns text
 language sql stable security definer set search_path='' as $$
-  select role from public.organization_members where organization_id=org and user_id=auth.uid() and active
+  select role from public.organization_members where organization_id=org and user_id=auth.uid() and active and private.auth_user_active(auth.uid())
 $$;
 create function private.operations(org uuid) returns boolean
 language sql stable security definer set search_path='' as $$
@@ -211,7 +215,7 @@ language plpgsql security definer set search_path='' as $$
 declare actor uuid:=auth.uid();
 begin
   if actor is null then raise exception using message='UNAUTHENTICATED'; end if;
-  if not exists(select 1 from auth.users where id=actor and email_confirmed_at is not null and deleted_at is null) then
+  if not private.auth_user_active(actor) then
     raise exception using message='FORBIDDEN';
   end if;
   return actor;
@@ -347,7 +351,7 @@ begin
     select * into member from public.organization_members where organization_id=org and user_id=target and active for update;
     if not found then raise exception using message='NOT_FOUND'; end if;
     if member.role='owner' then raise exception using message='CONFLICT'; end if;
-    if not exists(select 1 from auth.users where id=target and email_confirmed_at is not null and deleted_at is null) then raise exception using message='FORBIDDEN'; end if;
+    if not private.auth_user_active(target) then raise exception using message='FORBIDDEN'; end if;
     update public.organization_members set role='manager',version=version+1 where organization_id=org and user_id=actor;
     update public.organization_members set role='owner',version=version+1 where organization_id=org and user_id=target returning * into member;
     data:=to_jsonb(member)||jsonb_build_object('id',target);
@@ -488,7 +492,7 @@ begin
     return result;
   end if;
   if invite.accepted_at is not null or invite.revoked_at is not null or invite.expires_at<=now()
-    or not exists(select 1 from public.organization_members where organization_id=org and user_id=invite.inviter_id and role='owner' and active) then raise exception using message='FORBIDDEN'; end if;
+    or not exists(select 1 from public.organization_members where organization_id=org and user_id=invite.inviter_id and role='owner' and active and private.auth_user_active(invite.inviter_id)) then raise exception using message='FORBIDDEN'; end if;
   if (select count(*) from public.organization_members where organization_id=org and active)>=30 then raise exception using message='RATE_LIMITED'; end if;
   if exists(select 1 from public.organization_members where organization_id=org and user_id=actor and active) then raise exception using message='CONFLICT'; end if;
   perform private.rate_check(org,actor,'accept_organization_invitation');
