@@ -97,15 +97,30 @@ jobs:
             python3 .github/ci-diagnostics.py .cache/stop.log
             failed=1
           fi
-          if [ -n "$(docker ps -aq --filter label=com.supabase.cli.project=opspilot-t1)" ]; then
-            echo 'Cleanup failed: project-owned containers remain.'
+          if containers=$(docker ps -aq --filter label=com.supabase.cli.project=opspilot-t1); then
+            if [ -n "$containers" ]; then
+              echo 'Cleanup failed: project-owned containers remain.'
+              failed=1
+            fi
+          else
+            echo 'Cleanup failed: container inventory unavailable.'
             failed=1
           fi
-          if docker network ls --format '{{.Name}}' | grep -Fxq "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"; then
-            docker network rm "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null || failed=1
+          if networks=$(docker network ls --format '{{.Name}}'); then
+            if grep -Fxq "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" <<<"$networks"; then
+              docker network rm "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null || failed=1
+            fi
+          else
+            echo 'Cleanup failed: network inventory unavailable.'
+            failed=1
           fi
-          if docker network ls --format '{{.Name}}' | grep -Fxq "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"; then
-            echo 'Cleanup failed: job-owned network remains.'
+          if networks=$(docker network ls --format '{{.Name}}'); then
+            if grep -Fxq "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" <<<"$networks"; then
+              echo 'Cleanup failed: job-owned network remains.'
+              failed=1
+            fi
+          else
+            echo 'Cleanup failed: final network inventory unavailable.'
             failed=1
           fi
           rm -f .cache/status.json .cache/status.log .cache/start.log .cache/reset.log .cache/stop.log .cache/containers.json
