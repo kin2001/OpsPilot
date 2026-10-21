@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { imageMetadata, inspectImage, workUpdate, releaseAcknowledgment } from '../../supabase/functions/_shared/operational';
+import { imageMetadata, inspectImage, workUpdate, releaseAcknowledgment, performerDeclarationInput, dashboardResult, assetHistoryResult } from '../../supabase/functions/_shared/operational';
 
 describe('operational trust boundaries', () => {
+  it('rejects empty or duplicate performer declarations and unknown read-model fields', () => {
+    expect(performerDeclarationInput.safeParse([]).success).toBe(false);
+    const actor = 'c2daf4c7-e68c-4783-87c6-26b009a1169d';
+    expect(performerDeclarationInput.safeParse([actor, actor]).success).toBe(false);
+    expect(performerDeclarationInput.parse([actor])).toEqual([actor]);
+    expect(dashboardResult.safeParse({ counts: {}, unexpected: true }).success).toBe(false);
+    expect(assetHistoryResult.safeParse({ items: [], next_cursor: null, private_audit: [] }).success).toBe(false);
+  });
   it('rejects administrative and review fields in repair updates', () => {
     expect(workUpdate.safeParse({ note: 'Replaced seal', status: 'completed' }).success).toBe(false);
     expect(workUpdate.safeParse({ note: 'Replaced seal', labor_minutes: 30 }).success).toBe(true);

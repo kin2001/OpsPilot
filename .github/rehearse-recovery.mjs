@@ -6,26 +6,47 @@ import { createClient } from '@supabase/supabase-js';
 import { reconcileAttachments } from './reconcile-attachments.mjs';
 
 function recoveryDiagnostic(stderr, input = '') {
-  const match = String(stderr).match(/(?:psql:<stdin>:(\d+):\s*)?(?:ERROR|FATAL):\s+([A-Z0-9]{5})(?=\s|$)/);
+  const match = String(stderr).match(/(?:psql:<stdin>:(\d+):\s*)?(?:ERROR|FATAL):\s+([A-Z0-9]{5})(?=[:\s]|$)([^\r\n]*)/);
   const line = match?.[1] ? Number(match[1]) : null;
   const failedLine = line === null ? '' : String(input).split('\n')[line - 1] ?? '';
+  const primaryError = match?.[3] ?? '';
+  const category = /must be owner/i.test(primaryError) ? 'must-owner'
+    : /permission denied to set parameter/i.test(primaryError) ? 'denied-setparameter'
+      : /must be (?:a )?superuser|superuser (?:is )?required|only superusers/i.test(primaryError) ? 'superuser-only'
+        : /permission denied (?:to set|for) role|must be (?:a )?member of role|cannot set role/i.test(primaryError) ? 'denied-role'
+          : /permission denied for (?:table|schema|relation|sequence)/i.test(primaryError) ? 'denied-table-schema' : 'other';
+  // psql's location can be the final line of a multiline statement; retain no SQL in the result.
+  const priorLines = String(input).split('\n').slice(0, line ?? 0);
+  const statementLines = [];
+  for (let index = priorLines.length - 1; index >= 0; index--) {
+    const value = priorLines[index];
+    if (index < priorLines.length - 1 && /;\s*$/.test(value)) break;
+    if (!/^\s*--/.test(value)) statementLines.unshift(value);
+  }
+  const statement = statementLines.join('\n').trim();
+  const statementClass = statement.match(/^(CREATE|ALTER|DROP)\s+(?:OR REPLACE\s+)?(EVENT\s+TRIGGER|DEFAULT\s+PRIVILEGES|FOREIGN\s+DATA\s+WRAPPER|FOREIGN\s+TABLE|TABLE|FUNCTION|SCHEMA|EXTENSION|TYPE|POLICY|TRIGGER|SEQUENCE|PUBLICATION|VIEW|INDEX|DOMAIN|AGGREGATE|OPERATOR|COLLATION)\b/i);
   // Emit fixed header vocabulary only: never copy an arbitrary SQL identifier or value.
   const setting = failedLine.match(/^SET\s+(statement_timeout|lock_timeout|idle_in_transaction_session_timeout|transaction_timeout|client_encoding|standard_conforming_strings|check_function_bodies|xmloption|client_min_messages|escape_string_warning|row_security|default_tablespace|default_table_access_method)\s*=/i);
   const fixedStatement = setting ? 'SET' : /^SELECT pg_catalog\.set_config\('search_path',/.test(failedLine) ? 'SELECT search_path configuration' : null;
   const statements = String(input).split('\n').slice(0, line ?? 0).reverse();
   const ddl = statements.map((value) => value.match(/^\s*(CREATE|ALTER|DROP)\s+(?:OR REPLACE\s+)?(TABLE|FUNCTION|SCHEMA|EXTENSION|TYPE|POLICY|TRIGGER|SEQUENCE|PUBLICATION|VIEW|INDEX|DOMAIN|AGGREGATE|OPERATOR|COLLATION)\b/))
     .find(Boolean);
-  return { recovery_command_failed: true, sqlstate: match?.[2] ?? null, input_line: line, preceding_ddl: ddl ? `${ddl[1]} ${ddl[2]}` : null, failed_statement: fixedStatement, parameter: setting?.[1]?.toLowerCase() ?? null };
+  return { recovery_command_failed: true, sqlstate: match?.[2] ?? null, input_line: line, preceding_ddl: ddl ? `${ddl[1]} ${ddl[2]}` : null, failed_statement: statementClass ? `${statementClass[1]} ${statementClass[2]}`.replace(/\s+/g, ' ').toUpperCase() : fixedStatement, parameter: setting?.[1]?.toLowerCase() ?? null, category };
 }
 if (process.argv[2] === '--diagnostics-self-test') {
   const secret = 'synthetic-secret-DO-NOT-PRINT';
   const diagnostic = recoveryDiagnostic(`psql:<stdin>:2: ERROR: 42501\nDETAIL: ${secret}`, `DROP TABLE public.fixture;\n${secret}`);
-  assert.deepEqual(diagnostic, { recovery_command_failed: true, sqlstate: '42501', input_line: 2, preceding_ddl: 'DROP TABLE', failed_statement: null, parameter: null });
+  assert.deepEqual(diagnostic, { recovery_command_failed: true, sqlstate: '42501', input_line: 2, preceding_ddl: 'DROP TABLE', failed_statement: null, parameter: null, category: 'other' });
   assert(!JSON.stringify(diagnostic).includes(secret));
-  assert.deepEqual(recoveryDiagnostic(`ERROR: ${secret}`), { recovery_command_failed: true, sqlstate: null, input_line: null, preceding_ddl: null, failed_statement: null, parameter: null });
+  assert.deepEqual(recoveryDiagnostic(`ERROR: ${secret}`), { recovery_command_failed: true, sqlstate: null, input_line: null, preceding_ddl: null, failed_statement: null, parameter: null, category: 'other' });
   const header = recoveryDiagnostic(`psql:<stdin>:1: ERROR: 42501`, `SET transaction_timeout = '${secret}';`);
   assert.equal(header.failed_statement, 'SET'); assert.equal(header.parameter, 'transaction_timeout'); assert(!JSON.stringify(header).includes(secret));
   assert.equal(recoveryDiagnostic('psql:<stdin>:1: ERROR: 42501', `SET ${secret} = 0;`).parameter, null);
+  const event = recoveryDiagnostic(`psql:<stdin>:3: ERROR: 42501: must be owner of event trigger ${secret}\nCONTEXT: ${secret}`, `-- comment\nDROP EVENT TRIGGER\nIF EXISTS ${secret};`);
+  assert.equal(event.failed_statement, 'DROP EVENT TRIGGER'); assert.equal(event.category, 'must-owner'); assert(!JSON.stringify(event).includes(secret));
+  for (const [message, expected] of [['permission denied to set parameter', 'denied-setparameter'], ['must be superuser', 'superuser-only'], ['must be member of role', 'denied-role'], ['permission denied for schema', 'denied-table-schema']]) {
+    assert.equal(recoveryDiagnostic(`ERROR: 42501: ${message} ${secret}`).category, expected);
+  }
   console.log('Recovery SQLSTATE-only diagnostic self-check passed'); process.exit(0);
 }
 const started = performance.now();
@@ -46,7 +67,13 @@ assert(Object.hasOwn(inventory[0].NetworkSettings.Networks, network));
 const networkInfo = JSON.parse(execute(['network', 'inspect', network]))[0];
 assert.equal(networkInfo.Options['com.docker.network.bridge.host_binding_ipv4'], '127.0.0.1');
 for (const bindings of Object.values(inventory[0].NetworkSettings.Ports)) for (const binding of bindings ?? []) assert(['127.0.0.1', '::1'].includes(binding.HostIp));
-function sql(statement) { return execute(['exec', '-i', container, 'psql', '-X', '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-v', 'VERBOSITY=sqlstate', '-v', 'SHOW_CONTEXT=never', '-v', 'ECHO=none', '-q', '-At', '--file=-'], statement); }
+function sql(statement) { return execute(['exec', '-i', container, 'psql', '-X', '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-v', 'VERBOSITY=verbose', '-v', 'SHOW_CONTEXT=never', '-v', 'ECHO=none', '-q', '-At', '--file=-'], statement); }
+const providerFlags = JSON.parse(sql("select json_build_object('server_version_num',current_setting('server_version_num')::integer,'postgres_superuser',(select rolsuper from pg_roles where rolname='postgres'),'postgres_login',(select rolcanlogin from pg_roles where rolname='postgres'),'provider_admin_superuser',(select rolsuper from pg_roles where rolname='supabase_admin'),'provider_admin_login',(select rolcanlogin from pg_roles where rolname='supabase_admin'));"));
+assert(Number.isInteger(providerFlags.server_version_num));
+for (const flag of ['postgres_superuser', 'postgres_login', 'provider_admin_superuser', 'provider_admin_login']) assert(providerFlags[flag] === null || typeof providerFlags[flag] === 'boolean');
+const dumpVersion = execute(['exec', container, 'pg_dump', '--version']).match(/\b(\d+(?:\.\d+){0,2})\b/)?.[1];
+assert(dumpVersion, 'Native dump version unavailable');
+console.log(JSON.stringify({ recovery_provider_flags: providerFlags, pg_dump_version: dumpVersion }));
 const options = { auth: { persistSession: false, autoRefreshToken: false }, global: { fetch: (input, init) => fetch(input, { ...init, cache: 'no-store' }) } };
 const admin = createClient(url, service, options); const owner = createClient(url, anon, options); const revoked = createClient(url, anon, options);
 const people = [];

@@ -4,7 +4,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { enrollMfa } from './mfa';
 import { commandResult, saveAsset, convertRequest } from '../../src/app/commands';
-import { operationalWorkOrder } from '../../src/contracts/operational';
+import { operationalWorkOrder, dashboardResult, assetHistoryResult, workOrderTask, workOrderEvent, workOrderReview, notificationRecord, performerDeclaration, submissionAttestation } from '../../src/contracts/operational';
 
 const url = process.env.TEST_SUPABASE_URL!; const anon = process.env.TEST_SUPABASE_ANON_KEY!; const service = process.env.TEST_SUPABASE_SERVICE_KEY!;
 if (!url || !anon || !service || !['127.0.0.1', 'localhost'].includes(new URL(url).hostname)) throw new Error('Job-owned loopback services required');
@@ -30,6 +30,10 @@ async function job(assetId: string) {
   return command('owner', 'create_work_order', { ctx: ctx(), asset_id: assetId, fields: { title: 'Repair pump', description: 'Synthetic leak', category: 'pump', priority: 'normal' } });
 }
 async function transition(person: string, work: { id: string; version: number }, target: string) {
+  if (target === 'awaiting_review') {
+    const declared = await command(person, 'declare_work_order_performers', { ctx: ctx(work.version), id: work.id, user_ids: [people[person].id] });
+    return command(person, 'submit_work_order', { ctx: ctx(declared.version), id: work.id, acknowledgment: 'I have declared everyone who performed this repair.' });
+  }
   return command(person, 'transition_work_order', { ctx: ctx(work.version), id: work.id, target, reason: 'Synthetic recorded reason' });
 }
 async function review(work: { id: string; version: number }, decision = 'approved') {
@@ -76,6 +80,8 @@ describe('real T2 operational authorization and safety', () => {
     sql(`update public.organization_members set role='supervisor' where organization_id='${org}' and user_id='${people.performer.id}';`);
     expect((await people.performer.client.rpc('review_work_order', { ctx: ctx(work.version), id: work.id, decision: 'approved', reason: 'Former participant' })).error?.message).toBe('FORBIDDEN');
     work = await review(work); expect(work.status).toBe('completed'); expect((await assetRow(assetId)).availability).toBe('pending_release');
+    const recordedReviews = await people.owner.client.from('work_order_reviews').select('*').eq('work_order_id', work.id);
+    expect(recordedReviews.data).toHaveLength(2); recordedReviews.data!.forEach((row) => workOrderReview.parse(row));
     const current = await assetRow(assetId);
     expect((await people.performer.client.rpc('release_asset', { ctx: ctx(current.version), asset_id: assetId, acknowledgment: 'Cannot self release' })).error?.message).toBe('FORBIDDEN');
     await command('reviewer', 'release_asset', { ctx: ctx(current.version), asset_id: assetId, acknowledgment: 'Synthetic procedure acknowledged' }); expect((await assetRow(assetId)).availability).toBe('operational');
@@ -178,5 +184,53 @@ describe('real T2 operational authorization and safety', () => {
     const image = await command('owner', 'reserve_record_attachment', { ctx: ctx(), parent_type: 'asset', parent_id: assetId, name: 'asset.png', media_type: 'image/png', size: 68 });
     expect(image.asset_id).toBe(assetId);
     expect((await people.outsider.client.rpc('attachment_access', { organization_id: org, attachment_id: own.id })).error?.message).toBe('NOT_FOUND');
+  });
+  it('requires immutable same-tenant performer declarations and a revision-bound completeness acknowledgment', async () => {
+    const assetId = await asset(); let work = await job(assetId);
+    work = await command('owner', 'assign_work_order', { ctx: ctx(work.version), id: work.id, user_ids: [people.performer.id] });
+    work = await transition('owner', work, 'open'); work = await transition('performer', work, 'in_progress');
+    expect((await people.performer.client.rpc('transition_work_order', { ctx: ctx(work.version), id: work.id, target: 'awaiting_review', reason: null })).error?.message).toBe('INVALID_TRANSITION');
+    expect((await people.performer.client.rpc('declare_work_order_performers', { ctx: ctx(work.version), id: work.id, user_ids: [] })).error?.message).toBe('VALIDATION');
+    expect((await people.performer.client.rpc('declare_work_order_performers', { ctx: ctx(work.version), id: work.id, user_ids: [people.outsider.id] })).error?.message).toBe('VALIDATION');
+    expect((await people.performer.client.rpc('declare_work_order_performers', { ctx: ctx(work.version), id: work.id, user_ids: [people.performer.id, people.performer.id] })).error?.message).toBe('VALIDATION');
+    const args = { ctx: ctx(work.version), id: work.id, user_ids: [people.performer.id] };
+    work = await command('performer', 'declare_work_order_performers', args);
+    expect(await command('performer', 'declare_work_order_performers', args)).toEqual(work);
+    expect((await people.performer.client.rpc('declare_work_order_performers', { ...args, user_ids: [people.owner.id] })).error?.message).toBe('CONFLICT');
+    expect((await people.reviewer.client.rpc('submit_work_order', { ctx: ctx(work.version), id: work.id, acknowledgment: 'I was not declared' })).error?.message).toBe('INVALID_TRANSITION');
+    const submitted = await command('performer', 'submit_work_order', { ctx: ctx(work.version), id: work.id, acknowledgment: 'All physical performers have been declared.' });
+    const attestations = await people.owner.client.from('work_order_submission_attestations').select('*').eq('work_order_id', work.id);
+    expect(attestations.data).toHaveLength(1); const attestation = submissionAttestation.parse(attestations.data![0]);
+    expect(attestation.repair_revision).toBe(submitted.repair_revision); expect(attestation.performer_ids).toEqual([people.performer.id]);
+    work = await review(submitted, 'returned');
+    work = await command('performer', 'update_work_order', { ctx: ctx(work.version), id: work.id, allowed_fields: { note: 'New material correction' } });
+    expect(work.repair_revision).toBeGreaterThan(attestation.repair_revision);
+    const nextSubmission = await command('performer', 'submit_work_order', { ctx: ctx(work.version), id: work.id, acknowledgment: 'All performers still declared after correction.' });
+    const nextAttestations = await people.owner.client.from('work_order_submission_attestations').select('*').eq('work_order_id', work.id);
+    expect(nextAttestations.data).toHaveLength(2); expect(nextAttestations.data!.some((row) => submissionAttestation.parse(row).repair_revision === nextSubmission.repair_revision)).toBe(true);
+    work = await review(nextSubmission, 'returned');
+    sql(`update public.organization_members set active=false where organization_id='${org}' and user_id='${people.performer.id}';`);
+    const declarations = await people.owner.client.from('work_order_performer_declarations').select('*').eq('work_order_id', work.id);
+    expect(performerDeclaration.parse(declarations.data![0]).user_id).toBe(people.performer.id);
+    expect((await people.owner.client.rpc('declare_work_order_performers', { ctx: ctx(work.version), id: work.id, user_ids: [people.performer.id] })).error?.message).toBe('VALIDATION');
+    sql(`update public.organization_members set active=true where organization_id='${org}' and user_id='${people.performer.id}';`);
+  });
+  it('returns strict scoped asset history and row models without exposing owner audit or unrelated jobs', async () => {
+    const assetId = await asset(); let work = await job(assetId);
+    work = await command('owner', 'assign_work_order', { ctx: ctx(work.version), id: work.id, user_ids: [people.performer.id] });
+    await command('owner', 'add_work_order_task', { ctx: ctx(work.version), id: work.id, label: 'History fixture task', required: false });
+    const current = await people.owner.client.from('work_orders').select('*').eq('id', work.id).single(); work = await transition('owner', current.data, 'open');
+    const unrelated = await job(assetId); await transition('owner', unrelated, 'open');
+    const history = assetHistoryResult.parse((await people.reviewer.client.rpc('get_asset_history', { organization_id: org, asset_id: assetId })).data);
+    expect(history.items.length).toBeGreaterThan(0);
+    expect((await people.reviewer.client.from('audit_logs').select('id').eq('entity_id', assetId)).data).toEqual([]);
+    const limited = assetHistoryResult.parse((await people.performer.client.rpc('get_asset_history', { organization_id: org, asset_id: assetId })).data);
+    expect(limited.items.every((item) => item.work_order_id === work.id)).toBe(true);
+    expect((await people.outsider.client.rpc('get_asset_history', { organization_id: org, asset_id: assetId })).error?.message).toBe('FORBIDDEN');
+    dashboardResult.parse((await people.reviewer.client.rpc('get_dashboard', { organization_id: org, range: { from: '2026-10-01', to: '2026-10-22' } })).data);
+    for (const [table, schema] of [['work_order_tasks', workOrderTask], ['work_order_events', workOrderEvent], ['work_order_reviews', workOrderReview]] as const) {
+      const rows = await people.owner.client.from(table).select('*').eq('work_order_id', work.id); expect(rows.error).toBeNull(); rows.data!.forEach((row) => schema.parse(row));
+    }
+    const inbox = await people.performer.client.from('notifications').select('*').eq('organization_id', org).limit(100); expect(inbox.error).toBeNull(); expect(inbox.data!.length).toBeGreaterThan(0); inbox.data!.forEach((row) => notificationRecord.parse(row));
   });
 });

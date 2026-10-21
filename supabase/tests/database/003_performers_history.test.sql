@@ -1,0 +1,13 @@
+begin;
+set local search_path=public,extensions;
+select plan(8);
+select has_table('public','work_order_performer_declarations','Declared physical performers are durable facts');
+select has_table('public','work_order_submission_attestations','Submission records completeness at a material revision');
+select ok(not has_table_privilege('authenticated','public.work_order_performer_declarations','UPDATE'),'Clients cannot erase declarations');
+select ok(not has_table_privilege('authenticated','public.work_order_submission_attestations','INSERT'),'Clients cannot manufacture completeness records');
+select ok(not has_function_privilege('authenticated','private.operational_command_base(jsonb,text,jsonb)','EXECUTE'),'Clients cannot bypass declaration-aware submission');
+select ok(not has_function_privilege('anon','public.get_asset_history(uuid,uuid,jsonb)','EXECUTE'),'Anonymous asset history is denied');
+select ok(has_function_privilege('authenticated','public.submit_work_order(jsonb,uuid,text)','EXECUTE'),'Submission is an explicit authorized command');
+select ok(exists(select 1 from pg_trigger where tgrelid='public.work_order_performer_declarations'::regclass and tgname='immutable_history'),'Declarations remain append-only');
+select * from finish();
+rollback;
