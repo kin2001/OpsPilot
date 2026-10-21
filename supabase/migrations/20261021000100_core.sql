@@ -505,15 +505,15 @@ exception when invalid_text_representation or check_violation or not_null_violat
     raise exception using message='DEPENDENCY_UNAVAILABLE';
 end $$;
 
-create function public.lookup_request_asset(organization_id uuid, code text default null, asset_id uuid default null)
+create function public.lookup_request_asset(organization_id uuid, asset_code text default null, asset_id uuid default null)
 returns table(id uuid,code text,name text) language plpgsql stable security definer set search_path='' as $$
 #variable_conflict use_variable
 begin
   if auth.uid() is null then raise exception using message='UNAUTHENTICATED'; end if;
   if private.member_role(organization_id) is null then raise exception using message='FORBIDDEN'; end if;
-  if (code is null)=(asset_id is null) or (code is not null and length(trim(code)) not between 1 and 100) then raise exception using message='VALIDATION'; end if;
+  if (asset_code is null)=(asset_id is null) or (asset_code is not null and length(trim(asset_code)) not between 1 and 100) then raise exception using message='VALIDATION'; end if;
   return query select a.id,a.code,a.name from public.assets a where a.organization_id=lookup_request_asset.organization_id and a.archived_at is null
-    and ((asset_id is not null and a.id=asset_id) or (code is not null and a.code=trim(lookup_request_asset.code))) limit 1;
+    and ((asset_id is not null and a.id=asset_id) or (asset_code is not null and a.code=trim(lookup_request_asset.asset_code))) limit 1;
   if not found then raise exception using message='NOT_FOUND'; end if;
 end $$;
 

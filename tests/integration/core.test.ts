@@ -106,13 +106,13 @@ describe('real Auth/RPC/RLS trust boundaries', () => {
     const assetId = asset.data.data.id;
     const otherTenant = await people.ownerA.client.rpc('save_asset', { ctx: { ...ctx, organization_id: organizations.b }, asset_id: null, fields });
     expect(otherTenant.error === null && otherTenant.data.data.id !== assetId).toBe(true);
-    const requestLookup = await people.tech.client.rpc('lookup_request_asset', { organization_id: organizations.a, code: 'PUMP-01', asset_id: null });
+    const requestLookup = await people.tech.client.rpc('lookup_request_asset', { organization_id: organizations.a, asset_code: 'PUMP-01', asset_id: null });
     expect(requestLookup.error === null && requestLookup.data.length === 1).toBe(true);
     expect(Object.keys(requestLookup.data[0]).sort()).toEqual(['code', 'id', 'name']);
     expect((await people.tech.client.from('assets').select('id')).data?.length).toBe(0);
-    failure((await people.tech.client.rpc('lookup_request_asset', { organization_id: organizations.a, code: null, asset_id: null })).error, 'VALIDATION');
-    failure((await people.tech.client.rpc('lookup_request_asset', { organization_id: organizations.a, code: 'PUMP', asset_id: null })).error, 'NOT_FOUND');
-    failure((await people.ownerB.client.rpc('lookup_request_asset', { organization_id: organizations.b, code: null, asset_id: assetId })).error, 'NOT_FOUND');
+    failure((await people.tech.client.rpc('lookup_request_asset', { organization_id: organizations.a, asset_code: null, asset_id: null })).error, 'VALIDATION');
+    failure((await people.tech.client.rpc('lookup_request_asset', { organization_id: organizations.a, asset_code: 'PUMP', asset_id: null })).error, 'NOT_FOUND');
+    failure((await people.ownerB.client.rpc('lookup_request_asset', { organization_id: organizations.b, asset_code: null, asset_id: assetId })).error, 'NOT_FOUND');
     const duplicate = await people.ownerA.client.rpc('save_asset', { ctx, asset_id: null, fields });
     expect(duplicate.data.data.id === assetId).toBe(true);
     const contenders = await Promise.all(Array.from({ length: 20 }, () => people.ownerA.client.rpc('save_asset', { ctx, asset_id: null, fields })));
@@ -164,7 +164,7 @@ describe('real Auth/RPC/RLS trust boundaries', () => {
     failure((await people.ownerA.client.rpc('set_organization_member', { ctx: context(organizations.a), user_id: people.ownerA.id, role: 'technician', active: true })).error, 'CONFLICT');
     expect((await people.ownerA.client.rpc('set_organization_member', { ctx: context(organizations.a), user_id: people.tech.id, role: 'technician', active: false })).error === null).toBe(true);
     expect((await people.tech.client.from('assets').select('id')).data?.length).toBe(0);
-    failure((await people.tech.client.rpc('lookup_request_asset', { organization_id: organizations.a, code: null, asset_id: assetId })).error, 'FORBIDDEN');
+    failure((await people.tech.client.rpc('lookup_request_asset', { organization_id: organizations.a, asset_code: null, asset_id: assetId })).error, 'FORBIDDEN');
     failure((await people.tech.client.rpc('save_request', { ctx: context(organizations.a), id: null, asset_id: assetId, description: 'Revoked', category: 'pump' })).error, 'FORBIDDEN');
   });
   it('sends recipient-owned Auth links through local mail and still requires explicit membership acceptance', async () => {
