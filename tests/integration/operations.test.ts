@@ -147,7 +147,19 @@ describe('real T2 operational authorization and safety', () => {
     expect((await upload.json()).checksum).toBe(createHash('sha256').update(bytes).digest('hex'));
     expect((await fetch(target, { method: 'PUT', headers: { ...headers, 'Content-Type': 'image/png' }, body: bytes })).status).toBe(200);
     expect((await people.performer.client.storage.from('repair-evidence').createSignedUrl(record.object_key, 60)).error).not.toBeNull();
-    expect((await people.performer.client.storage.from('repair-evidence').createSignedUrls([record.object_key], 60)).error).not.toBeNull();
+    const bulkSigning = await people.performer.client.storage.from('repair-evidence').createSignedUrls([record.object_key], 60);
+    if (bulkSigning.error) {
+      expect(bulkSigning.data).toBeNull();
+    } else {
+      expect(bulkSigning.data).toHaveLength(1);
+      expect(bulkSigning.data.map((item) => item.path)).toEqual([record.object_key]);
+      for (const item of bulkSigning.data) {
+        expect(typeof item.error).toBe('string');
+        expect(item.error?.trim().length).toBeGreaterThan(0);
+        expect(item.signedURL).toBeNull();
+        expect(item.signedUrl).toBeNull();
+      }
+    }
     const publicUrl = people.performer.client.storage.from('repair-evidence').getPublicUrl(record.object_key).data.publicUrl;
     expect((await fetch(publicUrl, { cache: 'no-store' })).ok).toBe(false);
     const downloaded = await fetch(target, { headers }); expect(downloaded.status).toBe(200);
