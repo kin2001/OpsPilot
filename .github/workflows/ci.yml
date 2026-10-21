@@ -1,0 +1,84 @@
+name: POR-23 isolated verification
+on:
+  push:
+    branches: [spec-team/p1-core-maintenance]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: por23-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      CI: true
+      npm_config_cache: ${{ github.workspace }}/.cache/npm
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/ms-playwright
+      TMPDIR: ${{ github.workspace }}/.cache/tmp
+      TEMP: ${{ github.workspace }}/.cache/tmp
+      TMP: ${{ github.workspace }}/.cache/tmp
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.15.0
+      - name: Prepare script-free dependencies
+        run: |
+          mkdir -p .cache/tmp
+          test "$(npm --version)" = "11.12.1"
+          npm ci --ignore-scripts
+          npm ls --depth=0
+          npm run typecheck
+          npm run lint
+          npm test
+          npm run build
+          npm exec --no -- playwright install chromium
+      - name: Start job-owned loopback services
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker network create --driver bridge --opt com.docker.network.bridge.host_binding_ipv4=127.0.0.1 "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null
+          if ! npm exec --no -- supabase start --network-id "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >.cache/start.log 2>&1; then
+            echo 'Supabase startup failed; raw startup output withheld because it may contain credentials.'
+            exit 1
+          fi
+          docker inspect $(docker ps -q --filter network="por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}") >.cache/containers.json
+          python3 - <<'PY'
+          import json
+          for container in json.load(open('.cache/containers.json')):
+              for bindings in container['NetworkSettings']['Ports'].values():
+                  for binding in bindings or []:
+                      assert binding['HostIp'] in ('127.0.0.1', '::1'), 'Non-loopback published port'
+          PY
+          npm exec --no -- supabase status -o json >.cache/status.json 2>.cache/status.log
+          node --input-type=module <<'JS'
+          import { readFileSync, appendFileSync } from 'node:fs';
+          const values = JSON.parse(readFileSync('.cache/status.json', 'utf8'));
+          for (const value of Object.values(values)) {
+            if (typeof value === 'string' && value) console.log(`::add-mask::${value.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A')}`);
+          }
+          const selected = { TEST_SUPABASE_URL: values.API_URL, TEST_SUPABASE_ANON_KEY: values.ANON_KEY, TEST_SUPABASE_SERVICE_KEY: values.SERVICE_ROLE_KEY };
+          for (const [key, value] of Object.entries(selected)) {
+            if (typeof value !== 'string' || !value || /[\r\n]/.test(value)) throw new Error('Required isolated service configuration missing');
+            appendFileSync(process.env.GITHUB_ENV, `${key}=${value}\n`);
+          }
+          JS
+      - name: Verify database and real service boundaries
+        run: |
+          npm exec --no -- supabase db reset --local >.cache/reset.log 2>&1
+          npm run db:test
+          npm run test:integration
+          npm run test:e2e
+          npm exec --no -- supabase gen types typescript --local >.cache/database.types.ts 2>.cache/typegen.log
+          diff -u src/lib/database.types.ts .cache/database.types.ts
+      - name: Stop only job-owned resources and discard generated credentials
+        if: always()
+        shell: bash
+        run: |
+          npm exec --no -- supabase stop --no-backup >.cache/stop.log 2>&1 || true
+          docker network rm "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null 2>&1 || true
+          rm -f .cache/status.json .cache/status.log .cache/start.log .cache/reset.log .cache/stop.log .cache/containers.json

@@ -1,0 +1,41 @@
+project_id = "opspilot-t1"
+[api]
+enabled = true
+port = 54321
+schemas = ["public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 100
+auto_expose_new_tables = false
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 17
+[db.migrations]
+enabled = true
+[db.seed]
+enabled = true
+sql_paths = ["./seed.sql"]
+[realtime]
+enabled = false
+[studio]
+enabled = false
+[inbucket]
+enabled = true
+port = 54324
+[storage]
+enabled = true
+file_size_limit = "5MiB"
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:5173"
+additional_redirect_urls = ["http://127.0.0.1:5173"]
+jwt_expiry = 3600
+enable_signup = true
+[auth.email]
+enable_signup = true
+double_confirm_changes = true
+enable_confirmations = true
+[edge_runtime]
+enabled = true
+[analytics]
+enabled = false

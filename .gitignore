@@ -4,3 +4,15 @@
 /.superpowers/
 /.worktrees/
 # spec-team:end
+
+/node_modules/
+/dist/
+/.cache/
+/.env*
+!/.env.example
+/supabase/.env*
+/supabase/.temp/
+/supabase/.branches/
+/playwright-report/
+/test-results/
+*.tsbuildinfo

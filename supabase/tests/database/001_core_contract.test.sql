@@ -1,0 +1,12 @@
+begin;
+select plan(8);
+select has_table('public', 'organizations', 'Workspace organization exists');
+select has_table('public', 'organization_members', 'Membership authority is relational');
+select has_table('public', 'organization_invitations', 'Invitations have durable identity');
+select has_table('public', 'assets', 'Assets have tenant identity');
+select has_table('public', 'maintenance_requests', 'Requests have durable identity');
+select has_table('public', 'work_orders', 'Request conversion owns a draft work order');
+select has_function('public', 'create_organization', array['text','text','text','uuid'], 'Bootstrap is a narrow command');
+select has_function('public', 'accept_organization_invitation', array['text','uuid'], 'Invite acceptance is a narrow command');
+select * from finish();
+rollback;

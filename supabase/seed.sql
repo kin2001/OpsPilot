@@ -1,0 +1,1 @@
+-- Synthetic account and tenant fixtures are created by isolated tests, never hosted seed data.
