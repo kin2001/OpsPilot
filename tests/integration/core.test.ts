@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { enrollMfa } from './mfa';
 
 const url = process.env.TEST_SUPABASE_URL;
 const anon = process.env.TEST_SUPABASE_ANON_KEY;
@@ -45,6 +46,7 @@ beforeAll(async () => {
       const signed = await client.auth.signInWithPassword({ email, password });
       expect(signed.error === null).toBe(true);
     }
+    await enrollMfa(client);
     people[name] = { id, email, client };
   }
   sql(`update auth.users set email_confirmed_at=null where id='${people.unconfirmed.id}';`);

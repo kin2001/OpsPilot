@@ -1,5 +1,17 @@
 # OpsPilot development operations
 
+## POR-24 upgrade and recovery candidate
+
+The P1 operational contracts are documented in [operational-contracts.md](operational-contracts.md). Apply `20261022000100_operations.sql` forward after T1; do not edit an applied migration or remove durable participants, holds, reviews, events or receipts to roll back behavior. Before any authorized hosted change, back up the actual destination and use a reviewed compatible forward repair if needed. Rolling back only the UI does not disable server authorization or release guards. No hosted migration is authorized by this source delivery.
+
+The existing CI job first runs `.github/rehearse-upgrade.mjs`: positively binds the exact loopback URL, database container's project label and current job network/loopback binding; resets that job-owned stack to the T1 migration; creates synthetic Auth/tenant/asset/draft/assignment/receipt facts; applies the actual pending migration with the pinned CLI; checks frozen new responses and old receipt replay, former-assignment backfill, and conservative first availability history. It then performs the normal clean reset and native type generation. The CLI supports `db reset --version`, `migration up --local`, and serving all configured Edge functions without a function-name argument; installed help was inspected.
+
+After database, service and browser checks, `.github/rehearse-recovery.mjs` uses the same positively bound CI target. It retains the native database/Auth/schema/receipt dump and bounded Storage byte snapshots only in process memory. It deliberately changes one synthetic asset and removes one evidence object, restores the database and object bytes, reconciles a post-snapshot membership revocation before access checks, verifies checksums and receipt replay, checks source-configuration restoration and measures fixture RPO/RTO. No dump, object byte archive, Auth token or secret is uploaded as an artifact. The existing generated native schema artifact contains types only.
+
+Measured fixture RPO zero applies only to facts at the captured checkpoint. The reported snapshot-to-incident interval and observed restoration duration are synthetic lab evidence. They do not prove production backups, hosted provider configuration restoration, actual business recovery objectives or private-pilot admission. A real backup needs separately authorized encrypted owner-controlled storage, provider config/secret recovery ownership and the full private-target rehearsal.
+
+At this candidate stage, SQL/Auth/Storage/upgrade/recovery tests have not run on the Windows host because local Docker is unavailable. CI evidence, native-type artifact follow-up and independent review remain required. Preserve this distinction when recording eventual actual results.
+
 This is the POR-23 synthetic T1 source setup. Local toolchain checks have passed; the first backend migration, real API/Edge/mail flow and generated contract are awaiting isolated CI. Nothing here authorizes hosted migrations, private pilot data, deployment or paid provisioning.
 
 ## Reproduce the client toolchain

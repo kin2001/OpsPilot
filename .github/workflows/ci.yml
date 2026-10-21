@@ -66,6 +66,8 @@ jobs:
             appendFileSync(process.env.GITHUB_ENV, `${key}=${value}\n`);
           }
           JS
+      - name: Rehearse populated T1 forward upgrade in the verified job-owned stack
+        run: node .github/rehearse-upgrade.mjs
       - name: Reset and generate the actual schema contract
         run: |
           if ! npm exec --no -- supabase db reset --local --network-id "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >.cache/reset.log 2>&1; then
@@ -99,11 +101,11 @@ jobs:
         run: |
           curl --fail --silent http://127.0.0.1:54324/api/v1/messages >/dev/null
           printf '%s\n' 'APP_ORIGIN=http://127.0.0.1:5173' 'INVITATION_EMAIL_ENABLED=true' >.cache/functions.env
-          npm exec --no -- supabase functions serve organization-invite --network-id "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --env-file .cache/functions.env >.cache/functions.log 2>&1 &
+          npm exec --no -- supabase functions serve --network-id "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --env-file .cache/functions.env >.cache/functions.log 2>&1 &
           echo $! >.cache/functions.pid
           ready=0
           for attempt in $(seq 1 30); do
-            if curl --fail --silent --request OPTIONS --header 'Origin: http://127.0.0.1:5173' http://127.0.0.1:54321/functions/v1/organization-invite >/dev/null; then ready=1; break; fi
+            if curl --fail --silent --max-time 2 --request OPTIONS --header 'Origin: http://127.0.0.1:5173' http://127.0.0.1:54321/functions/v1/organization-invite >/dev/null && curl --fail --silent --max-time 2 --request OPTIONS --header 'Origin: http://127.0.0.1:5173' http://127.0.0.1:54321/functions/v1/attachment-upload >/dev/null; then ready=1; break; fi
             sleep 1
           done
           if [ "$ready" -ne 1 ]; then python3 .github/ci-diagnostics.py .cache/functions.log; exit 1; fi
@@ -112,6 +114,7 @@ jobs:
           docker logs supabase_db_opspilot-t1 >.cache/db-security.log 2>&1
           grep -q 'opspilot_command_denied' .cache/db-security.log
           npm run test:e2e
+          node .github/rehearse-recovery.mjs
           diff -u src/lib/database.types.ts .cache/database.types.ts
       - name: Stop only job-owned resources and discard generated credentials
         if: always()

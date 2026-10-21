@@ -1,5 +1,11 @@
 # OpsPilot security applicability — T1 baseline
 
+## POR-24 candidate additions and evidence boundary
+
+The additive backend candidate enforces current tenant membership and required AAL2 before privileged replay; immutable repair participants and current hold scope govern review/release. Generic edits cannot establish Operational availability. Composite tenant/parent links, ready-only RLS and current-JWT Storage downloads protect validated private images. Direct client finalization/upload/cleanup privileges are denied. File reservations, dimensions, byte sizes, parent counts, tenant storage, roster, metric ranges and notification updates are bounded. Requested-work edits invalidate material submission; administrative edits retain explicit history. Meter corrections append linked records.
+
+The focused SQL permission suite, real native-MFA/repair/contention/file service scenarios and upgrade/restore rehearsals are committed test intentions until actual isolated CI results exist. Local type/lint/unit/build checks do not verify RLS, Auth, Storage or transactional races. No ASVS PASS, security certification, Lens verdict or hosted/private acceptance is claimed. PDF/malware review, actual company evidence policy, qualified security/business/recovery owners and private-target deployment/backup/provider configuration gates remain unresolved human inputs before admission. The synthetic recovery scripts do not supply those inputs.
+
 Target: applicable OWASP ASVS **5.0.0 Level 2**, as approved in the R2 package. This is an initial implementation/evidence worksheet, not certification or a completed assessment. Requirement IDs below were checked against the [official versioned English CSV](https://github.com/OWASP/ASVS/blob/v5.0.0/5.0/docs_en/OWASP_Application_Security_Verification_Standard_5.0.0_en.csv). Expand the worksheet for subsequent modules and the private-pilot review; nothing omitted is implicitly satisfied.
 
 | ASVS 5.0.0 ID | Applicability and implementation boundary | Current validation / remaining evidence |

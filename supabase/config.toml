@@ -47,3 +47,7 @@ enabled = false
 verify_jwt = false
 import_map = "./functions/organization-invite/deno.json"
 entrypoint = "./functions/organization-invite/index.ts"
+[functions.attachment-upload]
+verify_jwt = false
+import_map = "./functions/attachment-upload/deno.json"
+entrypoint = "./functions/attachment-upload/index.ts"
