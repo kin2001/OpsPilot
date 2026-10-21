@@ -60,7 +60,7 @@ jobs:
           for (const value of Object.values(values)) {
             if (typeof value === 'string' && value) console.log(`::add-mask::${value.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A')}`);
           }
-          const selected = { TEST_SUPABASE_URL: values.API_URL, TEST_SUPABASE_ANON_KEY: values.ANON_KEY, TEST_SUPABASE_SERVICE_KEY: values.SERVICE_ROLE_KEY };
+          const selected = { TEST_SUPABASE_URL: values.API_URL, TEST_SUPABASE_ANON_KEY: values.ANON_KEY, TEST_SUPABASE_SERVICE_KEY: values.SERVICE_ROLE_KEY, VITE_SUPABASE_URL: values.API_URL, VITE_SUPABASE_PUBLISHABLE_KEY: values.ANON_KEY };
           for (const [key, value] of Object.entries(selected)) {
             if (typeof value !== 'string' || !value || /[\r\n]/.test(value)) throw new Error('Required isolated service configuration missing');
             appendFileSync(process.env.GITHUB_ENV, `${key}=${value}\n`);

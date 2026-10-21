@@ -1,2 +1,11 @@
-import { createRoot } from 'react-dom/client';
-createRoot(document.getElementById('root')!).render(<main><h1>OpsPilot</h1><p>Development environment prepared.</p></main>);
+import { captureAuthRedirect } from './app/auth/capture-url';
+
+const authRedirect = captureAuthRedirect(window.location.pathname, window.location.search, window.location.hash, window.history);
+
+const [{ createElement }, { createRoot }, { App }] = await Promise.all([
+  import('react'),
+  import('react-dom/client'),
+  import('./app/app'),
+]);
+
+createRoot(document.getElementById('root')!).render(createElement(App, { authRedirect }));

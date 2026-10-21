@@ -28,9 +28,13 @@ file_size_limit = "5MiB"
 [auth]
 enabled = true
 site_url = "http://127.0.0.1:5173"
-additional_redirect_urls = ["http://127.0.0.1:5173/invite**"]
+additional_redirect_urls = ["http://127.0.0.1:5173/invite**", "http://127.0.0.1:5173/reset-password"]
 jwt_expiry = 3600
 enable_signup = true
+minimum_password_length = 12
+[auth.mfa.totp]
+enroll_enabled = true
+verify_enabled = true
 [auth.email]
 enable_signup = true
 double_confirm_changes = true
