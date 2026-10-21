@@ -1,7 +1,5 @@
 name: POR-23 isolated verification
 on:
-  push:
-    branches: [spec-team/p1-core-maintenance]
   workflow_dispatch:
 permissions:
   contents: read
