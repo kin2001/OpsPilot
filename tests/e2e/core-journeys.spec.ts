@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { createClient } from '@supabase/supabase-js';
 import { expect, test } from '@playwright/test';
 import { readIsolatedServiceConfig } from './service-config';
+import { prepareWorkspacePage } from './workspace-fixture';
 
 const serviceConfig = readIsolatedServiceConfig(process.env);
 const url = serviceConfig?.url ?? '';
@@ -79,6 +80,24 @@ async function invitationRedirect(email: string) {
   throw new Error('Synthetic invitation email did not arrive in local Mailpit.');
 }
 
+test('asset header action remains selectable beside its empty-state action', async ({ page }) => {
+  await prepareWorkspacePage(page);
+  await page.route(/\/rest\/v1\/assets(?:\?.*)?$/, async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: '[]' });
+  });
+  await page.goto('/');
+  const primaryNavigation = page.getByRole('navigation', { name: 'Primary navigation' });
+  await primaryNavigation.getByRole('link', { name: 'Assets', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'No assets are visible' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Register asset', exact: true })).toHaveCount(2);
+
+  const assetsHeader = page.locator('header.page-heading').filter({ has: page.getByRole('heading', { name: 'Assets', exact: true }) });
+  await expect(assetsHeader.getByRole('button', { name: 'Register asset', exact: true })).toHaveCount(1);
+  await assetsHeader.getByRole('button', { name: 'Register asset', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Register an asset' })).toBeVisible();
+});
+
 test('owner onboards with native TOTP, creates maintenance records and invites a verified recipient', async ({ page }) => {
   test.skip(!isolated, 'This journey runs only against the job-owned loopback Supabase and Mailpit services.');
   const owner = await makeConfirmedUser('por23-owner');
@@ -107,22 +126,27 @@ test('owner onboards with native TOTP, creates maintenance records and invites a
 
   const primaryNavigation = page.getByRole('navigation', { name: 'Primary navigation' });
   await primaryNavigation.getByRole('link', { name: 'Assets', exact: true }).click();
-  await page.getByRole('button', { name: 'Register asset' }).click();
-  await page.getByLabel('Asset code').fill('PUMP-SYN-01');
-  await page.getByLabel('Name', { exact: true }).fill('Synthetic pump');
-  await page.getByLabel('Category').fill('pump');
-  await page.getByRole('button', { name: 'Save asset' }).click();
+  const assetsHeader = page.locator('header.page-heading').filter({ has: page.getByRole('heading', { name: 'Assets', exact: true }) });
+  await assetsHeader.getByRole('button', { name: 'Register asset', exact: true }).click();
+  const assetForm = page.getByRole('region', { name: 'Register an asset' });
+  await assetForm.getByLabel('Asset code').fill('PUMP-SYN-01');
+  await assetForm.getByLabel('Name', { exact: true }).fill('Synthetic pump');
+  await assetForm.getByLabel('Category').fill('pump');
+  await assetForm.getByRole('button', { name: 'Save asset', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Synthetic pump' })).toBeVisible();
   await expect(page.getByText('Not recorded', { exact: true })).toBeVisible();
 
   await primaryNavigation.getByRole('link', { name: 'Requests', exact: true }).click();
-  await page.getByRole('button', { name: 'New request' }).click();
-  await page.getByLabel('Asset code').fill('PUMP-SYN-01');
-  await page.getByLabel('What needs attention?').fill('Synthetic vibration report');
-  await page.getByLabel('Category').fill('vibration');
-  await page.getByRole('button', { name: 'Save and submit' }).click();
-  await expect(page.getByRole('region', { name: 'Selected request details' }).getByText('submitted', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Convert to draft work order' }).click();
+  const requestsHeader = page.locator('header.page-heading').filter({ has: page.getByRole('heading', { name: 'Requests', exact: true }) });
+  await requestsHeader.getByRole('button', { name: 'New request', exact: true }).click();
+  const requestForm = page.getByRole('region', { name: 'Submit a request' });
+  await requestForm.getByLabel('Asset code').fill('PUMP-SYN-01');
+  await requestForm.getByLabel('What needs attention?').fill('Synthetic vibration report');
+  await requestForm.getByLabel('Category').fill('vibration');
+  await requestForm.getByRole('button', { name: 'Save and submit', exact: true }).click();
+  const requestDetails = page.getByRole('region', { name: 'Selected request details' });
+  await expect(requestDetails.getByText('submitted', { exact: true })).toBeVisible();
+  await requestDetails.getByRole('button', { name: 'Convert to draft work order', exact: true }).click();
   await expect(page.getByText('Draft work order created:')).toBeVisible();
   await primaryNavigation.getByRole('link', { name: 'Work orders', exact: true }).click();
   await expect(page.getByRole('heading', { name: /WO-0001/ })).toBeVisible();
@@ -139,9 +163,10 @@ test('owner onboards with native TOTP, creates maintenance records and invites a
   await expect(page.getByText('Two verified authenticator factors are configured.')).toBeVisible();
 
   await primaryNavigation.getByRole('link', { name: 'Team', exact: true }).click();
-  await page.getByLabel('Email').fill(recipientEmail);
-  await page.getByLabel('Workspace role').selectOption('technician');
-  await page.getByRole('button', { name: 'Request invitation' }).click();
+  const invitationForm = page.getByRole('region', { name: 'Invite a teammate' });
+  await invitationForm.getByLabel('Email').fill(recipientEmail);
+  await invitationForm.getByLabel('Workspace role').selectOption('technician');
+  await invitationForm.getByRole('button', { name: 'Request invitation', exact: true }).click();
   await expect(page.getByText(`Invitation delivery was requested for ${recipientEmail}.`)).toBeVisible();
 
   const invitationUrl = await invitationRedirect(recipientEmail);
