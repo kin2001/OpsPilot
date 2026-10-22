@@ -70,7 +70,56 @@ function recoveryDiagnostic(stderr, input = '') {
     .find(Boolean);
   return { recovery_command_failed: true, sqlstate: match?.[2] ?? null, input_line: line, preceding_ddl: ddl ? `${ddl[1]} ${ddl[2]}` : null, failed_statement: statementClass ? `${statementClass[1]} ${statementClass[2]}`.replace(/\s+/g, ' ').toUpperCase() : fixedStatement, parameter: setting?.[1]?.toLowerCase() ?? null, category };
 }
+function authDiagnostic(raw) {
+  const result = { error_entries: 0, unparsed_lines: 0, sqlstates: {}, categories: {} };
+  for (const line of String(raw).split('\n').filter((value) => value.trim())) {
+    let entry;
+    try { entry = JSON.parse(line); } catch { result.unparsed_lines++; continue; }
+    if (!entry || !['error', 'fatal'].includes(entry.level) || typeof entry.error !== 'string') continue;
+    result.error_entries++;
+    const message = entry.error;
+    for (const state of new Set([...message.matchAll(/SQLSTATE ([A-Z0-9]{5})\b/g)].map((match) => match[1]))) {
+      const key = ['0A000', '42501', '42P01', '42703', '42704', '26000', '25P02', '23502', '22P02', '53300', '57P01', '08006', 'XX000', 'XX001'].includes(state) ? state : 'other';
+      result.sqlstates[key] = (result.sqlstates[key] ?? 0) + 1;
+    }
+    const category = /cached plan must not change result type|cache lookup failed for (?:type|relation)|prepared statement "[^"\r\n]*" (?:does not exist|already exists)/i.test(message) ? 'cached-plan'
+      : /permission denied|must be owner/i.test(message) ? 'permission-denied'
+        : /converting NULL|cannot scan.*NULL/i.test(message) ? 'null-scan'
+          : /(?:relation|column|type).*does not exist/i.test(message) ? 'missing-schema-object'
+            : /connection refused|connection reset|terminating connection|too many connections/i.test(message) ? 'connection'
+              : 'other';
+    result.categories[category] = (result.categories[category] ?? 0) + 1;
+  }
+  return result;
+}
 if (process.argv[2] === '--diagnostics-self-test') {
+  const sensitive = 'synthetic-secret-email@example.test token-DO-NOT-PRINT';
+  const logs = [
+    { level: 'error', error: `ERROR: cached plan must not change result type (SQLSTATE 0A000) ${sensitive}`, email: sensitive },
+    { level: 'error', error: `ERROR: permission denied for table ${sensitive} (SQLSTATE 42501)` },
+    { level: 'error', error: `sql: Scan error: converting NULL to string is unsupported ${sensitive}` },
+    { level: 'error', error: `unrecognized ${sensitive} SQLSTATE ABCDE` },
+    { level: 'info', msg: sensitive },
+  ].map((row) => JSON.stringify(row)).join('\n');
+  assert.deepEqual(authDiagnostic(`${logs}\n${sensitive}`), {
+    error_entries: 4, unparsed_lines: 1,
+    sqlstates: { '0A000': 1, '42501': 1, other: 1 },
+    categories: { 'cached-plan': 1, 'permission-denied': 1, 'null-scan': 1, other: 1 },
+  });
+  assert(!JSON.stringify(authDiagnostic(logs)).includes(sensitive));
+  assert.deepEqual(authDiagnostic(''), { error_entries: 0, unparsed_lines: 0, sqlstates: {}, categories: {} });
+  for (const [message, category, state] of [
+    ['cache lookup failed for type', 'cached-plan', 'XX000'],
+    ['failed to close prepared statement: ERROR: permission denied for table', 'permission-denied', '42501'],
+    ['failed to close prepared statement: ERROR: relation does not exist', 'missing-schema-object', '42P01'],
+    ['prepared statement "synthetic" does not exist', 'cached-plan', '26000'],
+    ['relation does not exist', 'missing-schema-object', '42P01'],
+    ['connection refused', 'connection', '08006'],
+  ]) {
+    assert.deepEqual(authDiagnostic(JSON.stringify({ level: 'error', error: `${message} ${sensitive} (SQLSTATE ${state})` })), {
+      error_entries: 1, unparsed_lines: 0, sqlstates: { [state]: 1 }, categories: { [category]: 1 },
+    });
+  }
   const base = { schema: 'public', name: 'synthetic_relation', kind: 'r', owner: 10, defaults: [[10, 10, 'SELECT', false], [10, 10, 'UPDATE', false]], grants: null };
   const original = canonicalPermissions([base]);
   assertPermissionsEqual(original, canonicalPermissions([{ ...base, grants: [...base.defaults].reverse() }]));
@@ -103,6 +152,9 @@ if (process.argv[2] === '--diagnostics-self-test') {
   }
   const owned = [{ Config: { Labels: { 'com.supabase.cli.project': 'opspilot-t1' } }, NetworkSettings: { Networks: { 'synthetic-job': {} }, Ports: { db: [{ HostIp: '127.0.0.1' }] } } }];
   const bound = { Name: 'synthetic-job', Options: { 'com.docker.network.bridge.host_binding_ipv4': '127.0.0.1' } };
+  assert.throws(() => assertRestoreBinding([{ ...owned[0], Config: { Labels: { 'com.supabase.cli.project': 'another-project' } } }], bound, 'synthetic-job'));
+  assert.throws(() => assertRestoreBinding([{ ...owned[0], NetworkSettings: { ...owned[0].NetworkSettings, Ports: { auth: [{ HostIp: '0.0.0.0' }] } } }], bound, 'synthetic-job'));
+  assert.throws(() => assertRestoreBinding(owned, { ...bound, Name: 'another-job' }, 'synthetic-job'));
   assertRestoreAuthority(owned, bound, 'synthetic-job', { expected_identity: true, superuser: true });
   assert.throws(() => assertRestoreAuthority(owned, bound, 'synthetic-job', { expected_identity: true, superuser: false }));
   assert.throws(() => assertRestoreAuthority(owned, bound, 'missing-job', { expected_identity: true, superuser: true }));
@@ -130,6 +182,16 @@ for (const bindings of Object.values(inventory[0].NetworkSettings.Ports)) for (c
 function sql(statement, operator = 'postgres') {
   assert(['postgres', 'supabase_admin'].includes(operator));
   return execute(['exec', '-i', container, 'psql', '-X', '-U', operator, '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-v', 'VERBOSITY=verbose', '-v', 'SHOW_CONTEXT=never', '-v', 'ECHO=none', '-q', '-At', '--file=-'], statement);
+}
+function reportAuthFailure(since, phase) {
+  try {
+    // Collect only this job's bound Auth container; raw provider text never leaves process memory.
+    assertRestoreBinding(JSON.parse(execute(['inspect', 'supabase_auth_opspilot-t1'])), JSON.parse(execute(['network', 'inspect', network]))[0], network);
+    const logs = spawnSync('docker', ['logs', '--since', since, '--tail', '40', 'supabase_auth_opspilot-t1'], { encoding: 'utf8', timeout: 10000, maxBuffer: 128 * 1024 });
+    console.error(JSON.stringify({ recovery_auth_diagnostic: { phase, collection_complete: logs.status === 0, ...authDiagnostic(`${logs.stdout ?? ''}\n${logs.stderr ?? ''}`) } }));
+  } catch {
+    console.error(JSON.stringify({ recovery_auth_diagnostic: { phase, collection_complete: false } }));
+  }
 }
 const providerFlags = JSON.parse(sql("select json_build_object('server_version_num',current_setting('server_version_num')::integer,'postgres_superuser',(select rolsuper from pg_roles where rolname='postgres'),'postgres_login',(select rolcanlogin from pg_roles where rolname='postgres'),'provider_admin_superuser',(select rolsuper from pg_roles where rolname='supabase_admin'),'provider_admin_login',(select rolcanlogin from pg_roles where rolname='supabase_admin'));"));
 assert(Number.isInteger(providerFlags.server_version_num));
@@ -241,8 +303,14 @@ try { writeFileSync(configCopy, 'Synthetic deliberate configuration loss'); writ
 assert.equal(createHash('sha256').update(readFileSync('supabase/config.toml')).digest('hex'), configChecksum);
 assert.deepEqual(await (await fetch(`${url}/auth/v1/settings`, { headers: { apikey: anon }, cache: 'no-store' })).json(), authConfig);
 const fresh = createClient(url, anon, options);
-assert.equal((await fresh.auth.signInWithPassword({ email: people[0].email, password: people[0].password })).error, null);
-assert.equal((await fresh.auth.refreshSession()).error, null);
+const signInSince = new Date().toISOString();
+const signedIn = await fresh.auth.signInWithPassword({ email: people[0].email, password: people[0].password });
+if (signedIn.error) reportAuthFailure(signInSince, 'fresh-sign-in');
+assert(!signedIn.error, 'Fresh restored Auth sign-in failed; provider details withheld');
+const refreshSince = new Date().toISOString();
+const refreshed = await fresh.auth.refreshSession();
+if (refreshed.error) reportAuthFailure(refreshSince, 'fresh-refresh');
+assert(!refreshed.error, 'Fresh restored Auth refresh failed; provider details withheld');
 const currentDownload = await fresh.storage.from('repair-evidence').download(item.object_key); assert.equal(currentDownload.error, null);
 assert.equal(createHash('sha256').update(Buffer.from(await currentDownload.data.arrayBuffer())).digest('hex'), createHash('sha256').update(bytes).digest('hex'));
 assert.deepEqual((await owner.rpc('save_asset', args)).data, committed.data);
