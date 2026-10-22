@@ -220,7 +220,7 @@ assertRestoreAuthority(restoreInventory, restoreNetwork, network, restoreIdentit
 // Suppress only the restore operator's extra public API defaults; the dump restores the original future-grant policy.
 sql(`BEGIN;
 ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin IN SCHEMA public REVOKE ALL ON TABLES FROM anon, authenticated;
-ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin IN SCHEMA public REVOKE ALL ON FUNCTIONS FROM anon, authenticated;
+ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin IN SCHEMA public REVOKE ALL ON FUNCTIONS FROM anon, authenticated, service_role;
 ${dump}
 COMMIT;`, 'supabase_admin');
 const restoredRawChecksum = owners(); const restoredPermissions = permissions(); const restoredDefaults = defaultPermissions();
