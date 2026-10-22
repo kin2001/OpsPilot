@@ -92,6 +92,20 @@ function authDiagnostic(raw) {
   }
   return result;
 }
+function authRestartTarget(inventory, networkInfo, network) {
+  assertRestoreBinding(inventory, networkInfo, network);
+  assert.equal(inventory[0].Name, '/supabase_auth_opspilot-t1', 'Unexpected Auth service');
+  assert(/^[a-f0-9]{64}$/.test(inventory[0].Id), 'Immutable Auth container identity unavailable');
+  return inventory[0].Id;
+}
+async function waitForAuth(check, pause) {
+  const deadline = performance.now() + 30000;
+  for (let attempt = 0; attempt < 20 && performance.now() < deadline; attempt++) {
+    try { if (await check(Math.max(1, Math.ceil(deadline - performance.now()))) && performance.now() <= deadline) return; } catch { /* A starting service may refuse connections. */ }
+    if (attempt < 19 && performance.now() < deadline) await pause(Math.min(500, Math.max(1, Math.ceil(deadline - performance.now()))));
+  }
+  assert.fail('Auth readiness failed within the bounded recovery window');
+}
 if (process.argv[2] === '--diagnostics-self-test') {
   const sensitive = 'synthetic-secret-email@example.test token-DO-NOT-PRINT';
   const logs = [
@@ -152,6 +166,20 @@ if (process.argv[2] === '--diagnostics-self-test') {
   }
   const owned = [{ Config: { Labels: { 'com.supabase.cli.project': 'opspilot-t1' } }, NetworkSettings: { Networks: { 'synthetic-job': {} }, Ports: { db: [{ HostIp: '127.0.0.1' }] } } }];
   const bound = { Name: 'synthetic-job', Options: { 'com.docker.network.bridge.host_binding_ipv4': '127.0.0.1' } };
+  const auth = [{ ...owned[0], Id: 'a'.repeat(64), Name: '/supabase_auth_opspilot-t1' }];
+  assert.equal(authRestartTarget(auth, bound, 'synthetic-job'), 'a'.repeat(64));
+  for (const changed of [
+    { ...auth[0], Name: '/supabase_db_opspilot-t1' },
+    { ...auth[0], Id: 'invalid-container-id' },
+    { ...auth[0], Config: { Labels: { 'com.supabase.cli.project': 'another-project' } } },
+  ]) assert.throws(() => authRestartTarget([changed], bound, 'synthetic-job'));
+  assert.throws(() => authRestartTarget(auth, bound, 'another-job'));
+  let probes = 0; let pauses = 0;
+  await waitForAuth(async () => { probes++; if (probes === 1) throw new Error('synthetic unavailable'); return probes === 3; }, async () => { pauses++; });
+  assert.equal(probes, 3); assert.equal(pauses, 2);
+  probes = 0; pauses = 0;
+  await assert.rejects(waitForAuth(async () => { probes++; return false; }, async () => { pauses++; }), /Auth readiness failed/);
+  assert.equal(probes, 20); assert.equal(pauses, 19);
   assert.throws(() => assertRestoreBinding([{ ...owned[0], Config: { Labels: { 'com.supabase.cli.project': 'another-project' } } }], bound, 'synthetic-job'));
   assert.throws(() => assertRestoreBinding([{ ...owned[0], NetworkSettings: { ...owned[0].NetworkSettings, Ports: { auth: [{ HostIp: '0.0.0.0' }] } } }], bound, 'synthetic-job'));
   assert.throws(() => assertRestoreBinding(owned, { ...bound, Name: 'another-job' }, 'synthetic-job'));
@@ -167,8 +195,8 @@ const run = process.env.GITHUB_RUN_ID; const attempt = process.env.GITHUB_RUN_AT
 assert(process.env.CI === 'true' && /^\d+$/.test(run ?? '') && /^\d+$/.test(attempt ?? ''), 'Recovery requires an actual isolated CI job');
 assert(url === 'http://127.0.0.1:54321' && anon && service, 'Unexpected recovery target');
 const network = `por23-${run}-${attempt}`; const container = 'supabase_db_opspilot-t1';
-function execute(args, input) {
-  const result = spawnSync('docker', args, { input, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+function execute(args, input, timeout) {
+  const result = spawnSync('docker', args, { input, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout });
   if (result.status !== 0 && args.includes('psql')) console.error(JSON.stringify(recoveryDiagnostic(result.stderr, input)));
   assert.equal(result.status, 0, 'Job-owned recovery command failed; output withheld'); return result.stdout;
 }
@@ -186,7 +214,7 @@ function sql(statement, operator = 'postgres') {
 function reportAuthFailure(since, phase) {
   try {
     // Collect only this job's bound Auth container; raw provider text never leaves process memory.
-    assertRestoreBinding(JSON.parse(execute(['inspect', 'supabase_auth_opspilot-t1'])), JSON.parse(execute(['network', 'inspect', network]))[0], network);
+    assertRestoreBinding(JSON.parse(execute(['inspect', 'supabase_auth_opspilot-t1'], undefined, 10000)), JSON.parse(execute(['network', 'inspect', network], undefined, 10000))[0], network);
     const logs = spawnSync('docker', ['logs', '--since', since, '--tail', '40', 'supabase_auth_opspilot-t1'], { encoding: 'utf8', timeout: 10000, maxBuffer: 128 * 1024 });
     console.error(JSON.stringify({ recovery_auth_diagnostic: { phase, collection_complete: logs.status === 0, ...authDiagnostic(`${logs.stdout ?? ''}\n${logs.stderr ?? ''}`) } }));
   } catch {
@@ -291,6 +319,22 @@ console.log(JSON.stringify({ recovery_permission_comparison: permissionDifferenc
 assertPermissionsEqual(originalPermissions, restoredPermissions);
 assertPermissionsEqual(originalDefaults, restoredDefaults);
 sql(`update public.organization_members set active=false,version=version+1 where organization_id='${org}' and user_id='${revokedUser}';`);
+// Full schema recreation invalidates Auth's pooled prepared results; reconcile revocations before reconnecting.
+const authBinding = () => authRestartTarget(JSON.parse(execute(['inspect', 'supabase_auth_opspilot-t1'], undefined, 10000)), JSON.parse(execute(['network', 'inspect', network], undefined, 10000))[0], network);
+const authContainer = authBinding();
+const restartSince = new Date().toISOString();
+execute(['restart', '--timeout', '10', authContainer], undefined, 30000);
+try {
+  await waitForAuth(async (remaining) => (await fetch(`${url}/auth/v1/health`, { headers: { apikey: anon }, cache: 'no-store', signal: AbortSignal.timeout(Math.min(2000, remaining)) })).ok, (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+} catch {
+  reportAuthFailure(restartSince, 'restart-readiness');
+  assert.fail('Restored Auth service readiness failed; provider details withheld');
+}
+assert.equal(authBinding(), authContainer, 'Auth container changed during recovery');
+// Auth startup can run provider migrations; retain the same owner/grant/default policy gate afterward.
+assertPermissionsEqual(originalPermissions, permissions());
+assertPermissionsEqual(originalDefaults, defaultPermissions());
+console.log(JSON.stringify({ recovery_auth_restarted: true, auth_readiness_verified: true, post_startup_permissions_preserved: true }));
 for (const row of objectSnapshot) {
   assert.equal((await admin.storage.from('repair-evidence').upload(row.object_key, row.bytes, { contentType: row.media_type, cacheControl: '0', upsert: true })).error, null);
   const restored = await owner.storage.from('repair-evidence').download(row.object_key);
