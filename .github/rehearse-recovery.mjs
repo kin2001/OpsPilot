@@ -13,7 +13,7 @@ function canonicalPermissions(rows) {
 }
 function permissionDifferences(before, after) {
   const old = new Map(before.map((row) => [row.key, row])); const current = new Map(after.map((row) => [row.key, row]));
-  return ['public', 'auth', 'storage'].map((schema) => {
+  return ['public', 'private', 'auth', 'storage'].map((schema) => {
     const counts = { schema, objects_added: 0, objects_removed: 0, owners_changed: 0, grants_added: 0, grants_removed: 0 };
     for (const row of before.filter((item) => item.schema === schema)) {
       const next = current.get(row.key);
@@ -27,7 +27,7 @@ function permissionDifferences(before, after) {
   });
 }
 function assertPermissionsEqual(before, after) {
-  assert(JSON.stringify(before) === JSON.stringify(after), 'Provider relation owner or canonical ACL changed during restore; raw metadata withheld');
+  assert(JSON.stringify(before) === JSON.stringify(after), 'Provider object owner or canonical ACL changed during restore; raw metadata withheld');
 }
 function assertRestoreBinding(inventory, networkInfo, network) {
   assert.equal(inventory.length, 1, 'Expected exactly one job-owned database');
@@ -80,9 +80,14 @@ if (process.argv[2] === '--diagnostics-self-test') {
     { ...base, grants: [[10, 11, 'SELECT', false], base.defaults[1]] },
     { ...base, grants: [[10, 10, 'SELECT', true], base.defaults[1]] },
     { ...base, name: 'different_relation' },
+    { ...base, kind: 'function' },
   ]) assert.throws(() => assertPermissionsEqual(original, canonicalPermissions([changed])));
   assert.throws(() => assertPermissionsEqual(original, canonicalPermissions([])));
   assert.equal(permissionDifferences(original, canonicalPermissions([{ ...base, owner: 11 }]))[0].owners_changed, 1);
+  const defaultPolicy = { schema: 'public', name: '10', kind: 'f', owner: 10, grants: [[10, 20, 'EXECUTE', false]] };
+  const expectedDefaults = canonicalPermissions([defaultPolicy]);
+  assert.throws(() => assertPermissionsEqual(expectedDefaults, canonicalPermissions([{ ...defaultPolicy, schema: 'global' }])));
+  assert.throws(() => assertPermissionsEqual(expectedDefaults, canonicalPermissions([{ ...defaultPolicy, kind: 'r' }])));
   const secret = 'synthetic-secret-DO-NOT-PRINT';
   const diagnostic = recoveryDiagnostic(`psql:<stdin>:2: ERROR: 42501\nDETAIL: ${secret}`, `DROP TABLE public.fixture;\n${secret}`);
   assert.deepEqual(diagnostic, { recovery_command_failed: true, sqlstate: '42501', input_line: 2, preceding_ddl: 'DROP TABLE', failed_statement: null, parameter: null, category: 'other' });
@@ -161,14 +166,32 @@ assert.equal((await revoked.storage.from('repair-evidence').download(item.object
 // Snapshot bytes, Auth, schema/data, receipts and non-secret source configuration. Nothing is written as a dump/artifact.
 const owners = () => sql("select md5(string_agg(n.nspname||'.'||c.relname||':'||c.relowner::text||':'||coalesce(c.relacl::text,''),'|' order by n.nspname,c.relname)) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname in ('public','auth','storage') and c.relkind in ('r','v','m','S');").trim();
 const permissions = () => canonicalPermissions(JSON.parse(sql(`
- select coalesce(jsonb_agg(jsonb_build_object('schema',n.nspname,'name',c.relname,'kind',c.relkind,'owner',c.relowner,
- 'grants',case when c.relacl is null then null else (select coalesce(jsonb_agg(tuple order by tuple),'[]'::jsonb) from (select distinct jsonb_build_array(a.grantor,a.grantee,a.privilege_type,a.is_grantable) tuple from aclexplode(c.relacl) a) explicit_grants) end,
- 'defaults',(select coalesce(jsonb_agg(tuple order by tuple),'[]'::jsonb) from (select distinct jsonb_build_array(a.grantor,a.grantee,a.privilege_type,a.is_grantable) tuple from aclexplode(acldefault(case when c.relkind='S' then 's'::"char" else 'r'::"char" end,c.relowner)) a) builtin_grants)
- ) order by n.nspname,c.relname,c.relkind),'[]'::jsonb)
- from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname in ('public','auth','storage') and c.relkind in ('r','v','m','S');
+ SET search_path=pg_catalog;
+ with objects as (
+  select n.nspname as schema,c.relname::text as name,c.relkind::text as kind,c.relowner as owner,c.relacl as acl,
+   case when c.relkind='S' then 's'::"char" else 'r'::"char" end as default_kind
+  from pg_class c join pg_namespace n on n.oid=c.relnamespace where c.relkind in ('r','v','m','S')
+  union all
+  select n.nspname,p.proname||'('||pg_get_function_identity_arguments(p.oid)||')','function',p.proowner,p.proacl,'f'::"char"
+  from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+  union all
+  select n.nspname,jsonb_build_array(c.relname,a.attname)::text,'column',c.relowner,a.attacl,null::"char"
+  from pg_attribute a join pg_class c on c.oid=a.attrelid join pg_namespace n on n.oid=c.relnamespace
+  where a.attnum>0 and not a.attisdropped and a.attacl is not null
+ )
+ select coalesce(jsonb_agg(jsonb_build_object('schema',o.schema,'name',o.name,'kind',o.kind,'owner',o.owner,
+ 'grants',(select coalesce(jsonb_agg(tuple order by tuple),'[]'::jsonb) from (select distinct jsonb_build_array(a.grantor,a.grantee,a.privilege_type,a.is_grantable) tuple from aclexplode(coalesce(o.acl,acldefault(o.default_kind,o.owner))) a) grants)
+ ) order by o.schema,o.name,o.kind),'[]'::jsonb)
+ from objects o where o.schema in ('public','private','auth','storage');
+ `)));
+const defaultPermissions = () => canonicalPermissions(JSON.parse(sql(`
+ select coalesce(jsonb_agg(jsonb_build_object('schema',coalesce(n.nspname,'global'),'name',d.defaclrole::text,'kind',d.defaclobjtype,'owner',d.defaclrole,
+ 'grants',(select coalesce(jsonb_agg(tuple order by tuple),'[]'::jsonb) from (select distinct jsonb_build_array(a.grantor,a.grantee,a.privilege_type,a.is_grantable) tuple from aclexplode(d.defaclacl) a) grants)
+ ) order by d.defaclrole,n.nspname,d.defaclobjtype),'[]'::jsonb)
+ from pg_default_acl d left join pg_namespace n on n.oid=d.defaclnamespace;
  `)));
 const ownerChecksum = owners();
-const originalPermissions = permissions();
+const originalPermissions = permissions(); const originalDefaults = defaultPermissions();
 const authConfig = await (await fetch(`${url}/auth/v1/settings`, { headers: { apikey: anon }, cache: 'no-store' })).json();
 // Restore in the same cluster with its existing provider roles: retain owners and ACLs.
 const dump = execute(['exec', container, 'pg_dump', '-U', 'postgres', '-d', 'postgres', '--clean', '--if-exists']);
@@ -194,11 +217,17 @@ const restoreNetwork = JSON.parse(execute(['network', 'inspect', network]))[0];
 assertRestoreBinding(restoreInventory, restoreNetwork, network);
 const restoreIdentity = JSON.parse(sql("select json_build_object('expected_identity',current_user='supabase_admin','superuser',(select rolsuper from pg_roles where rolname=current_user));", 'supabase_admin'));
 assertRestoreAuthority(restoreInventory, restoreNetwork, network, restoreIdentity);
-sql(dump, 'supabase_admin');
-const restoredRawChecksum = owners(); const restoredPermissions = permissions();
+// Suppress only the restore operator's extra public API defaults; the dump restores the original future-grant policy.
+sql(`BEGIN;
+ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin IN SCHEMA public REVOKE ALL ON TABLES FROM anon, authenticated;
+ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin IN SCHEMA public REVOKE ALL ON FUNCTIONS FROM anon, authenticated;
+${dump}
+COMMIT;`, 'supabase_admin');
+const restoredRawChecksum = owners(); const restoredPermissions = permissions(); const restoredDefaults = defaultPermissions();
 const canonicalHash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-console.log(JSON.stringify({ recovery_permission_comparison: permissionDifferences(originalPermissions, restoredPermissions), original_canonical_sha256: canonicalHash(originalPermissions), restored_canonical_sha256: canonicalHash(restoredPermissions), original_raw_fingerprint: ownerChecksum, restored_raw_fingerprint: restoredRawChecksum, representation_only: ownerChecksum !== restoredRawChecksum && JSON.stringify(originalPermissions) === JSON.stringify(restoredPermissions) }));
+console.log(JSON.stringify({ recovery_permission_comparison: permissionDifferences(originalPermissions, restoredPermissions), default_acl_restored: JSON.stringify(originalDefaults) === JSON.stringify(restoredDefaults), original_canonical_sha256: canonicalHash(originalPermissions), restored_canonical_sha256: canonicalHash(restoredPermissions), original_raw_fingerprint: ownerChecksum, restored_raw_fingerprint: restoredRawChecksum, representation_only: ownerChecksum !== restoredRawChecksum && JSON.stringify(originalPermissions) === JSON.stringify(restoredPermissions) }));
 assertPermissionsEqual(originalPermissions, restoredPermissions);
+assertPermissionsEqual(originalDefaults, restoredDefaults);
 sql(`update public.organization_members set active=false,version=version+1 where organization_id='${org}' and user_id='${revokedUser}';`);
 for (const row of objectSnapshot) {
   assert.equal((await admin.storage.from('repair-evidence').upload(row.object_key, row.bytes, { contentType: row.media_type, cacheControl: '0', upsert: true })).error, null);
