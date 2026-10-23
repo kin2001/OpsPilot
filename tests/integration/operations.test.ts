@@ -57,6 +57,54 @@ beforeAll(async () => {
 });
 
 describe('real T2 operational authorization and safety', () => {
+  it('requires a current eligible assignment before starts and resumes without changing denied work or successful receipts', async () => {
+    const assetId = await asset(); let work = await job(assetId);
+    work = await transition('owner', work, 'open');
+    async function snapshot() {
+      const state: Record<string, unknown> = { asset: await assetRow(assetId) };
+      for (const table of ['work_orders', 'work_order_events', 'work_order_participants', 'asset_holds', 'notifications', 'audit_logs']) {
+        const column = table === 'work_orders' ? 'id' : table === 'notifications' ? 'source_id' : table === 'audit_logs' ? 'entity_id' : 'work_order_id';
+        const rows = await admin.from(table).select('*').eq('organization_id', org).eq(column, work.id);
+        expect(rows.error).toBeNull(); state[table] = rows.data;
+      }
+      return state;
+    }
+    async function denied() {
+      const before = await snapshot(); const request = ctx(work.version);
+      expect((await people.owner.client.rpc('transition_work_order', { ctx: request, id: work.id, target: 'in_progress', reason: 'Synthetic start' })).error?.message).toBe('INVALID_TRANSITION');
+      expect(await snapshot()).toEqual(before);
+      sql(`do $$ begin if exists(select 1 from private.command_receipts where organization_id='${org}' and actor_id='${people.owner.id}' and request_id='${request.request_id}') then raise exception 'Denied start recorded a receipt'; end if; end $$;`);
+    }
+    await denied();
+    work = await transition('owner', work, 'scheduled'); await denied();
+    work = await command('owner', 'assign_work_order', { ctx: ctx(work.version), id: work.id, user_ids: [people.performer.id] });
+    work = await command('owner', 'assign_work_order', { ctx: ctx(work.version), id: work.id, user_ids: [] }); await denied();
+    work = await command('owner', 'assign_work_order', { ctx: ctx(work.version), id: work.id, user_ids: [people.performer.id] });
+    for (const [change, restore] of [
+      ["active=false", "active=true"], ["role='inventory'", "role='technician'"],
+    ]) {
+      sql(`update public.organization_members set ${change} where organization_id='${org}' and user_id='${people.performer.id}';`);
+      try { await denied(); } finally { sql(`update public.organization_members set ${restore} where organization_id='${org}' and user_id='${people.performer.id}';`); }
+    }
+    sql(`update auth.users set banned_until=now()+interval '1 hour' where id='${people.performer.id}';`);
+    try { await denied(); } finally { sql(`update auth.users set banned_until=null where id='${people.performer.id}';`); }
+    sql(`update auth.users set email_confirmed_at=null where id='${people.performer.id}';`);
+    try { await denied(); } finally { sql(`update auth.users set email_confirmed_at=now() where id='${people.performer.id}';`); }
+    sql(`update auth.users set deleted_at=now() where id='${people.performer.id}';`);
+    try { await denied(); } finally { sql(`update auth.users set deleted_at=null where id='${people.performer.id}';`); }
+    const beforeWrongTenant = await snapshot();
+    expect((await people.outsider.client.rpc('transition_work_order', { ctx: { ...ctx(work.version), organization_id: otherOrg }, id: work.id, target: 'in_progress', reason: 'Wrong tenant' })).error?.message).toBe('FORBIDDEN');
+    expect(await snapshot()).toEqual(beforeWrongTenant);
+    const args = { ctx: ctx(work.version), id: work.id, target: 'in_progress', reason: 'Synthetic start' };
+    const started = await people.owner.client.rpc('transition_work_order', args); expect(started.error).toBeNull(); work = started.data.data;
+    work = await command('owner', 'assign_work_order', { ctx: ctx(work.version), id: work.id, user_ids: [] });
+    const beforeReplay = await snapshot(); const replay = await people.owner.client.rpc('transition_work_order', args);
+    expect(replay.error).toBeNull(); expect(replay.data).toEqual(started.data); expect(await snapshot()).toEqual(beforeReplay);
+    work = await transition('owner', work, 'blocked'); await denied();
+    work = await command('owner', 'assign_work_order', { ctx: ctx(work.version), id: work.id, user_ids: [people.performer.id] });
+    expect((await people.performer.client.rpc('transition_work_order', { ctx: ctx(work.version), id: work.id, target: 'in_progress', reason: 'Cannot resume' })).error?.message).toBe('FORBIDDEN');
+    work = await transition('owner', work, 'in_progress'); expect(work.status).toBe('in_progress');
+  });
   it('keeps strict T1 responses and recorded receipts compatible after additive columns', async () => {
     const requestId = randomUUID(); const fields = { code: randomUUID(), name: 'Legacy shape', category: 'pump' };
     const first = await saveAsset(people.owner.client, org, fields, requestId);
@@ -85,6 +133,10 @@ describe('real T2 operational authorization and safety', () => {
     const current = await assetRow(assetId);
     expect((await people.performer.client.rpc('release_asset', { ctx: ctx(current.version), asset_id: assetId, acknowledgment: 'Cannot self release' })).error?.message).toBe('FORBIDDEN');
     await command('reviewer', 'release_asset', { ctx: ctx(current.version), asset_id: assetId, acknowledgment: 'Synthetic procedure acknowledged' }); expect((await assetRow(assetId)).availability).toBe('operational');
+    const beforeReopen = work;
+    expect((await people.reviewer.client.rpc('transition_work_order', { ctx: ctx(work.version), id: work.id, target: 'in_progress', reason: 'Reopen requires assignment' })).error?.message).toBe('INVALID_TRANSITION');
+    expect((await people.owner.client.from('work_orders').select('*').eq('id', work.id).single()).data).toEqual(beforeReopen);
+    work = await command('owner', 'assign_work_order', { ctx: ctx(work.version), id: work.id, user_ids: [people.performer.id] });
     work = await transition('reviewer', work, 'in_progress'); expect((await assetRow(assetId)).availability).toBe('under_maintenance'); expect(work.completed_at).toBeNull();
     sql(`update public.organization_members set role='technician' where organization_id='${org}' and user_id='${people.performer.id}';`);
   });
@@ -128,7 +180,9 @@ describe('real T2 operational authorization and safety', () => {
     expect((await downgraded.rpc('save_organization_settings', { ctx: request, fields })).error?.message).toBe('FORBIDDEN');
     expect((await people.outsider.client.rpc('get_dashboard', { organization_id: org, range: { from: '2026-10-01', to: '2026-10-22' } })).error?.message).toBe('FORBIDDEN');
     expect((await people.owner.client.rpc('get_team', { organization_id: otherOrg })).error?.message).toBe('FORBIDDEN');
-    let work = await job(await asset()); work = await transition('owner', work, 'open'); work = await transition('owner', work, 'in_progress');
+    let work = await job(await asset());
+    work = await command('owner', 'assign_work_order', { ctx: ctx(work.version), id: work.id, user_ids: [people.owner.id] });
+    work = await transition('owner', work, 'open'); work = await transition('owner', work, 'in_progress');
     const args = { ctx: ctx(work.version), id: work.id, allowed_fields: { note: 'Durable single note' } };
     const results = await Promise.all(Array.from({ length: 10 }, () => people.owner.client.rpc('update_work_order', args)));
     expect(results.every((result) => !result.error)).toBe(true); expect(new Set(results.map((result) => result.data.version)).size).toBe(1);
