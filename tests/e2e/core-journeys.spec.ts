@@ -611,7 +611,7 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   await ownerPage.goto(`/assets?asset=${assetId}`);
   await expect(finalAsset.getByText('operational', { exact: true }).first()).toBeVisible();
   const meterReadings = finalOperations.getByRole('region', { name: 'Meter readings', exact: true });
-  await finalOperations.getByLabel('Reading').fill('125');
+  await finalOperations.getByLabel('Reading', { exact: true }).fill('125');
   await finalOperations.getByLabel('Observed at').fill(new Date(Date.now() - 60_000).toISOString().slice(0, 16));
   await finalOperations.getByRole('button', { name: 'Record meter reading' }).click();
   await expect(meterReadings.getByText('125 hours', { exact: true })).toBeVisible();
