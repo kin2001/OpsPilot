@@ -3,24 +3,64 @@ import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { createClient } from '@supabase/supabase-js';
 
+// Same bounded read-only health gate as the restore rehearsal; never retry user creation.
+async function waitForAuth(check, pause) {
+  const deadline = performance.now() + 30000;
+  for (let attempt = 0; attempt < 20 && performance.now() < deadline; attempt++) {
+    try { if (await check(Math.max(1, Math.ceil(deadline - performance.now()))) && performance.now() <= deadline) return; } catch { /* A starting service may refuse connections. */ }
+    if (attempt < 19 && performance.now() < deadline) await pause(Math.min(500, Math.max(1, Math.ceil(deadline - performance.now()))));
+  }
+  assert.fail('Auth readiness failed within the bounded upgrade window');
+}
+function assertServiceBinding(inventory, networkInfo, network, serviceName) {
+  assert.equal(inventory.Name, `/${serviceName}`);
+  assert.equal(inventory.Config.Labels['com.supabase.cli.project'], 'opspilot-t1');
+  assert(Object.hasOwn(inventory.NetworkSettings.Networks, network));
+  assert.equal(networkInfo.Options['com.docker.network.bridge.host_binding_ipv4'], '127.0.0.1');
+  for (const bindings of Object.values(inventory.NetworkSettings.Ports)) for (const binding of bindings ?? []) assert(['127.0.0.1', '::1'].includes(binding.HostIp));
+  assert(/^[a-f0-9]{64}$/.test(inventory.Id), 'Immutable service identity unavailable');
+  return inventory.Id;
+}
+if (process.argv[2] === '--readiness-self-test') {
+  let probes = 0; let pauses = 0;
+  await waitForAuth(async () => { probes++; if (probes === 1) throw new Error('Synthetic refusal'); return probes === 3; }, async () => { pauses++; });
+  assert.equal(probes, 3); assert.equal(pauses, 2);
+  probes = 0; pauses = 0;
+  await assert.rejects(waitForAuth(async () => { probes++; return false; }, async () => { pauses++; }), /Auth readiness failed/);
+  assert.equal(probes, 20); assert.equal(pauses, 19);
+  const owned = { Id: 'a'.repeat(64), Name: '/supabase_auth_opspilot-t1', Config: { Labels: { 'com.supabase.cli.project': 'opspilot-t1' } }, NetworkSettings: { Networks: { 'synthetic-job': {} }, Ports: {} } };
+  const bound = { Options: { 'com.docker.network.bridge.host_binding_ipv4': '127.0.0.1' } };
+  assert.equal(assertServiceBinding(owned, bound, 'synthetic-job', 'supabase_auth_opspilot-t1'), owned.Id);
+  probes = 0;
+  await assert.rejects(async () => { assertServiceBinding(owned, bound, 'wrong-job', 'supabase_auth_opspilot-t1'); await waitForAuth(async () => { probes++; return true; }, async () => {}); });
+  assert.equal(probes, 0);
+  assert.throws(() => assertServiceBinding({ ...owned, NetworkSettings: { ...owned.NetworkSettings, Ports: { '9999/tcp': [{ HostIp: '0.0.0.0' }] } } }, bound, 'synthetic-job', 'supabase_auth_opspilot-t1'));
+  console.log(JSON.stringify({ auth_readiness_self_test: true, transient_refusal: true, bounded_failure: true, wrong_binding_no_probe: true }));
+  process.exit(0);
+}
 const url = process.env.TEST_SUPABASE_URL; const anon = process.env.TEST_SUPABASE_ANON_KEY; const service = process.env.TEST_SUPABASE_SERVICE_KEY;
 const run = process.env.GITHUB_RUN_ID; const attempt = process.env.GITHUB_RUN_ATTEMPT; const container = 'supabase_db_opspilot-t1';
 assert(process.env.CI === 'true' && /^\d+$/.test(run ?? '') && /^\d+$/.test(attempt ?? '') && url === 'http://127.0.0.1:54321' && anon && service, 'Actual isolated CI required');
 const network = `por23-${run}-${attempt}`;
-function execute(command, args, input) {
-  const result = spawnSync(command, args, { input, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+function execute(command, args, input, timeout) {
+  const result = spawnSync(command, args, { input, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, timeout });
   assert.equal(result.status, 0, 'Isolated upgrade command failed; raw output withheld'); return result.stdout;
 }
-function assertOwned() {
-  const inventory = JSON.parse(execute('docker', ['inspect', container]))[0];
-  assert.equal(inventory.Config.Labels['com.supabase.cli.project'], 'opspilot-t1'); assert(Object.hasOwn(inventory.NetworkSettings.Networks, network));
-  assert.equal(JSON.parse(execute('docker', ['network', 'inspect', network]))[0].Options['com.docker.network.bridge.host_binding_ipv4'], '127.0.0.1');
-  for (const bindings of Object.values(inventory.NetworkSettings.Ports)) for (const binding of bindings ?? []) assert(['127.0.0.1', '::1'].includes(binding.HostIp));
+function assertOwned(serviceName = container) {
+  const inventory = JSON.parse(execute('docker', ['inspect', serviceName], undefined, 10000))[0];
+  const networkInfo = JSON.parse(execute('docker', ['network', 'inspect', network], undefined, 10000))[0];
+  return assertServiceBinding(inventory, networkInfo, network, serviceName);
+}
+async function requireAuthReady() {
+  const authContainer = assertOwned('supabase_auth_opspilot-t1');
+  await waitForAuth(async (remaining) => (await fetch(`${url}/auth/v1/health`, { headers: { apikey: anon }, cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(Math.min(2000, remaining)) })).ok, (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  assert.equal(assertOwned('supabase_auth_opspilot-t1'), authContainer, 'Auth container changed during readiness');
 }
 assertOwned();
 function sql(statement) { return execute('docker', ['exec', '-i', container, 'psql', '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-q', '-At'], statement); }
 execute('npm', ['exec', '--no', '--', 'supabase', 'db', 'reset', '--local', '--version', '20261021000100', '--network-id', network]);
 assertOwned();
+await requireAuthReady();
 // Upgrade only this positively verified stack; the normal clean reset follows this rehearsal.
 assert.equal(sql("select count(*) from information_schema.columns where table_schema='public' and table_name='assets' and column_name='availability';").trim(), '0');
 const options = { auth: { persistSession: false, autoRefreshToken: false } };
@@ -50,6 +90,7 @@ assert.equal(sql(`select count(*) from public.asset_releases where organization_
 assertOwned();
 execute('npm', ['exec', '--no', '--', 'supabase', 'db', 'reset', '--local', '--version', '20261023000100', '--network-id', network]);
 assertOwned();
+await requireAuthReady();
 const legacyAdmin = createClient(url, service, options); const legacyCaller = createClient(url, anon, options);
 const legacyEmail = `schedule-upgrade-${randomUUID()}@example.test`; const legacyPassword = `Synthetic-${randomUUID()}-Aa9!`;
 const legacyUser = await legacyAdmin.auth.admin.createUser({ email: legacyEmail, password: legacyPassword, email_confirm: true }); assert.equal(legacyUser.error, null);
