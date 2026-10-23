@@ -1,6 +1,6 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { enrollMfa } from './mfa';
 import { commandResult, saveAsset, convertRequest } from '../../src/app/commands';
@@ -40,7 +40,8 @@ async function transition(person: string, work: { id: string; version: number },
 async function review(work: { id: string; version: number }, decision = 'approved') {
   return command('reviewer', 'review_work_order', { ctx: ctx(work.version), id: work.id, decision, reason: 'Synthetic coordinator review' });
 }
-beforeAll(async () => {
+// Ordinary scenarios own their identities and quotas; retries/races within a scenario still share them.
+beforeEach(async () => {
   for (const name of ['owner', 'reviewer', 'performer', 'outsider']) {
     const email = `t2-${name}-${randomUUID()}@example.test`; const password = `Synthetic-${randomUUID()}-Aa9!`;
     const created = await admin.auth.admin.createUser({ email, password, email_confirm: true }); expect(created.error).toBeNull();
@@ -57,7 +58,7 @@ beforeAll(async () => {
   await command('owner', 'save_organization_settings', { ctx: ctx(1), fields: { evidence_required: false } });
 });
 
-describe('real T2 operational authorization and safety', () => {
+describe('real T2 operational authorization and safety', { concurrent: false }, () => {
   it('requires a separate planned calendar date with atomic scheduling and durable replay', async () => {
     const assetId = await asset(); let work = await job(assetId);
     expect(Object.hasOwn(work, 'planned_on')).toBe(false);

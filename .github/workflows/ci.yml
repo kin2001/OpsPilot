@@ -97,7 +97,7 @@ jobs:
           include-hidden-files: true
           retention-days: 1
           if-no-files-found: error
-      - name: Verify database and real service boundaries
+      - name: Start and verify Edge service readiness
         run: |
           curl --fail --silent http://127.0.0.1:54324/api/v1/messages >/dev/null
           printf '%s\n' 'APP_ORIGIN=http://127.0.0.1:5173' 'INVITATION_EMAIL_ENABLED=true' >.cache/functions.env
@@ -109,12 +109,22 @@ jobs:
             sleep 1
           done
           if [ "$ready" -ne 1 ]; then python3 .github/ci-diagnostics.py .cache/functions.log; exit 1; fi
+      - name: Verify database authorization
+        run: |
           npm run db:test -- --local --network-id "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+      - name: Verify service integration and denial logs
+        run: |
           npm run test:integration
           docker logs supabase_db_opspilot-t1 >.cache/db-security.log 2>&1
           grep -q 'opspilot_command_denied' .cache/db-security.log
+      - name: Verify browser journeys
+        run: |
           npm run test:e2e
+      - name: Rehearse isolated backup and recovery
+        run: |
           node .github/rehearse-recovery.mjs
+      - name: Verify generated schema matches source
+        run: |
           diff -u src/lib/database.types.ts .cache/database.types.ts
       - name: Stop only job-owned resources and discard generated credentials
         if: always()

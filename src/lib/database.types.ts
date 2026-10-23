@@ -475,14 +475,14 @@ isOneToOne: false
                   ]
                 },"work_orders": {
                   Row: {
-                    "asset_id": string,"blocks_operation": boolean,"category": string,"completed_at": string | null,"created_at": string,"created_by": string,"description": string,"due_at": string | null,"id": string,"number": number,"opened_at": string | null,"organization_id": string,"priority": string,"priority_reason": string | null,"repair_revision": number,"source_request_id": string | null,"status": string,"submitted_revision": number | null,"supervisor_id": string,"title": string,"version": number
+                    "asset_id": string,"blocks_operation": boolean,"category": string,"completed_at": string | null,"created_at": string,"created_by": string,"description": string,"due_at": string | null,"id": string,"number": number,"opened_at": string | null,"organization_id": string,"planned_on": string | null,"priority": string,"priority_reason": string | null,"repair_revision": number,"source_request_id": string | null,"status": string,"submitted_revision": number | null,"supervisor_id": string,"title": string,"version": number
                   }
                   ComputedFields: never
                   Insert: {
-                    "asset_id": string,"blocks_operation"?: boolean,"category": string,"completed_at"?: string | null,"created_at"?: string,"created_by": string,"description": string,"due_at"?: string | null,"id"?: string,"number": number,"opened_at"?: string | null,"organization_id": string,"priority": string,"priority_reason"?: string | null,"repair_revision"?: number,"source_request_id"?: string | null,"status"?: string,"submitted_revision"?: number | null,"supervisor_id": string,"title": string,"version"?: number
+                    "asset_id": string,"blocks_operation"?: boolean,"category": string,"completed_at"?: string | null,"created_at"?: string,"created_by": string,"description": string,"due_at"?: string | null,"id"?: string,"number": number,"opened_at"?: string | null,"organization_id": string,"planned_on"?: string | null,"priority": string,"priority_reason"?: string | null,"repair_revision"?: number,"source_request_id"?: string | null,"status"?: string,"submitted_revision"?: number | null,"supervisor_id": string,"title": string,"version"?: number
                   }
                   Update: {
-                    "asset_id"?: string,"blocks_operation"?: boolean,"category"?: string,"completed_at"?: string | null,"created_at"?: string,"created_by"?: string,"description"?: string,"due_at"?: string | null,"id"?: string,"number"?: number,"opened_at"?: string | null,"organization_id"?: string,"priority"?: string,"priority_reason"?: string | null,"repair_revision"?: number,"source_request_id"?: string | null,"status"?: string,"submitted_revision"?: number | null,"supervisor_id"?: string,"title"?: string,"version"?: number
+                    "asset_id"?: string,"blocks_operation"?: boolean,"category"?: string,"completed_at"?: string | null,"created_at"?: string,"created_by"?: string,"description"?: string,"due_at"?: string | null,"id"?: string,"number"?: number,"opened_at"?: string | null,"organization_id"?: string,"planned_on"?: string | null,"priority"?: string,"priority_reason"?: string | null,"repair_revision"?: number,"source_request_id"?: string | null,"status"?: string,"submitted_revision"?: number | null,"supervisor_id"?: string,"title"?: string,"version"?: number
                   }
                   Relationships: [
                     {
@@ -596,6 +596,9 @@ isOneToOne: true
                            },
 "save_request":
 { Args: { "asset_id": string,"category": string,"ctx": Json,"description": string,"id": string }; Returns: Json
+                           },
+"schedule_work_order":
+{ Args: { "ctx": Json,"id": string,"planned_on": string,"reason"?: string }; Returns: Json
                            },
 "set_asset_hold":
 { Args: { "asset_id": string,"ctx": Json,"reason": string }; Returns: Json
