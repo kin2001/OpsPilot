@@ -440,7 +440,7 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   await technicianWorkOrder.getByRole('checkbox', { name: /I performed this repair/ }).check();
   await technicianWorkOrder.getByRole('button', { name: 'Declare performers' }).click();
   await expect(technicianWorkOrder.getByText(/you are recorded/)).toBeVisible();
-  await technicianWorkOrder.getByLabel('Submission attestation').fill('I verified the declared repair performers and the submitted evidence.');
+  await technicianWorkOrder.getByLabel('Submission attestation', { exact: true }).fill('I verified the declared repair performers and the submitted evidence.');
   await expect(technicianWorkOrder.getByRole('button', { name: 'Submit repair for review' })).toBeEnabled();
   await technicianWorkOrder.getByRole('button', { name: 'Submit repair for review' }).click();
   await expect(technicianWorkOrder.getByText('awaiting review', { exact: true })).toBeVisible();
@@ -495,7 +495,7 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   await technicianWorkOrder.getByRole('checkbox', { name: /I performed this repair/ }).check();
   await technicianWorkOrder.getByRole('button', { name: 'Declare performers' }).click();
   await expect(technicianWorkOrder.getByText(/you are recorded/)).toBeVisible();
-  await technicianWorkOrder.getByLabel('Submission attestation').fill('The corrected measurements and current repair revision are ready for review.');
+  await technicianWorkOrder.getByLabel('Submission attestation', { exact: true }).fill('The corrected measurements and current repair revision are ready for review.');
   await technicianWorkOrder.getByRole('button', { name: 'Submit repair for review' }).click();
   await expect(technicianWorkOrder.getByText('awaiting review', { exact: true })).toBeVisible();
 
