@@ -64,6 +64,8 @@ describe('real T2 operational authorization and safety', { concurrent: false }, 
     expect(Object.hasOwn(work, 'planned_on')).toBe(false);
     const due = '2026-11-05T01:00:00+00:00';
     work = await command('owner', 'update_work_order', { ctx: ctx(work.version), id: work.id, allowed_fields: { due_at: due } });
+    const adminEvent = await people.owner.client.from('work_order_events').select('*').eq('work_order_id', work.id).eq('action', 'update_work_order').single();
+    expect(adminEvent.error).toBeNull(); expect(workOrderEvent.parse(adminEvent.data).changes.before?.planned_on).toBeNull();
     work = await transition('reviewer', work, 'open');
     async function snapshot() {
       const state: Record<string, unknown> = { asset: await assetRow(assetId) };
@@ -106,9 +108,10 @@ describe('real T2 operational authorization and safety', { concurrent: false }, 
     await denied('transition_work_order', { target: 'scheduled', reason: 'Resolved' }, 'reviewer', 'VALIDATION');
     work = await command('reviewer', 'schedule_work_order', { ctx: ctx(work.version), id: work.id, planned_on: '2026-11-01', reason: 'Resolved supply issue' });
     expect(work.planned_on).toBe('2026-11-01'); expect(work.repair_revision).toBe(material); expect(work.due_at).toBe(due);
-    const event = await people.reviewer.client.from('work_order_events').select('changes,note').eq('work_order_id', work.id).eq('status', 'scheduled').order('created_at', { ascending: false }).limit(1).single();
-    expect(event.error).toBeNull(); expect(event.data!.changes).toMatchObject({ prior_planned_on: '2026-10-31', planned_on: '2026-11-01' });
-    expect(event.data!.note).toBe('Resolved supply issue');
+    const event = await people.reviewer.client.from('work_order_events').select('*').eq('work_order_id', work.id).eq('status', 'scheduled').order('created_at', { ascending: false }).limit(1).single();
+    expect(event.error).toBeNull(); const scheduledEvent = workOrderEvent.parse(event.data);
+    expect(scheduledEvent.changes).toMatchObject({ prior_planned_on: '2026-10-31', planned_on: '2026-11-01' });
+    expect(scheduledEvent.note).toBe('Resolved supply issue');
     work = await transition('reviewer', work, 'open');
     const attempts = await Promise.all(['2026-11-02', '2026-11-03'].map((planned_on) => people.reviewer.client.rpc('schedule_work_order', { ctx: ctx(work.version), id: work.id, planned_on, reason: null })));
     expect(attempts.filter((result) => result.error === null)).toHaveLength(1);
