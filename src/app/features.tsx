@@ -1,12 +1,15 @@
-import { useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { z } from 'zod';
 import type { Tables } from '../lib/database.types';
 import { domainError } from '../lib/domain-errors';
 import { useWorkspace } from './workspace';
 import { AssetOperationsPanel } from './asset-operations';
 import { RequestEvidence } from './request-evidence';
+import { TeamWorkload } from './team-workload';
+import { recordFilter, recordPageSize, splitRecordPage, type RecordCursor } from './record-query';
+import { assetRecordQr } from './asset-qr';
 import {
   convertRequest, inviteMember, revokeInvitation, reviseRequest, saveAsset, saveRequest,
   setMember, submitRequest, triageRequest, withdrawRequest,
@@ -16,6 +19,7 @@ import { AppButton, ErrorNotice, Field, LoadingNotice, PageHeader, SelectField, 
 type MaintenanceRequest = Tables<'maintenance_requests'>;
 type Membership = Tables<'organization_members'>;
 type Invitation = Tables<'organization_invitations'>;
+type AssetTarget = Tables<'assets'>;
 
 const requestTargetSchema = z.strictObject({
   id: z.uuid(), organization_id: z.uuid(), asset_id: z.uuid(), reporter_id: z.uuid(), description: z.string(), category: z.string(),
@@ -51,24 +55,36 @@ export function AssetPage() {
   const [category, setCategory] = useState('');
   const [serial, setSerial] = useState('');
   const [registration, setRegistration] = useState('');
+  const [editingAsset, setEditingAsset] = useState<AssetTarget | null>(null);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [busy, setBusy] = useState(false);
   const [uncertain, setUncertain] = useState(false);
+  const [pendingAssetAction, setPendingAssetAction] = useState<string | null>(null);
   const requestId = useRef(crypto.randomUUID());
-  const queryKey = ['assets', user.id, organization.id] as const;
-  const assets = useQuery({
+  const assetEditIntents = useRef(new Map<string, { id: string; scope: string; asset: AssetTarget | null; assetId: string | null; version: number | null; fields: Parameters<typeof saveAsset>[2] }>());
+  const assetActionIntents = useRef(new Map<string, { action: 'archive' | 'reactivate'; id: string; scope: string; assetId: string; version: number; fields: Parameters<typeof saveAsset>[2] }>());
+  const contextKey = `${user.id}:${organization.id}`;
+  const queryKey = ['assets', user.id, organization.id, search.trim()] as const;
+  const assetQueryPrefix = ['assets', user.id, organization.id] as const;
+  const assets = useInfiniteQuery({
     queryKey,
-    queryFn: async ({ signal }) => {
-      const result = await client.from('assets').select('*').eq('organization_id', organization.id).order('created_at', { ascending: false }).limit(100).abortSignal(signal);
+    initialPageParam: null as RecordCursor | null,
+    queryFn: async ({ signal, pageParam }) => {
+      const filter = recordFilter(['name', 'code', 'category'], search.trim(), pageParam);
+      const result = await client.from('assets').select('*').eq('organization_id', organization.id).or(filter ?? 'id.not.is.null')
+        .order('created_at', { ascending: false }).order('id', { ascending: false }).limit(recordPageSize + 1).abortSignal(signal);
       if (result.error) throw new Error(domainError(result.error).code);
-      return result.data ?? [];
+      return splitRecordPage(result.data ?? []);
     },
+    getNextPageParam: (lastPage) => lastPage.next ?? undefined,
   });
   const mayRegister = ['owner', 'manager', 'supervisor'].includes(role);
-  const visibleAssets = (assets.data ?? []).filter((asset) => `${asset.name} ${asset.code} ${asset.category}`.toLowerCase().includes(search.trim().toLowerCase()));
+  const isCoordinator = mayRegister;
+  const assetRows = assets.data?.pages.flatMap((page) => page.rows) ?? [];
+  const visibleAssets = assetRows;
   const linkedAssetId = searchParams.get('asset');
-  const listedLinkedAsset = assets.data?.find((asset) => asset.id === linkedAssetId);
+  const listedLinkedAsset = assetRows.find((asset) => asset.id === linkedAssetId);
   const linkedAsset = useQuery({
     queryKey: ['asset-target', user.id, organization.id, linkedAssetId], enabled: Boolean(linkedAssetId && !listedLinkedAsset),
     queryFn: async ({ signal }) => {
@@ -79,30 +95,102 @@ export function AssetPage() {
   });
   const selectedAsset = linkedAssetId ? listedLinkedAsset ?? linkedAsset.data ?? undefined : visibleAssets.find((asset) => asset.id === selectedId) ?? visibleAssets[0];
   const selectAsset = (id: string) => linkedAssetId ? setSearchParams({ asset: id }) : setSelectedId(id);
-  const submit = async (event: FormEvent<HTMLFormElement>) => {
+  const refreshAssetQueries = async (assetId?: string) => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: assetQueryPrefix }),
+      ...(assetId ? [queryClient.invalidateQueries({ queryKey: ['asset-target', user.id, organization.id, assetId] })] : []),
+    ]);
+  };
+  useEffect(() => {
+    setFormOpen(false); setEditingAsset(null); setCode(''); setName(''); setCategory(''); setSerial(''); setRegistration(''); setError(''); setSuccess(''); setUncertain(false);
+    const savedEdit = assetEditIntents.current.get(contextKey);
+    if (savedEdit) {
+      setEditingAsset(savedEdit.asset); setCode(String(savedEdit.fields.code ?? '')); setName(String(savedEdit.fields.name ?? '')); setCategory(String(savedEdit.fields.category ?? ''));
+      setSerial(String(savedEdit.fields.serial_number ?? '')); setRegistration(String(savedEdit.fields.registration ?? '')); setFormOpen(savedEdit.assetId === null); setUncertain(true);
+    }
+    setPendingAssetAction(assetActionIntents.current.get(contextKey)?.action ?? null);
+    requestId.current = crypto.randomUUID();
+  }, [contextKey]);
+  const clearAssetForm = () => {
+    setFormOpen(false); setEditingAsset(null); setCode(''); setName(''); setCategory(''); setSerial(''); setRegistration(''); setUncertain(false);
+    assetEditIntents.current.delete(contextKey); requestId.current = crypto.randomUUID();
+  };
+  const startAssetEdit = (asset: AssetTarget) => {
+    if (pendingAssetAction || uncertain) return;
+    setEditingAsset(asset); setCode(asset.code); setName(asset.name); setCategory(asset.category); setSerial(asset.serial_number ?? ''); setRegistration(asset.registration ?? ''); setError(''); setSuccess('');
+  };
+  const submitAsset = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    setBusy(true);
-    setError('');
-    setSuccess('');
+    const editing = editingAsset;
+    const intent = assetEditIntents.current.get(contextKey) ?? {
+      id: requestId.current,
+      scope: contextKey,
+      asset: editing,
+      assetId: editing?.id ?? null,
+      version: editing?.version ?? null,
+      fields: { code: code.trim(), name: name.trim(), category: category.trim(), serial_number: serial.trim() || null, registration: registration.trim() || null },
+    };
+    assetEditIntents.current.set(contextKey, intent);
+    setBusy(true); setError(''); setSuccess('');
     try {
-      await saveAsset(client, organization.id, { code: code.trim(), name: name.trim(), category: category.trim(), serial_number: serial.trim() || null, registration: registration.trim() || null }, requestId.current);
-      setSuccess('Asset registered. Availability is not recorded.');
-      setCode(''); setName(''); setCategory(''); setSerial(''); setRegistration('');
-      requestId.current = crypto.randomUUID();
-      setUncertain(false);
-      await queryClient.invalidateQueries({ queryKey });
+      await saveAsset(client, organization.id, intent.fields, intent.id, intent.assetId && intent.version !== null ? { id: intent.assetId, version: intent.version } : undefined);
+      const editedId = intent.assetId;
+      assetEditIntents.current.delete(contextKey);
+      setSuccess(editedId ? 'Asset changes saved.' : 'Asset registered. Availability is not recorded.');
+      clearAssetForm();
+      await refreshAssetQueries(editedId ?? undefined);
     } catch (caught) {
       const status = errorCode(caught);
-      setError(errorMessage(caught));
+      setError(status === 'CONFLICT' ? 'This asset changed elsewhere. The current record was refreshed; reopen it before editing again.' : errorMessage(caught));
       setUncertain(status === 'DEPENDENCY_UNAVAILABLE' || status === 'RATE_LIMITED');
-      if (status !== 'DEPENDENCY_UNAVAILABLE' && status !== 'RATE_LIMITED') requestId.current = crypto.randomUUID();
+      if (status === 'CONFLICT') {
+        assetEditIntents.current.delete(contextKey);
+        clearAssetForm();
+        await refreshAssetQueries(intent.assetId ?? undefined);
+      } else if (status !== 'DEPENDENCY_UNAVAILABLE' && status !== 'RATE_LIMITED') {
+        assetEditIntents.current.delete(contextKey);
+        requestId.current = crypto.randomUUID();
+      }
     } finally {
       setBusy(false);
     }
   };
+  const runAssetAction = async (action?: 'archive' | 'reactivate') => {
+    const pending = assetActionIntents.current.get(contextKey);
+    const target = pending ? { id: pending.assetId, version: pending.version } : selectedAsset ? { id: selectedAsset.id, version: selectedAsset.version } : null;
+    if (!target || !isCoordinator || (!pending && !selectedAsset)) return;
+    if (!pending && !action) return;
+    const intent = pending ?? {
+      action: action!, id: crypto.randomUUID(), scope: contextKey, assetId: target.id, version: target.version,
+      fields: { archived: action === 'archive' },
+    };
+    if (pending && action && pending.action !== action) return;
+    assetActionIntents.current.set(contextKey, intent);
+    setPendingAssetAction(intent.action); setError(''); setSuccess(''); setBusy(true);
+    try {
+      await saveAsset(client, organization.id, intent.fields, intent.id, { id: intent.assetId, version: intent.version });
+      assetActionIntents.current.delete(contextKey); setPendingAssetAction(null);
+      setSuccess(intent.action === 'archive' ? 'Asset archived. Its history remains available.' : 'Asset reactivated. Availability still follows recorded holds and release state.');
+      await refreshAssetQueries(intent.assetId);
+    } catch (caught) {
+      const status = errorCode(caught);
+      setError(status === 'CONFLICT' ? 'This asset changed elsewhere. Current records were refreshed; review its state before trying again.' : `${errorMessage(caught)}${status === 'DEPENDENCY_UNAVAILABLE' || status === 'RATE_LIMITED' ? ' Retry keeps the same request and version.' : ''}`);
+      if (status !== 'DEPENDENCY_UNAVAILABLE' && status !== 'RATE_LIMITED') {
+        assetActionIntents.current.delete(contextKey); setPendingAssetAction(null);
+      }
+      if (status === 'CONFLICT') await refreshAssetQueries(intent.assetId);
+    } finally { setBusy(false); }
+  };
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    await submitAsset(event);
+  };
+  const currentEdit = assetEditIntents.current.get(contextKey);
+  const currentAction = assetActionIntents.current.get(contextKey);
+  const qrLabel = selectedAsset ? assetRecordQr(selectedAsset.id, window.location.origin) : null;
 
   return <>
-    <PageHeader eyebrow="Registry" title="Assets" description="Find the equipment and vehicles registered in this workspace." action={mayRegister ? <AppButton onClick={() => setFormOpen(!formOpen)}>{formOpen ? 'Close form' : 'Register asset'}</AppButton> : undefined} />
+    <PageHeader eyebrow="Registry" title="Assets" description="Find the equipment and vehicles registered in this workspace." action={mayRegister && !editingAsset ? <AppButton disabled={busy || Boolean(currentEdit) || Boolean(currentAction)} onClick={() => setFormOpen(!formOpen)}>{formOpen ? 'Close form' : 'Register asset'}</AppButton> : undefined} />
+    {error && !formOpen && !editingAsset && <div style={{ marginTop: 16 }}><ErrorNotice>{error}</ErrorNotice></div>}
     {success && <div style={{ marginTop: 16 }}><SuccessNotice>{success}</SuccessNotice></div>}
     {formOpen && mayRegister && <section className="panel" aria-labelledby="asset-form-title" style={{ marginTop: 16 }}>
       <h2 id="asset-form-title">Register an asset</h2>
@@ -111,10 +199,10 @@ export function AssetPage() {
         <div className="form-row"><Field id="asset-code" label="Asset code" required maxLength={100} disabled={busy || uncertain} value={code} onChange={(event) => setCode(event.target.value)} /><Field id="asset-name" label="Name" required maxLength={200} disabled={busy || uncertain} value={name} onChange={(event) => setName(event.target.value)} /></div>
         <div className="form-row"><Field id="asset-category" label="Category" required maxLength={100} disabled={busy || uncertain} value={category} onChange={(event) => setCategory(event.target.value)} /><Field id="asset-serial" label="Serial number (optional)" maxLength={200} disabled={busy || uncertain} value={serial} onChange={(event) => setSerial(event.target.value)} /></div>
         <Field id="asset-registration" label="Registration (optional)" maxLength={200} disabled={busy || uncertain} value={registration} onChange={(event) => setRegistration(event.target.value)} />
-      <div className="button-row"><AppButton type="submit" disabled={busy}>{busy ? 'Saving…' : uncertain ? 'Retry with the same request' : 'Save asset'}</AppButton><AppButton type="button" variant="secondary" onClick={() => { setFormOpen(false); setError(''); setUncertain(false); requestId.current = crypto.randomUUID(); void queryClient.invalidateQueries({ queryKey }); }} disabled={busy}>Cancel</AppButton></div>
+      <div className="button-row"><AppButton type="submit" disabled={busy}>{busy ? 'Saving…' : uncertain ? 'Retry with the same request' : 'Save asset'}</AppButton><AppButton type="button" variant="secondary" onClick={() => { clearAssetForm(); setError(''); }} disabled={busy || uncertain}>Cancel</AppButton></div>
       </form>
     </section>}
-    {assets.isPending ? <LoadingNotice label="Loading assets…" /> : assets.isError ? <QueryFailure retry={() => void assets.refetch()} /> : assets.data.length === 0 && !linkedAssetId ? <div className="empty-state"><h2>No assets are visible</h2><p>{mayRegister ? 'Register the first asset before submitting a maintenance request.' : 'Ask a workspace owner or supervisor to register an asset.'}</p>{mayRegister && <AppButton onClick={() => setFormOpen(true)}>Register asset</AppButton>}</div> : <div className="record-workspace" aria-label="Assets in this workspace">
+    {assets.isPending ? <LoadingNotice label="Loading assets…" /> : assets.isError ? <QueryFailure retry={() => void assets.refetch()} /> : visibleAssets.length === 0 && !linkedAssetId && search.trim() ? <div className="empty-state"><h2>No assets match this search</h2><p>Search checks authorized asset names, codes and categories in the current workspace.</p></div> : visibleAssets.length === 0 && !linkedAssetId ? <div className="empty-state"><h2>No assets are visible</h2><p>{mayRegister ? 'Register the first asset before submitting a maintenance request.' : 'Ask a workspace owner or supervisor to register an asset.'}</p>{mayRegister && <AppButton onClick={() => setFormOpen(true)}>Register asset</AppButton>}</div> : <div className="record-workspace" aria-label="Assets in this workspace">
       <section className="record-picker" aria-label="Asset registry">
         <label className="field-label" htmlFor="asset-search">Search assets</label>
         <input className="record-search" id="asset-search" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Name, code or category" />
@@ -126,11 +214,16 @@ export function AssetPage() {
           <span className="record-picker-title">{asset.name}</span><span className="record-picker-meta">{asset.code} · {asset.category}</span><span className="state-badge">{asset.archived_at ? 'Archived' : 'Registered'}</span>
           </button></li>)}</ol>
         </> : <p className="field-hint">No assets match your search.</p>}
+        {assets.hasNextPage && <AppButton variant="secondary" disabled={assets.isFetchingNextPage} onClick={() => void assets.fetchNextPage()}>{assets.isFetchingNextPage ? 'Loading more assets…' : 'Load more assets'}</AppButton>}
       </section>
       <section className="record-preview" aria-label="Selected asset details" aria-live="polite">
         {linkedAssetId && !listedLinkedAsset && linkedAsset.isPending ? <LoadingNotice label="Checking the exact asset target under your current access…" /> : linkedAssetId && !listedLinkedAsset && (linkedAsset.isError || !linkedAsset.data) ? <div className="empty-state"><h2>Asset unavailable</h2><p>This target is not visible under your current workspace access.</p><AppButton variant="secondary" onClick={() => void linkedAsset.refetch()}>Retry target lookup</AppButton></div> : selectedAsset ? <>
+          {currentAction && <div className="inline-error" role="alert"><p>The {currentAction.action} result is uncertain. Retry keeps the original request ID, asset version and fields.</p><div className="compact-actions"><AppButton disabled={busy} onClick={() => void runAssetAction()}>{busy ? 'Retrying…' : 'Retry pending asset action'}</AppButton><AppButton variant="secondary" disabled={busy} onClick={() => void refreshAssetQueries(currentAction.assetId)}>Refresh current asset records</AppButton></div></div>}
           <div className="record-header"><div><p className="page-kicker">Asset record</p><h2>{selectedAsset.name}</h2></div><span className="state-badge">{selectedAsset.archived_at ? 'Archived' : 'Registered'}</span></div>
           <dl className="detail-grid"><div><dt>Asset code</dt><dd>{selectedAsset.code}</dd></div><div><dt>Category</dt><dd>{selectedAsset.category}</dd></div>{selectedAsset.serial_number && <div><dt>Serial number</dt><dd>{selectedAsset.serial_number}</dd></div>}{selectedAsset.registration && <div><dt>Registration</dt><dd>{selectedAsset.registration}</dd></div>}<div><dt>Availability</dt><dd>{selectedAsset.availability.replaceAll('_', ' ')}</dd></div></dl>
+          {mayRegister && <div className="compact-actions asset-record-actions"><AppButton variant="secondary" disabled={busy || Boolean(currentEdit) || Boolean(currentAction)} onClick={() => startAssetEdit(selectedAsset)}>Edit asset</AppButton><AppButton variant={selectedAsset.archived_at ? 'secondary' : 'danger'} disabled={busy || Boolean(currentEdit) || Boolean(currentAction)} onClick={() => void runAssetAction(selectedAsset.archived_at ? 'reactivate' : 'archive')}>{currentAction ? 'Pending asset update' : selectedAsset.archived_at ? 'Reactivate asset' : 'Archive asset'}</AppButton></div>}
+          {editingAsset?.id === selectedAsset.id && mayRegister && <section className="panel form-stack" aria-labelledby="edit-asset-title"><h3 id="edit-asset-title">Edit asset</h3>{error && <ErrorNotice>{error}</ErrorNotice>}<form className="form-stack" onSubmit={(event) => void submitAsset(event)}><div className="form-row"><Field id="edit-asset-code" label="Asset code" required maxLength={100} disabled={busy || uncertain} value={code} onChange={(event) => setCode(event.target.value)} /><Field id="edit-asset-name" label="Asset name" required maxLength={200} disabled={busy || uncertain} value={name} onChange={(event) => setName(event.target.value)} /></div><div className="form-row"><Field id="edit-asset-category" label="Category" required maxLength={100} disabled={busy || uncertain} value={category} onChange={(event) => setCategory(event.target.value)} /><Field id="edit-asset-serial" label="Serial number (optional)" maxLength={200} disabled={busy || uncertain} value={serial} onChange={(event) => setSerial(event.target.value)} /></div><Field id="edit-asset-registration" label="Registration (optional)" maxLength={200} disabled={busy || uncertain} value={registration} onChange={(event) => setRegistration(event.target.value)} /><div className="button-row"><AppButton type="submit" disabled={busy}>{busy ? 'Saving…' : uncertain ? 'Retry same asset update' : 'Save asset changes'}</AppButton><AppButton type="button" variant="secondary" disabled={busy || uncertain} onClick={() => { clearAssetForm(); setError(''); }}>Cancel</AppButton></div></form></section>}
+          {qrLabel && <section className="asset-print-label" aria-label="Printable asset identity"><div><p className="page-kicker">Asset identity</p><strong>{selectedAsset.name}</strong><span>{selectedAsset.code}</span><a href={qrLabel.href} aria-label="Open asset route">{qrLabel.href}</a></div><img src={qrLabel.src} alt={`QR code for ${selectedAsset.name}`} /><AppButton variant="secondary" onClick={() => window.print()}>Print asset label</AppButton></section>}
           <AssetOperationsPanel asset={selectedAsset} client={client} userId={user.id} organizationId={organization.id} role={role} />
         </> : <p className="field-hint">Select an asset to view its recorded details.</p>}
       </section>
@@ -173,6 +266,7 @@ export function RequestPage() {
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const [titles, setTitles] = useState<Record<string, string>>({});
   const [priorities, setPriorities] = useState<Record<string, 'low' | 'normal' | 'high' | 'critical'>>({});
+  const [criticalReasons, setCriticalReasons] = useState<Record<string, string>>({});
   const commandIds = useRef(new Map<string, string>());
   const newRequestId = useRef(crypto.randomUUID());
   const submitCommandId = useRef('');
@@ -180,21 +274,25 @@ export function RequestPage() {
   const savedRequest = useRef<MaintenanceRequest | null>(null);
   const awaitingSubmit = useRef(false);
   const reviseCommandId = useRef('');
-  const queryKey = ['requests', user.id, organization.id] as const;
-  const requests = useQuery({
+  const queryKey = ['requests', user.id, organization.id, search.trim(), statusFilter] as const;
+  const requests = useInfiniteQuery({
     queryKey,
-    queryFn: async ({ signal }) => {
-      const result = await client.from('maintenance_requests').select('*').eq('organization_id', organization.id).order('created_at', { ascending: false }).limit(100).abortSignal(signal);
+    initialPageParam: null as RecordCursor | null,
+    queryFn: async ({ signal, pageParam }) => {
+      const filter = recordFilter(['category', 'description'], search.trim(), pageParam);
+      let requestQuery = client.from('maintenance_requests').select('*').eq('organization_id', organization.id);
+      if (statusFilter !== 'all') requestQuery = requestQuery.eq('status', statusFilter);
+      const result = await requestQuery.or(filter ?? 'id.not.is.null').order('created_at', { ascending: false }).order('id', { ascending: false }).limit(recordPageSize + 1).abortSignal(signal);
       if (result.error) throw new Error(domainError(result.error).code);
-      return result.data ?? [];
+      return splitRecordPage(result.data ?? []);
     },
+    getNextPageParam: (lastPage) => lastPage.next ?? undefined,
   });
   const isCoordinator = ['owner', 'manager', 'supervisor'].includes(role);
-  const visibleRequests = (requests.data ?? []).filter((request) =>
-    (statusFilter === 'all' || request.status === statusFilter)
-    && `${request.category} ${request.description} ${request.status}`.toLowerCase().includes(search.trim().toLowerCase()));
+  const requestRows = requests.data?.pages.flatMap((page) => page.rows) ?? [];
+  const visibleRequests = requestRows;
   const linkedRequestId = searchParams.get('request');
-  const listedLinkedRequest = requests.data?.find((request) => request.id === linkedRequestId);
+  const listedLinkedRequest = requestRows.find((request) => request.id === linkedRequestId);
   const linkedRequest = useQuery({
     queryKey: ['request-target', user.id, organization.id, linkedRequestId], enabled: Boolean(linkedRequestId && !listedLinkedRequest),
     queryFn: async ({ signal }) => {
@@ -292,7 +390,10 @@ export function RequestPage() {
       } else if (action === 'convert') {
         const title = (titles[request.id] ?? request.description.slice(0, 200)).trim();
         if (!title) throw new Error('VALIDATION');
-        await convertRequest(client, organization.id, request.id, { title, priority: priorities[request.id] ?? 'normal' }, commandId);
+        const priority = priorities[request.id] ?? 'normal';
+        const criticalReason = criticalReasons[request.id]?.trim() ?? '';
+        if (priority === 'critical' && !criticalReason) throw new Error('VALIDATION');
+        await convertRequest(client, organization.id, request.id, { title, priority, ...(priority === 'critical' ? { critical_reason: criticalReason } : {}) }, commandId);
       } else {
         const reason = reasons[request.id]?.trim() ?? '';
         if (!reason) throw new Error('VALIDATION');
@@ -303,7 +404,7 @@ export function RequestPage() {
       await queryClient.invalidateQueries({ queryKey });
     } catch (caught) {
       const status = errorCode(caught);
-      setRowErrors((previous) => ({ ...previous, [commandKey]: status === 'VALIDATION' ? 'Enter the required reason or title before continuing.' : errorMessage(caught) }));
+      setRowErrors((previous) => ({ ...previous, [commandKey]: status === 'VALIDATION' ? action === 'convert' && (priorities[request.id] ?? 'normal') === 'critical' && !(criticalReasons[request.id]?.trim()) ? 'Enter the required critical priority reason and work order title.' : 'Enter the required reason or title before continuing.' : errorMessage(caught) }));
       if (status !== 'DEPENDENCY_UNAVAILABLE' && status !== 'RATE_LIMITED') {
         commandIds.current.delete(commandKey);
         setPendingActions((previous) => { const next = { ...previous }; delete next[request.id]; return next; });
@@ -325,7 +426,7 @@ export function RequestPage() {
         <div className="button-row"><AppButton type="submit" disabled={busy}>{busy ? 'Saving…' : locked ? 'Retry with the same request IDs' : editing ? 'Save and resubmit' : 'Save and submit'}</AppButton><AppButton type="button" variant="secondary" disabled={busy || locked} onClick={resetForm}>Cancel</AppButton></div>
       </form>
     </section>}
-    {requests.isPending ? <LoadingNotice label="Loading requests…" /> : requests.isError ? <QueryFailure retry={() => void requests.refetch()} /> : requests.data.length === 0 && !linkedRequestId ? <div className="empty-state"><h2>No requests yet</h2><p>Start with a registered asset and describe the issue for your workspace team.</p><AppButton onClick={() => setFormOpen(true)}>Create request</AppButton></div> : <div className="record-workspace" aria-label="Maintenance requests">
+    {requests.isPending ? <LoadingNotice label="Loading requests…" /> : requests.isError ? <QueryFailure retry={() => void requests.refetch()} /> : requestRows.length === 0 && !linkedRequestId && !search.trim() && statusFilter === 'all' ? <div className="empty-state"><h2>No requests yet</h2><p>Start with a registered asset and describe the issue for your workspace team.</p><AppButton onClick={() => setFormOpen(true)}>Create request</AppButton></div> : <div className="record-workspace" aria-label="Maintenance requests">
       <section className="record-picker" aria-label="Request inbox">
         <div className="record-filters"><div className="field"><label htmlFor="request-search">Search requests</label><input className="record-search" id="request-search" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Description or category" /></div><div className="field"><label htmlFor="request-status-filter">Status</label><select className="record-search" id="request-status-filter" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">All statuses</option><option value="draft">Draft</option><option value="submitted">Submitted</option><option value="returned">Returned</option><option value="converted">Converted</option><option value="rejected">Rejected</option><option value="withdrawn">Withdrawn</option></select></div></div>
         {visibleRequests.length ? <>
@@ -336,6 +437,7 @@ export function RequestPage() {
           <span className="record-picker-title">{request.category} request</span><span className={`state-badge state-badge--${request.status}`}>{request.status}</span><span className="record-picker-meta">{request.description}</span><span className="field-hint">{new Date(request.created_at).toLocaleDateString()}</span>
           </button></li>)}</ol>
         </> : <p className="field-hint">No requests match these filters.</p>}
+        {requests.hasNextPage && <AppButton variant="secondary" disabled={requests.isFetchingNextPage} onClick={() => void requests.fetchNextPage()}>{requests.isFetchingNextPage ? 'Loading more requests…' : 'Load more requests'}</AppButton>}
       </section>
       <section className="record-preview" aria-label="Selected request details" aria-live="polite">
         {linkedRequestId && !listedLinkedRequest && linkedRequest.isPending ? <LoadingNotice label="Checking the exact request target under your current access…" /> : linkedRequestId && !listedLinkedRequest && (linkedRequest.isError || !linkedRequest.data) ? <div className="empty-state"><h2>Request unavailable</h2><p>This target is not visible under your current workspace access.</p><AppButton variant="secondary" onClick={() => void linkedRequest.refetch()}>Retry target lookup</AppButton></div> : selectedRequest ? <>
@@ -349,12 +451,13 @@ export function RequestPage() {
               <dl className="detail-grid"><div><dt>Asset</dt><dd>{selectedAsset.isPending ? 'Loading asset details…' : selectedAsset.data?.code ?? 'Asset details unavailable'}</dd></div><div><dt>Created</dt><dd>{new Date(request.created_at).toLocaleDateString()}</dd></div></dl>
               <p className="record-description">{request.description}</p>
               {request.transition_reason && <p className="field-hint">Latest reason: {request.transition_reason}</p>}
-              {request.converted_work_order_id && <p className="field-hint">Draft work order created: <Link to="/work-orders">view work orders</Link></p>}
+              {request.converted_work_order_id && <p className="field-hint">Draft work order created: <Link to={`/work-orders?workOrder=${encodeURIComponent(request.converted_work_order_id)}`}>open the linked work order</Link></p>}
               <RequestEvidence client={client} organizationId={organization.id} userId={user.id} requestId={request.id} enabled={['draft', 'returned'].includes(request.status) && (request.reporter_id === user.id || isCoordinator)} />
               {(mayEdit || mayWithdraw || mayTriage) && <div className="record-actions">
                 {mayEdit && <div className="compact-actions"><AppButton variant="secondary" onClick={() => void beginEdit(request)}>Edit and resubmit</AppButton></div>}
                 {mayTriage && <>
                   <div className="form-row"><Field id={`triage-title-${request.id}`} label="Draft work order title" required maxLength={200} disabled={Boolean(pendingActions[request.id] || runningActions[request.id])} value={titles[request.id] ?? request.description.slice(0, 200)} onChange={(event) => setTitles((previous) => ({ ...previous, [request.id]: event.target.value }))} /><SelectField id={`triage-priority-${request.id}`} label="Priority" disabled={Boolean(pendingActions[request.id] || runningActions[request.id])} value={priorities[request.id] ?? 'normal'} onChange={(event) => setPriorities((previous) => ({ ...previous, [request.id]: event.target.value as 'low' | 'normal' | 'high' | 'critical' }))}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="critical">Critical</option></SelectField></div>
+                  {priorities[request.id] === 'critical' && <TextAreaField id={`triage-critical-reason-${request.id}`} label="Critical priority reason" required maxLength={2000} disabled={Boolean(pendingActions[request.id] || runningActions[request.id])} value={criticalReasons[request.id] ?? ''} onChange={(event) => setCriticalReasons((previous) => ({ ...previous, [request.id]: event.target.value }))} hint="The reason is retained with the critical priority; conversion does not change asset availability." />}
                   <Field id={`triage-reason-${request.id}`} label="Reason for return or rejection" maxLength={4000} disabled={Boolean(pendingActions[request.id] || runningActions[request.id])} value={reasons[request.id] ?? ''} onChange={(event) => setReasons((previous) => ({ ...previous, [request.id]: event.target.value }))} hint="Required when returning or rejecting. Not needed for conversion." />
                   {rowErrors[`${request.id}:convert`] && <ErrorNotice>{rowErrors[`${request.id}:convert`]}</ErrorNotice>}
                   {rowErrors[`${request.id}:return`] && <ErrorNotice>{rowErrors[`${request.id}:return`]}</ErrorNotice>}
@@ -520,6 +623,7 @@ export function TeamPage() {
   return <>
     <PageHeader eyebrow="Workspace access" title="Team" description="Invite verified accounts, review membership and keep access within this workspace." />
     {inviteSuccess && <SuccessNotice>{inviteSuccess}</SuccessNotice>}
+    {members.isSuccess && <TeamWorkload client={client} userId={user.id} organizationId={organization.id} members={members.data.map(({ user_id, role, active }) => ({ user_id, role, active }))} />}
     <section className="panel" aria-labelledby="invite-title">
       <h2 id="invite-title">Invite a teammate</h2>
       <p className="field-hint">The recipient must sign in with the verified email address that receives the invitation and explicitly accept it.</p>

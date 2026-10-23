@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { z } from 'zod';
@@ -7,8 +7,9 @@ import { domainError } from '../lib/domain-errors';
 import type { Json } from '../lib/database.types';
 import { markNotificationsRead, saveOrganizationSettings } from './commands';
 import { PrivilegedArea } from './auth/security';
+import { TeamWorkload } from './team-workload';
 import { useWorkspace } from './workspace';
-import { AppButton, ErrorNotice, Field, LoadingNotice, PageHeader, SuccessNotice } from './ui';
+import { AppButton, ErrorNotice, Field, LoadingNotice, PageHeader, SelectField, SuccessNotice } from './ui';
 
 function parsedRpc<T extends z.ZodType>(data: Json | null, error: { message: string } | null, schema: T): z.output<T> {
   if (error) throw new Error(domainError(error).code);
@@ -37,6 +38,13 @@ function readableDuration(seconds: number | null) {
   return `${(hours / 24).toFixed(1)} days`;
 }
 
+const attentionStatuses = ['open', 'scheduled', 'in_progress', 'blocked', 'awaiting_review'] as const;
+const attentionRow = z.strictObject({
+  id: z.uuid(), number: z.int().positive(), title: z.string(), status: z.enum(attentionStatuses), priority: z.enum(['low', 'normal', 'high', 'critical']), due_at: z.string().nullable(), created_at: z.string(),
+});
+
+function workOrderLabel(number: number) { return `WO-${String(number).padStart(4, '0')}`; }
+
 export function DashboardPage() {
   const { client, user, organization, role } = useWorkspace();
   const today = dateInZone(new Date(), organization.timezone);
@@ -48,10 +56,43 @@ export function DashboardPage() {
       return parsedRpc(result.data, result.error, dashboardResult);
     },
   });
+  const attention = useQuery({
+    queryKey: ['dashboard-attention', user.id, organization.id, today],
+    enabled: role !== 'technician' && role !== 'inventory',
+    refetchInterval: 60_000,
+    queryFn: async ({ signal }) => {
+      const columns = 'id,number,title,status,priority,due_at,created_at';
+      const [blocked, review, due] = await Promise.all([
+        client.from('work_orders').select(columns).eq('organization_id', organization.id).eq('status', 'blocked').order('created_at', { ascending: false }).order('id', { ascending: false }).limit(50).abortSignal(signal),
+        client.from('work_orders').select(columns).eq('organization_id', organization.id).eq('status', 'awaiting_review').order('created_at', { ascending: false }).order('id', { ascending: false }).limit(50).abortSignal(signal),
+        client.from('work_orders').select(columns).eq('organization_id', organization.id).in('status', [...attentionStatuses]).not('due_at', 'is', null).order('due_at', { ascending: true }).order('id', { ascending: true }).limit(50).abortSignal(signal),
+      ]);
+      for (const result of [blocked, review, due]) if (result.error) throw new Error(domainError(result.error).code);
+      const now = Date.now();
+      const overdue = (due.data ?? []).filter((item) => {
+        if (!item.due_at) return false;
+        const dueTime = Date.parse(item.due_at);
+        if (!Number.isFinite(dueTime)) throw new Error('DEPENDENCY_UNAVAILABLE');
+        return dueTime < now;
+      });
+      const unique = new Map<string, z.output<typeof attentionRow>>();
+      for (const item of [...(blocked.data ?? []), ...(review.data ?? []), ...overdue]) {
+        const parsed = attentionRow.safeParse(item);
+        if (!parsed.success) throw new Error('DEPENDENCY_UNAVAILABLE');
+        unique.set(parsed.data.id, parsed.data);
+      }
+      return [...unique.values()];
+    },
+  });
   const counts = query.data?.counts;
   return <>
     <PageHeader eyebrow="Workspace" title="Overview" description={`Operational activity recorded for ${range.from} through ${addDays(range.to, -1)} in ${organization.timezone}.`} />
-    {role === 'technician' || role === 'inventory' ? <div className="empty-state"><h2>Dashboard not available for this role</h2><p>Use your assigned work orders and available asset records. This dashboard is limited to operations roles.</p><Link className="button button--secondary" to={role === 'technician' ? '/work-orders' : '/assets'}>Open assigned work</Link></div> : query.isPending ? <LoadingNotice label="Loading workspace totals…" /> : query.isError ? <div className="empty-state"><ErrorNotice>Dashboard totals are unavailable. No values are estimated from incomplete history.</ErrorNotice><AppButton variant="secondary" onClick={() => void query.refetch()}>Retry</AppButton></div> : counts && <>
+    {role === 'technician' || role === 'inventory' ? <div className="empty-state"><h2>Dashboard not available for this role</h2><p>Use your assigned work orders and available asset records. This dashboard is limited to operations roles.</p><Link className="button button--secondary" to={role === 'technician' ? '/work-orders' : '/assets'}>Open assigned work</Link></div> : <>
+      <section className="panel attention-queue" aria-labelledby="attention-queue-title">
+        <div className="record-header"><div><p className="page-kicker">Work requiring attention</p><h2 id="attention-queue-title">Attention queue</h2></div><span className="state-badge">Current authorized records</span></div>
+        {attention.isPending ? <LoadingNotice label="Checking blocked, overdue and submitted work…" /> : attention.isError ? <div><ErrorNotice>Attention items are unavailable. No queue status is inferred when its records cannot be read.</ErrorNotice><AppButton variant="secondary" onClick={() => void attention.refetch()}>Retry attention queue</AppButton></div> : attention.data.length ? <ol className="attention-list">{attention.data.map((item) => <li key={item.id}><Link className="attention-row" to={`/work-orders?workOrder=${encodeURIComponent(item.id)}`}><strong>{workOrderLabel(item.number)} · {item.title}</strong><span className={`state-badge state-badge--${item.status}`}>{item.status.replaceAll('_', ' ')}</span><span>{item.priority} priority{item.due_at ? ` · due ${new Date(item.due_at).toLocaleDateString(undefined, { timeZone: organization.timezone })}` : ''}</span></Link></li>)}</ol> : <p className="field-hint">No blocked, overdue or submitted work is currently visible.</p>}
+      </section>
+      {query.isPending ? <LoadingNotice label="Loading workspace totals…" /> : query.isError ? <div className="empty-state"><ErrorNotice>Dashboard totals are unavailable. No values are estimated from incomplete history.</ErrorNotice><AppButton variant="secondary" onClick={() => void query.refetch()}>Retry</AppButton></div> : counts && <>
       <div className="dashboard-counts" aria-label="Operational totals">
         <article className="dashboard-count"><span>Available assets</span><strong>{counts.available_assets} <small>of {counts.active_assets}</small></strong></article>
         <article className="dashboard-count"><span>Active work orders</span><strong>{counts.active_work_orders}</strong></article>
@@ -80,12 +121,14 @@ export function DashboardPage() {
         <Link className="flow-card" to="/assets"><span className="nav-icon" aria-hidden="true">◇</span><strong>Assets</strong><span>Check recorded availability, active holds and history.</span></Link>
         <Link className="flow-card" to="/notifications"><span className="nav-icon" aria-hidden="true">◉</span><strong>Notifications</strong><span>Open work items addressed to your signed-in account.</span></Link>
       </div>
+      </>}
     </>}
   </>;
 }
 
 const notificationRows = z.array(notificationRecord).max(500);
 function notificationTarget(item: z.output<typeof notificationRecord>) {
+  if (!z.uuid().safeParse(item.source_id).success) return null;
   if (item.category === 'assignment' || ['update_work_order', 'transition_work_order', 'add_work_order_task', 'review_work_order', 'attachment_ready'].includes(item.category)) return `/work-orders?workOrder=${encodeURIComponent(item.source_id)}`;
   if (item.category.startsWith('request.')) return `/requests?request=${encodeURIComponent(item.source_id)}`;
   return null;
@@ -94,48 +137,68 @@ function notificationTarget(item: z.output<typeof notificationRecord>) {
 export function NotificationsPage() {
   const { client, user, organization } = useWorkspace();
   const queryClient = useQueryClient();
+  const [readFilter, setReadFilter] = useState<'all' | 'unread' | 'read'>('all');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [success, setSuccess] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
   const requests = useRef(new Map<string, string>());
+  const scope = `${user.id}:${organization.id}`;
+  const requestKeyFor = (id: string) => `${scope}:${id}`;
   const key = ['notifications', user.id, organization.id] as const;
   const query = useQuery({
     queryKey: key,
     queryFn: async ({ signal }) => {
-      const result = await client.from('notifications').select('*').eq('organization_id', organization.id).eq('recipient_user_id', user.id).order('created_at', { ascending: false }).limit(200).abortSignal(signal);
+      const result = await client.from('notifications').select('*').eq('organization_id', organization.id).eq('recipient_user_id', user.id).order('created_at', { ascending: false }).order('id', { ascending: false }).limit(500).abortSignal(signal);
       if (result.error) throw new Error(domainError(result.error).code);
       return notificationRows.parse(result.data ?? []);
     },
   });
+  useEffect(() => { setReadFilter('all'); setCategoryFilter('all'); setSelectedId(null); setErrors({}); setSuccess(''); setBusyId(null); }, [scope]);
+  const categories = [...new Set((query.data ?? []).map((item) => item.category))].sort();
+  const visibleNotifications = (query.data ?? []).filter((item) => {
+    const pending = requests.current.has(requestKeyFor(item.id));
+    return (readFilter === 'all' || readFilter === 'unread' && (!item.read_at || pending) || readFilter === 'read' && Boolean(item.read_at))
+      && (categoryFilter === 'all' || item.category === categoryFilter);
+  });
+  const selected = visibleNotifications.find((item) => item.id === selectedId) ?? visibleNotifications[0];
   const markRead = async (id: string) => {
-    const requestId = requests.current.get(id) ?? crypto.randomUUID();
-    requests.current.set(id, requestId);
-    setBusyId(id); setErrors((current) => ({ ...current, [id]: '' }));
+    const requestKey = requestKeyFor(id);
+    const requestId = requests.current.get(requestKey) ?? crypto.randomUUID();
+    requests.current.set(requestKey, requestId);
+    setBusyId(id); setErrors((current) => ({ ...current, [id]: '' })); setSuccess('');
     try {
       await markNotificationsRead(client, organization.id, [id], requestId);
-      requests.current.delete(id);
+      requests.current.delete(requestKey);
+      setSuccess('Notification marked as read.');
       await queryClient.invalidateQueries({ queryKey: key });
     } catch (cause) {
       const code = domainError(cause).code;
       setErrors((current) => ({ ...current, [id]: `${domainError(cause).message}${code === 'DEPENDENCY_UNAVAILABLE' || code === 'RATE_LIMITED' ? ' Retry keeps the same request identity.' : ''}` }));
-      if (code !== 'DEPENDENCY_UNAVAILABLE' && code !== 'RATE_LIMITED') requests.current.delete(id);
+      if (code !== 'DEPENDENCY_UNAVAILABLE' && code !== 'RATE_LIMITED') requests.current.delete(requestKey);
     } finally { setBusyId(null); }
   };
   return <>
     <PageHeader eyebrow="Inbox" title="Notifications" description="These records are delivered to your signed-in account. Opening a target still checks your current workspace access." />
-    {query.isPending ? <LoadingNotice label="Loading your notifications…" /> : query.isError ? <div className="empty-state"><ErrorNotice>Your notifications could not be loaded.</ErrorNotice><AppButton variant="secondary" onClick={() => void query.refetch()}>Retry</AppButton></div> : !query.data.length ? <div className="empty-state"><h2>You’re all caught up</h2><p>New assignments and work updates addressed to your account will appear here.</p></div> : <section className="record-list" aria-label="Notifications">
-      {query.data.map((item) => {
-        const target = notificationTarget(item);
-        return <article className="record-card notification-card" key={item.id}>
-          <div className="record-header"><h2>{item.category.replaceAll('_', ' ')}</h2><span className={`state-badge${item.read_at ? '' : ' state-badge--submitted'}`}>{item.read_at ? 'Read' : 'Unread'}</span></div>
-          <p className="field-hint">Received {new Date(item.created_at).toLocaleString()}</p>
-          {errors[item.id] && <ErrorNotice>{errors[item.id]}</ErrorNotice>}
-          <div className="compact-actions">
-            {target ? <Link className="button button--secondary" to={target}>Open current record</Link> : <span className="field-hint">This update has no supported in-app target.</span>}
-            {!item.read_at && <AppButton variant="quiet" disabled={busyId === item.id} onClick={() => void markRead(item.id)}>{busyId === item.id ? 'Saving…' : requests.current.has(item.id) ? 'Retry mark as read' : 'Mark as read'}</AppButton>}
-          </div>
-        </article>;
-      })}
-    </section>}
+    {query.isPending ? <LoadingNotice label="Loading your notifications…" /> : query.isError ? <div className="empty-state"><ErrorNotice>Your notifications could not be loaded.</ErrorNotice><AppButton variant="secondary" onClick={() => void query.refetch()}>Retry</AppButton></div> : <>
+      {success && <SuccessNotice>{success}</SuccessNotice>}
+      <div className="record-workspace notification-workspace" aria-label="Notification inbox">
+        <section className="record-picker" aria-label="Your notifications">
+          <div className="notification-filters"><SelectField id="notification-read-filter" label="Read status" value={readFilter} onChange={(event) => setReadFilter(event.target.value as typeof readFilter)}><option value="all">All notifications</option><option value="unread">Unread only</option><option value="read">Read only</option></SelectField><SelectField id="notification-category-filter" label="Category" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option value="all">All categories</option>{categories.map((category) => <option key={category} value={category}>{category.replaceAll('_', ' ')}</option>)}</SelectField></div>
+          <AppButton variant="secondary" disabled={query.isFetching} onClick={() => void query.refetch()}>{query.isFetching ? 'Refreshing…' : 'Refresh notifications'}</AppButton>
+          {visibleNotifications.length ? <ol className="record-picker-list">{visibleNotifications.map((item) => <li key={item.id}><button className="notification-select" type="button" aria-pressed={selected?.id === item.id} onClick={() => setSelectedId(item.id)}><strong>{item.category.replaceAll('_', ' ')}</strong><span className={`state-badge${item.read_at ? '' : ' state-badge--submitted'}`}>{item.read_at ? 'Read' : 'Unread'}</span><span className="record-picker-meta">Received {new Date(item.created_at).toLocaleString()}</span></button></li>)}</ol> : <p className="field-hint">{query.data?.length ? 'No notifications match these filters.' : 'No notifications have been delivered to this account.'}</p>}
+        </section>
+        <section className="record-preview" aria-label="Selected notification" aria-live="polite">
+          {selected ? <>
+            <div className="record-header"><div><p className="page-kicker">Delivered event</p><h2>{selected.category.replaceAll('_', ' ')}</h2></div><span className={`state-badge${selected.read_at ? '' : ' state-badge--submitted'}`}>{selected.read_at ? 'Read' : 'Unread'}</span></div>
+            <dl className="detail-grid"><div><dt>Received</dt><dd>{new Date(selected.created_at).toLocaleString()}</dd></div><div><dt>Notification ID</dt><dd className="monospace">{selected.id}</dd></div><div><dt>Event ID</dt><dd className="monospace">{selected.event_id}</dd></div><div><dt>Source record ID</dt><dd className="monospace">{selected.source_id}</dd></div><div><dt>Read at</dt><dd>{selected.read_at ? new Date(selected.read_at).toLocaleString() : 'Not read'}</dd></div></dl>
+            {errors[selected.id] && <ErrorNotice>{errors[selected.id]}</ErrorNotice>}
+            <div className="compact-actions">{notificationTarget(selected) ? <Link className="button button--secondary" to={notificationTarget(selected)!}>Open current record</Link> : <span className="field-hint">This event has no supported in-app target.</span>}{(!selected.read_at || requests.current.has(requestKeyFor(selected.id))) && <AppButton variant="quiet" disabled={busyId === selected.id} onClick={() => void markRead(selected.id)}>{busyId === selected.id ? 'Saving…' : requests.current.has(requestKeyFor(selected.id)) ? 'Retry mark as read' : 'Mark as read'}</AppButton>}</div>
+          </> : <p className="field-hint">Select a notification to inspect the delivered event.</p>}
+        </section>
+      </div>
+    </>}
   </>;
 }
 
@@ -225,6 +288,8 @@ export function OperationsTeamPage() {
   return <>
     <PageHeader eyebrow="Workspace" title="Team" description="This active roster includes only the role and account IDs the operations contract exposes." />
     {query.isPending ? <LoadingNotice label="Loading authorized team roles…" /> : query.isError ? <div className="empty-state"><ErrorNotice>Team roles are unavailable for this account.</ErrorNotice></div> : <section className="record-list" aria-label="Active workspace roles">
+      <TeamWorkload client={client} userId={user.id} organizationId={organization.id} members={query.data} />
+      <h2 className="team-roster-heading">Workspace members and roles</h2>
       {query.data.map((member) => <article className="record-card" key={member.user_id}><div className="record-header"><h2>{member.user_id === user.id ? 'You' : 'Workspace member'}</h2><span className={`state-badge${member.active ? ' state-badge--converted' : ''}`}>{member.active ? 'Active' : 'Inactive'}</span></div><p className="record-meta">User ID <span className="monospace">{member.user_id}</span> · Role {member.role} · Version {member.version}</p></article>)}
       {query.data.length === 0 && <p className="field-hint">No team members are visible.</p>}
     </section>}

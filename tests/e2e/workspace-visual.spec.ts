@@ -9,6 +9,9 @@ const visualAssetId = 'c2daf4c7-e68c-4783-87c6-26b009a1169d';
 const visualWorkOrderId = 'abfc36f2-44f3-4c85-b0b5-696e4c6626bf';
 const visualTaskId = '213b9951-8f2e-437f-8f22-ef2973147f67';
 const visualTechnicianId = '5d3c9d7e-40a8-4b27-a7d8-e350a66b771b';
+const visualTechnicianTwoId = '7b8fda86-ec61-4c21-8f64-d0fdcb36bf42';
+const visualBlockedWorkOrderId = 'c81edcaf-805e-46f4-a6ba-e818f41dde2d';
+const visualReviewWorkOrderId = '6bb867e4-b244-4bc5-a45d-2e22912be14c';
 
 const visualAsset = {
   id: visualAssetId, organization_id: fixtureOrganizationIds.alpha, code: 'ALPHA-01', name: 'Alpha pump', category: 'pump',
@@ -21,6 +24,14 @@ const visualWorkOrder = {
   category: 'inspection', priority: 'normal', due_at: null, supervisor_id: fixtureUserId, status: 'in_progress',
   blocks_operation: false, created_by: fixtureUserId, created_at: '2026-10-21T03:00:00.000Z', version: 4,
   repair_revision: 2, submitted_revision: null, opened_at: '2026-10-21T05:00:00.000Z', completed_at: null, priority_reason: null,
+};
+const visualBlockedWorkOrder = {
+  ...visualWorkOrder, id: visualBlockedWorkOrderId, number: 4, title: 'Blocked air handler check',
+  status: 'blocked', version: 7,
+};
+const visualReviewWorkOrder = {
+  ...visualWorkOrder, id: visualReviewWorkOrderId, number: 5, title: 'Bearing repair submitted',
+  status: 'awaiting_review', version: 8, repair_revision: 3, submitted_revision: 3,
 };
 
 async function fulfillJson(route: Route, value: unknown) {
@@ -184,13 +195,33 @@ test('POR-24 dashboard, work orders, assets, team, notifications and settings re
     if (url.pathname === '/rest/v1/rpc/get_team') return fulfillJson(route, [
       { user_id: fixtureUserId, role: 'owner', active: true, version: 1 },
       { user_id: visualTechnicianId, role: 'technician', active: true, version: 2 },
+      { user_id: visualTechnicianTwoId, role: 'technician', active: true, version: 3 },
+    ]);
+    if (url.pathname === '/rest/v1/organization_members') return fulfillJson(route, [
+      { organization_id: fixtureOrganizationIds.alpha, user_id: fixtureUserId, role: 'owner', active: true, created_at: '2026-10-21T01:00:00.000Z', version: 1 },
+      { organization_id: fixtureOrganizationIds.alpha, user_id: visualTechnicianId, role: 'technician', active: true, created_at: '2026-10-21T02:00:00.000Z', version: 2 },
+      { organization_id: fixtureOrganizationIds.alpha, user_id: visualTechnicianTwoId, role: 'technician', active: true, created_at: '2026-10-21T03:00:00.000Z', version: 3 },
     ]);
     if (url.pathname === '/rest/v1/rpc/get_asset_history') return fulfillJson(route, { items: [], next_cursor: null });
     if (url.pathname === '/rest/v1/work_orders') {
       if (url.searchParams.get('id') === `eq.${visualWorkOrderId}`) return fulfillJson(route, visualWorkOrder);
-      return fulfillJson(route, [visualWorkOrder]);
+      const status = url.searchParams.get('status');
+      const project = (row: Record<string, unknown>, columns: string[]) => Object.fromEntries(columns.map((column) => [column, row[column]]));
+      const columns = url.searchParams.get('select')?.split(',') ?? Object.keys(visualWorkOrder);
+      if (status === 'eq.blocked') return fulfillJson(route, [project(visualBlockedWorkOrder, columns)]);
+      if (status === 'eq.awaiting_review') return fulfillJson(route, [project(visualReviewWorkOrder, columns)]);
+      if (url.searchParams.has('due_at')) return fulfillJson(route, []);
+      const selected = url.searchParams.get('select');
+      const rows = [visualWorkOrder, visualBlockedWorkOrder, visualReviewWorkOrder];
+      if (selected === 'id,status') return fulfillJson(route, rows.map(({ id, status: currentStatus }) => ({ id, status: currentStatus })));
+      if (selected && selected !== '*') return fulfillJson(route, rows.map((row) => project(row, columns)));
+      return fulfillJson(route, rows);
     }
-    if (url.pathname === '/rest/v1/work_order_assignments') return fulfillJson(route, [{ user_id: visualTechnicianId, unassigned_at: null }]);
+    if (url.pathname === '/rest/v1/work_order_assignments') return fulfillJson(route, [
+      { user_id: visualTechnicianId, work_order_id: visualWorkOrderId },
+      { user_id: visualTechnicianTwoId, work_order_id: visualBlockedWorkOrderId },
+      { user_id: visualTechnicianTwoId, work_order_id: visualReviewWorkOrderId },
+    ]);
     if (url.pathname === '/rest/v1/work_order_tasks') return fulfillJson(route, [{ id: visualTaskId, organization_id: fixtureOrganizationIds.alpha, work_order_id: visualWorkOrderId, label: 'Verify bearing clearance', required: true, completed: false, completed_by: null, completed_at: null }]);
     if (['/rest/v1/work_order_events', '/rest/v1/work_order_reviews', '/rest/v1/work_order_participants', '/rest/v1/work_order_performer_declarations', '/rest/v1/work_order_submission_attestations', '/rest/v1/attachments', '/rest/v1/asset_holds', '/rest/v1/asset_releases', '/rest/v1/asset_meter_readings', '/rest/v1/organization_invitations'].includes(url.pathname)) return fulfillJson(route, []);
     if (url.pathname === '/rest/v1/notifications') return fulfillJson(route, [notification]);
@@ -220,6 +251,26 @@ test('POR-24 dashboard, work orders, assets, team, notifications and settings re
     await expect(page.getByRole('heading', { name: screen.heading, exact: true })).toBeVisible();
     if (screen.name === 'work-orders') await expect(page.getByRole('group', { name: 'Work orders by status' })).toBeVisible();
     if (screen.name === 'assets') await expect(page.getByRole('region', { name: /Operational details for/ }).getByText('No private images are recorded.')).toBeVisible();
+    if (screen.name === 'dashboard') {
+      const attention = page.getByRole('region', { name: 'Attention queue' });
+      await expect(attention.getByRole('link')).toHaveCount(2);
+      await expect(attention.getByText(/WO-0004.*Blocked air handler check/)).toBeVisible();
+      await expect(attention.getByText(/WO-0005.*Bearing repair submitted/)).toBeVisible();
+    }
+    if (screen.name === 'team') {
+      const workload = page.getByRole('region', { name: 'Assigned workload' });
+      const firstTechnician = workload.getByRole('article').filter({ hasText: visualTechnicianId });
+      const secondTechnician = workload.getByRole('article').filter({ hasText: visualTechnicianTwoId });
+      await expect(firstTechnician.locator('strong')).toHaveText('1');
+      await expect(secondTechnician.locator('strong')).toHaveText('2');
+      expect(await workload.evaluate((element) => {
+        const invite = document.querySelector('#invite-title')?.closest('section');
+        return Boolean(invite && (element.compareDocumentPosition(invite) & Node.DOCUMENT_POSITION_FOLLOWING));
+      })).toBe(true);
+      await expect(page.getByRole('heading', { name: 'Workspace members', exact: true })).toBeVisible();
+    }
+    if (screen.name === 'notifications') await expect(page.getByRole('region', { name: 'Selected notification' }).getByText(notification.id)).toBeVisible();
+    if (screen.name === 'settings') await expect(page.getByLabel('Workspace time zone')).toHaveValue('Asia/Manila');
     await expect(page.locator('body')).toHaveJSProperty('scrollWidth', 1440);
     await page.screenshot({ path: `${por24EvidenceDirectory}/${screen.name}-desktop.png`, fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from '../lib/database.types';
-import { assignWorkOrder, commandResult, createWorkOrder, declareWorkOrderPerformers, saveAsset, saveRequest, submitWorkOrder, updateWorkOrder } from './commands';
+import { assignWorkOrder, commandResult, convertRequest, createWorkOrder, declareWorkOrderPerformers, saveAsset, saveRequest, scheduleWorkOrder, submitWorkOrder, updateWorkOrder } from './commands';
 
 const item = z.strictObject({ id: z.uuid(), name: z.string() });
 const requestId = 'e0de249a-e9f0-4bed-932e-4c15bc14b7da';
@@ -75,6 +75,16 @@ describe('nullable create RPC wrappers', () => {
     expect(fixture.requests).toEqual([{ url: fixture.expectedUrl, body: fixture.expectedBody }]);
   });
 
+  it('edits an asset with its current version and supports only recorded archive metadata', async () => {
+    const response = { data: { id: assetId, organization_id: organizationId, code: 'PUMP-01', name: 'Synthetic pump', category: 'pump', site_id: null, serial_number: null, registration: null, archived_at: createdAt, created_by: actorId, created_at: createdAt, version: 2 }, version: 2, request_id: requestId };
+    const fields = { name: 'Renamed synthetic pump', archived: true };
+    const expectedBody = { ctx: { organization_id: organizationId, request_id: requestId, expected_version: 1 }, asset_id: assetId, fields };
+    const fixture = createRpcClient('save_asset', response, expectedBody);
+
+    await expect(saveAsset(fixture.client, organizationId, fields, requestId, { id: assetId, version: 1 })).resolves.toEqual(response.data);
+    expect(fixture.requests).toEqual([{ url: fixture.expectedUrl, body: expectedBody }]);
+  });
+
   it('saves a request through the bound Supabase RPC method and preserves its nullable create key', async () => {
     const response = {
       data: {
@@ -129,6 +139,53 @@ describe('nullable create RPC wrappers', () => {
     const incompatible = createRpcClient('create_work_order', { data: { ...workOrder, repair_revision: 1 }, version: 1, request_id: requestId }, expectedBody);
     await expect(createWorkOrder(incompatible.client, organizationId, assetId, fields, requestId)).rejects.toThrow('DEPENDENCY_UNAVAILABLE');
     expect(incompatible.requests).toEqual([{ url: incompatible.expectedUrl, body: expectedBody }]);
+  });
+
+  it('sends an explicit critical reason while retaining the legacy create response projection', async () => {
+    const workOrder = {
+      id: 'f0ffae76-6e12-4b24-a858-8f1984e298cb', organization_id: organizationId, number: 4, asset_id: assetId, source_request_id: null,
+      title: 'Inspect pump coupling', description: 'Check alignment and document the reading.', category: 'inspection', priority: 'critical', due_at: null,
+      supervisor_id: actorId, status: 'draft', blocks_operation: false, created_by: actorId, created_at: createdAt, version: 1,
+    };
+    const fields = { title: workOrder.title, description: workOrder.description, category: workOrder.category, priority: 'critical' as const, critical_reason: 'Bearing temperature exceeded the recorded limit.', supervisor_id: actorId };
+    const expectedBody = { ctx: { organization_id: organizationId, request_id: requestId }, asset_id: assetId, fields };
+    const fixture = createRpcClient('create_work_order', { data: workOrder, version: 1, request_id: requestId }, expectedBody);
+
+    await expect(createWorkOrder(fixture.client, organizationId, assetId, fields, requestId)).resolves.toEqual(workOrder);
+    expect(fixture.requests).toEqual([{ url: fixture.expectedUrl, body: expectedBody }]);
+    expect(() => createWorkOrder(fixture.client, organizationId, assetId, { ...fields, critical_reason: '' }, requestId)).toThrow();
+  });
+
+  it('keeps critical conversion reason in the stable request body and rejects the operational-shaped legacy response', async () => {
+    const workOrder = {
+      id: 'f0ffae76-6e12-4b24-a858-8f1984e298cb', organization_id: organizationId, number: 4, asset_id: assetId, source_request_id: 'a791e713-3a7a-4770-94f4-12542aef0d7e',
+      title: 'Inspect pump coupling', description: 'Check alignment and document the reading.', category: 'inspection', priority: 'critical', due_at: null,
+      supervisor_id: actorId, status: 'draft', blocks_operation: false, created_by: actorId, created_at: createdAt, version: 1,
+    };
+    const requestRecordId = 'a791e713-3a7a-4770-94f4-12542aef0d7e';
+    const fields = { title: workOrder.title, priority: 'critical' as const, critical_reason: 'Bearing temperature exceeded the recorded limit.' };
+    const expectedBody = { ctx: { organization_id: organizationId, request_id: requestId }, id: requestRecordId, work_order_fields: fields };
+    const fixture = createRpcClient('convert_request', { data: workOrder, version: 1, request_id: requestId }, expectedBody);
+
+    await expect(convertRequest(fixture.client, organizationId, requestRecordId, fields, requestId)).resolves.toEqual(workOrder);
+    expect(fixture.requests).toEqual([{ url: fixture.expectedUrl, body: expectedBody }]);
+    const incompatible = createRpcClient('convert_request', { data: { ...workOrder, repair_revision: 1 }, version: 1, request_id: requestId }, expectedBody);
+    await expect(convertRequest(incompatible.client, organizationId, requestRecordId, fields, requestId)).rejects.toThrow('DEPENDENCY_UNAVAILABLE');
+  });
+
+  it('schedules with an explicit planned date and preserves the current operational row contract', async () => {
+    const workOrder = {
+      id: 'f0ffae76-6e12-4b24-a858-8f1984e298cb', organization_id: organizationId, number: 4, asset_id: assetId, source_request_id: null,
+      title: 'Inspect pump coupling', description: 'Check alignment and document the reading.', category: 'inspection', priority: 'normal', due_at: null,
+      planned_on: '2026-10-30', supervisor_id: actorId, status: 'scheduled', blocks_operation: true, created_by: actorId, created_at: createdAt, version: 2,
+      repair_revision: 1, submitted_revision: null, opened_at: createdAt, completed_at: null, priority_reason: null,
+    };
+    const expectedBody = { ctx: { organization_id: organizationId, request_id: requestId, expected_version: 1 }, id: workOrder.id, planned_on: '2026-10-30' };
+    const fixture = createRpcClient('schedule_work_order', { data: workOrder, version: 2, request_id: requestId }, expectedBody);
+
+    await expect(scheduleWorkOrder(fixture.client, organizationId, workOrder.id, 1, '2026-10-30', undefined, requestId)).resolves.toEqual(workOrder);
+    expect(fixture.requests).toEqual([{ url: fixture.expectedUrl, body: expectedBody }]);
+    expect(() => scheduleWorkOrder(fixture.client, organizationId, workOrder.id, 1, '2026-02-30', undefined, requestId)).toThrow();
   });
 
   it('keeps assignment responses on the strict legacy work-order projection', async () => {

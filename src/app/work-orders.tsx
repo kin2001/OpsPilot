@@ -1,17 +1,17 @@
 import { useRef, useState, type FormEvent } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { z } from 'zod';
 import { attachmentRecord, operationalWorkOrder, teamResult, workOrderEvent, workOrderReview, workOrderTask, performerDeclaration, submissionAttestation } from '../contracts/operational';
 import { domainError } from '../lib/domain-errors';
 import type { Json } from '../lib/database.types';
-import { addWorkOrderTask, assignWorkOrder, createWorkOrder, declareWorkOrderPerformers, reviewWorkOrder, submitWorkOrder, transitionWorkOrder, updateWorkOrder } from './commands';
+import { addWorkOrderTask, assignWorkOrder, createWorkOrder, declareWorkOrderPerformers, reviewWorkOrder, scheduleWorkOrder, submitWorkOrder, transitionWorkOrder, updateWorkOrder } from './commands';
+import { recordFilter, recordPageSize, splitRecordPage, type RecordCursor } from './record-query';
 import { PrivilegedArea } from './auth/security';
 import { PrivateImage, reserveWorkOrderImage, uploadPrivateImage } from './private-attachments';
 import { useWorkspace } from './workspace';
 import { AppButton, ErrorNotice, Field, LoadingNotice, PageHeader, SelectField, SuccessNotice, TextAreaField } from './ui';
 
-const workOrdersSchema = z.array(operationalWorkOrder).max(100);
 const assignmentRows = z.array(z.strictObject({ user_id: z.uuid(), unassigned_at: z.string().nullable() })).max(100);
 const participantRows = z.array(z.strictObject({ user_id: z.uuid(), source: z.string(), recorded_at: z.string() })).max(1000);
 const taskRows = z.array(workOrderTask).max(100);
@@ -21,7 +21,7 @@ const declarationRows = z.array(performerDeclaration).max(100);
 const attestationRows = z.array(submissionAttestation).max(100);
 const readyAttachments = z.array(attachmentRecord).max(10);
 const assetSummary = z.strictObject({ id: z.uuid(), code: z.string(), name: z.string(), availability: z.enum(['operational', 'under_maintenance', 'out_of_service', 'pending_release']), archived_at: z.string().nullable() });
-const createAssetRows = z.array(z.strictObject({ id: z.uuid(), code: z.string(), name: z.string(), archived_at: z.string().nullable() })).max(100);
+const createAssetRows = z.array(z.strictObject({ id: z.uuid(), code: z.string(), name: z.string(), created_at: z.string(), archived_at: z.string().nullable() })).max(recordPageSize + 1);
 const evidenceSettings = z.strictObject({ evidence_required: z.boolean() });
 const workOrderLanes = [
   { id: 'open', label: 'Open', statuses: ['draft', 'open', 'scheduled'] },
@@ -40,6 +40,11 @@ function parseRpc<T extends z.ZodType>(data: Json | null, error: { message: stri
 
 function isAmbiguous(code: string) { return code === 'DEPENDENCY_UNAVAILABLE' || code === 'RATE_LIMITED'; }
 function workOrderLabel(number: number) { return `WO-${String(number).padStart(4, '0')}`; }
+function localDateTime(value: string | null) {
+  if (!value) return '';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
 
 type Intent = { id: string; execute: (id: string) => Promise<unknown>; success: string };
 type UploadIntent = { id: string; file: File; attachment: z.output<typeof attachmentRecord> | null };
@@ -60,24 +65,33 @@ export function OperationalWorkOrderPage() {
   const [notices, setNotices] = useState<Record<string, { error?: string; success?: string }>>({});
   const [resolvedIntent, setResolvedIntent] = useState<{ key: string; message: string } | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [createFields, setCreateFields] = useState({ assetId: '', title: '', description: '', category: '', priority: 'normal' as 'low' | 'normal' | 'high' });
+  const [createAssetSearch, setCreateAssetSearch] = useState('');
+  const [createFields, setCreateFields] = useState({ assetId: '', title: '', description: '', category: '', priority: 'normal' as 'low' | 'normal' | 'high' | 'critical', criticalReason: '' });
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState('');
   const [createIntent, setCreateIntent] = useState<{ id: string; values: typeof createFields } | null>(null);
   const intents = useRef(new Map<string, Intent>());
   const uploadIntents = useRef(new Map<string, UploadIntent>());
   const [, redrawUploads] = useState(0);
-  const queryKey = ['work-orders', user.id, organization.id] as const;
-  const list = useQuery({
+  const workOrdersKey = ['work-orders', user.id, organization.id] as const;
+  const queryKey = [...workOrdersKey, search.trim(), statusFilter] as const;
+  const list = useInfiniteQuery({
     queryKey,
-    queryFn: async ({ signal }) => {
-      const result = await client.from('work_orders').select('*').eq('organization_id', organization.id).order('created_at', { ascending: false }).limit(100).abortSignal(signal);
+    initialPageParam: null as RecordCursor | null,
+    queryFn: async ({ signal, pageParam }) => {
+      const numberSearch = search.trim().match(/^(?:WO[-\s]?)?0*(\d{1,10})$/i);
+      const exact = numberSearch ? [`number.eq.${Number(numberSearch[1])}`] : [];
+      const filter = recordFilter(['title', 'category'], search.trim(), pageParam, exact);
+      let workOrderQuery = client.from('work_orders').select('*').eq('organization_id', organization.id);
+      if (statusFilter !== 'all') workOrderQuery = workOrderQuery.eq('status', statusFilter);
+      const result = await workOrderQuery.or(filter ?? 'id.not.is.null').order('created_at', { ascending: false }).order('id', { ascending: false }).limit(recordPageSize + 1).abortSignal(signal);
       if (result.error) throw new Error(domainError(result.error).code);
-      return workOrdersSchema.parse(result.data ?? []);
+      return splitRecordPage(z.array(operationalWorkOrder).max(recordPageSize + 1).parse(result.data ?? []));
     },
+    getNextPageParam: (lastPage) => lastPage.next ?? undefined,
   });
   const linkedId = searchParams.get('workOrder');
-  const listTarget = list.data?.find((workOrder) => workOrder.id === linkedId);
+  const listTarget = list.data?.pages.flatMap((page) => page.rows).find((workOrder) => workOrder.id === linkedId);
   const linkedTarget = useQuery({
     queryKey: ['work-order-target', user.id, organization.id, linkedId],
     enabled: Boolean(linkedId && !listTarget),
@@ -87,16 +101,21 @@ export function OperationalWorkOrderPage() {
       return result.data ? operationalWorkOrder.parse(result.data) : null;
     },
   });
-  const createAssets = useQuery({
-    queryKey: ['work-order-create-assets', user.id, organization.id], enabled: isCoordinator && createOpen,
-    queryFn: async ({ signal }) => {
-      const result = await client.from('assets').select('id,code,name,archived_at').eq('organization_id', organization.id).is('archived_at', null).order('created_at', { ascending: false }).limit(100).abortSignal(signal);
+  const createAssets = useInfiniteQuery({
+    queryKey: ['work-order-create-assets', user.id, organization.id, createAssetSearch.trim()], enabled: isCoordinator && createOpen,
+    initialPageParam: null as RecordCursor | null,
+    queryFn: async ({ signal, pageParam }) => {
+      const filter = recordFilter(['code', 'name'], createAssetSearch.trim(), pageParam);
+      const result = await client.from('assets').select('id,code,name,created_at,archived_at').eq('organization_id', organization.id).is('archived_at', null)
+        .or(filter ?? 'id.not.is.null').order('created_at', { ascending: false }).order('id', { ascending: false }).limit(recordPageSize + 1).abortSignal(signal);
       if (result.error) throw new Error(domainError(result.error).code);
-      return createAssetRows.parse(result.data ?? []);
+      return splitRecordPage(createAssetRows.parse((result.data ?? []).slice(0, recordPageSize + 1)));
     },
+    getNextPageParam: (lastPage) => lastPage.next ?? undefined,
   });
-  const visible = (list.data ?? []).filter((workOrder) => (statusFilter === 'all' || workOrder.status === statusFilter)
-    && `${workOrder.number} ${workOrder.title} ${workOrder.category} ${workOrder.status}`.toLowerCase().includes(search.trim().toLowerCase()));
+  const workOrderRows = list.data?.pages.flatMap((page) => page.rows) ?? [];
+  const createAssetRowsList = createAssets.data?.pages.flatMap((page) => page.rows) ?? [];
+  const visible = workOrderRows;
   const selected = linkedId ? listTarget ?? linkedTarget.data ?? undefined : visible[0];
   const selectedId = selected?.id ?? null;
   const select = (id: string) => { setDetailsOpen(true); setSearchParams({ workOrder: id }); };
@@ -200,7 +219,7 @@ export function OperationalWorkOrderPage() {
 
   const invalidate = async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey }), queryClient.invalidateQueries({ queryKey: detailsKey }),
+      queryClient.invalidateQueries({ queryKey: workOrdersKey }), queryClient.invalidateQueries({ queryKey: detailsKey }),
       ...(linkedId ? [queryClient.invalidateQueries({ queryKey: ['work-order-target', user.id, organization.id, linkedId] })] : []),
       queryClient.invalidateQueries({ queryKey: ['work-order-assignments', user.id, organization.id, selectedId] }),
       queryClient.invalidateQueries({ queryKey: ['work-order-tasks', user.id, organization.id, selectedId] }),
@@ -238,7 +257,59 @@ export function OperationalWorkOrderPage() {
   const runTransition = (target: Parameters<typeof transitionWorkOrder>[4], reason?: string) => {
     if (!selected) return;
     const key = `transition:${selected.id}:${target}`;
-    void run(key, (requestId) => transitionWorkOrder(client, organization.id, selected.id, selected.version, target, reason, requestId), `Work order ${target.replaceAll('_', ' ')} recorded.`);
+    const success = selected.status === 'completed' && target === 'in_progress'
+      ? 'Work order reopened. Its repair revision advanced and must be submitted for independent review again.'
+      : `Work order ${target.replaceAll('_', ' ')} recorded.`;
+    void run(key, (requestId) => transitionWorkOrder(client, organization.id, selected.id, selected.version, target, reason, requestId), success);
+  };
+  const fieldOr = (key: string, fallback: string) => Object.hasOwn(formValues, `${selectedId}:${key}`) ? field(key) : fallback;
+  const runSchedule = () => {
+    if (!selected) return;
+    const plannedOn = fieldOr('planned-on', selected.planned_on ?? '').trim();
+    const reason = field('transition-reason').trim();
+    const key = `schedule:${selected.id}`;
+    if (!plannedOn || selected.status === 'blocked' && !reason) {
+      setNotices((current) => ({ ...current, [key]: { error: selected.status === 'blocked' && !reason ? 'Enter a reason before rescheduling blocked work.' : 'Choose a planned date before scheduling.' } }));
+      return;
+    }
+    void run(key, (requestId) => scheduleWorkOrder(client, organization.id, selected.id, selected.version, plannedOn, reason || undefined, requestId), 'Planned work date and scheduled status recorded.');
+  };
+  const saveAdministrativeEdit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!selected) return;
+    const title = fieldOr('admin-title', selected.title);
+    const description = fieldOr('admin-description', selected.description);
+    const category = fieldOr('admin-category', selected.category);
+    const priority = fieldOr('admin-priority', selected.priority) as typeof selected.priority;
+    const priorityReason = fieldOr('admin-priority-reason', selected.priority_reason ?? '').trim();
+    const supervisorId = fieldOr('admin-supervisor', selected.supervisor_id);
+    const dueDateTime = fieldOr('admin-due-at', localDateTime(selected.due_at));
+    const fields: { title?: string; description?: string; category?: string; priority?: typeof selected.priority; priority_reason?: string; due_at?: string | null; supervisor_id?: string } = {};
+    if (['draft', 'open', 'scheduled', 'in_progress'].includes(selected.status)) {
+      if (title !== selected.title) fields.title = title.trim();
+      if (description !== selected.description) fields.description = description.trim();
+    }
+    if (category !== selected.category) fields.category = category.trim();
+    if (priority !== selected.priority) fields.priority = priority;
+    if (priority === 'critical' && (priority !== selected.priority || priorityReason !== (selected.priority_reason ?? ''))) {
+      fields.priority = 'critical';
+      fields.priority_reason = priorityReason;
+    }
+    if (supervisorId !== selected.supervisor_id) fields.supervisor_id = supervisorId;
+    let dueAt: string | null = null;
+    try { dueAt = dueDateTime ? new Date(dueDateTime).toISOString() : null; }
+    catch { setNotices((current) => ({ ...current, [`admin:${selected.id}`]: { error: 'Enter a valid due date and time.' } })); return; }
+    if (dueAt !== selected.due_at) fields.due_at = dueAt;
+    if (!Object.keys(fields).length) {
+      setNotices((current) => ({ ...current, [`admin:${selected.id}`]: { error: 'No administrative fields have changed.' } }));
+      return;
+    }
+    if (priority === 'critical' && (fields.priority === 'critical' || fields.priority_reason !== undefined) && !priorityReason) {
+      setNotices((current) => ({ ...current, [`admin:${selected.id}`]: { error: 'Enter the required reason for critical priority.' } }));
+      return;
+    }
+    const key = `admin:${selected.id}`;
+    void run(key, (requestId) => updateWorkOrder(client, organization.id, selected.id, selected.version, fields, requestId), 'Administrative work order changes recorded.');
   };
   const runRepairUpdate = (fields: { note?: string; labor_minutes?: number; task_id?: string; task_completed?: boolean; title?: string; description?: string }) => {
     if (!selected) return;
@@ -341,12 +412,14 @@ export function OperationalWorkOrderPage() {
     const intent = existing ?? { id: crypto.randomUUID(), values };
     setCreateIntent(intent); setCreateBusy(true); setCreateError('');
     try {
+      if (values.priority === 'critical' && !values.criticalReason.trim()) throw new Error('VALIDATION');
       const created = await createWorkOrder(client, organization.id, values.assetId, {
-        title: values.title, description: values.description, category: values.category, priority: values.priority, supervisor_id: user.id,
+        title: values.title, description: values.description, category: values.category, priority: values.priority,
+        ...(values.priority === 'critical' ? { critical_reason: values.criticalReason.trim() } : {}), supervisor_id: user.id,
       }, intent.id);
       setCreateIntent(null); setCreateOpen(false);
-      setCreateFields({ assetId: '', title: '', description: '', category: '', priority: 'normal' });
-      await queryClient.invalidateQueries({ queryKey });
+      setCreateFields({ assetId: '', title: '', description: '', category: '', priority: 'normal', criticalReason: '' });
+      await queryClient.invalidateQueries({ queryKey: workOrdersKey });
       setSearchParams({ workOrder: created.id });
       await queryClient.fetchQuery({
         queryKey: ['work-order-target', user.id, organization.id, created.id],
@@ -359,22 +432,24 @@ export function OperationalWorkOrderPage() {
       });
     } catch (cause) {
       const code = domainError(cause).code;
-      setCreateError(`${domainError(cause).message}${isAmbiguous(code) ? ' Retry repeats this exact request and values.' : ''}`);
+      setCreateError(`${code === 'VALIDATION' ? 'Enter a reason before creating a critical-priority work order.' : domainError(cause).message}${isAmbiguous(code) ? ' Retry repeats this exact request and values.' : ''}`);
       if (!isAmbiguous(code)) setCreateIntent(null);
     } finally { setCreateBusy(false); }
   };
 
   return <>
-    <PageHeader eyebrow="Maintenance planning" title="Work orders" description="Follow assigned work, repair revisions, reviews and the separate asset-release decision." action={<div className="compact-actions">{isCoordinator && <AppButton onClick={() => { setCreateOpen((open) => !open); if (!createIntent) setCreateError(''); }}>{createOpen ? 'Close create form' : 'Create work order'}</AppButton>}<Link className="button button--secondary" to="/requests">Review requests</Link></div>} />
+    <PageHeader eyebrow="Maintenance planning" title="Work orders" description="Follow assigned work, repair revisions, reviews and the separate asset-release decision." action={<div className="compact-actions">{isCoordinator && <AppButton disabled={Boolean(createIntent)} onClick={() => { setCreateOpen((open) => !open); if (!createIntent) setCreateError(''); }}>{createOpen ? createIntent ? 'Pending create · retry below' : 'Close create form' : 'Create work order'}</AppButton>}<Link className="button button--secondary" to="/requests">Review requests</Link></div>} />
     {createOpen && isCoordinator && <section className="panel" aria-label="Create a work order"><h2>Create a work order</h2><p className="field-hint">Creates a draft only. Assignment and repair progress are separate recorded actions.</p>{createError && <ErrorNotice>{createError}</ErrorNotice>}<form className="form-stack" onSubmit={(event) => void createDraft(event)}>
-      <SelectField id="create-work-order-asset" label="Asset" required disabled={createBusy || Boolean(createIntent) || createAssets.isPending || createAssets.isError} value={createFields.assetId} onChange={(event) => setCreateFields((current) => ({ ...current, assetId: event.target.value }))}><option value="">Choose an active asset</option>{createAssets.data?.map((item) => <option key={item.id} value={item.id}>{item.code} · {item.name}</option>)}</SelectField>
-      {createAssets.isPending && <LoadingNotice label="Loading active assets…" />}{createAssets.isError && <ErrorNotice>Active assets could not be confirmed. Retry after checking your workspace access.</ErrorNotice>}{createAssets.data?.length === 0 && <p className="field-hint">No active assets are available for a new work order.</p>}
+      <Field id="create-work-order-asset-search" label="Find active assets" type="search" placeholder="Code or name" disabled={createBusy || Boolean(createIntent)} value={createAssetSearch} onChange={(event) => setCreateAssetSearch(event.target.value)} />
+      <SelectField id="create-work-order-asset" label="Asset" required disabled={createBusy || Boolean(createIntent) || createAssets.isPending || createAssets.isError} value={createFields.assetId} onChange={(event) => setCreateFields((current) => ({ ...current, assetId: event.target.value }))}><option value="">Choose an active asset</option>{createAssetRowsList.map((item) => <option key={item.id} value={item.id}>{item.code} · {item.name}</option>)}</SelectField>
+      {createAssets.isPending && <LoadingNotice label="Loading active assets…" />}{createAssets.isError && <ErrorNotice>Active assets could not be confirmed. Retry after checking your workspace access.</ErrorNotice>}{createAssetRowsList.length === 0 && !createAssets.isPending && <p className="field-hint">No active assets match this search.</p>}{createAssets.hasNextPage && <AppButton type="button" variant="secondary" disabled={createAssets.isFetchingNextPage || Boolean(createIntent)} onClick={() => void createAssets.fetchNextPage()}>{createAssets.isFetchingNextPage ? 'Loading more active assets…' : 'Load more active assets'}</AppButton>}
       <Field id="create-work-order-title" label="Title" required maxLength={200} disabled={createBusy || Boolean(createIntent)} value={createFields.title} onChange={(event) => setCreateFields((current) => ({ ...current, title: event.target.value }))} />
       <TextAreaField id="create-work-order-description" label="Description" required maxLength={4000} disabled={createBusy || Boolean(createIntent)} value={createFields.description} onChange={(event) => setCreateFields((current) => ({ ...current, description: event.target.value }))} />
-      <div className="form-row"><Field id="create-work-order-category" label="Category" required maxLength={100} disabled={createBusy || Boolean(createIntent)} value={createFields.category} onChange={(event) => setCreateFields((current) => ({ ...current, category: event.target.value }))} /><SelectField id="create-work-order-priority" label="Priority" disabled={createBusy || Boolean(createIntent)} value={createFields.priority} onChange={(event) => setCreateFields((current) => ({ ...current, priority: event.target.value as typeof createFields.priority }))}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option></SelectField></div>
-      <div className="compact-actions"><AppButton type="submit" disabled={createBusy || !createFields.assetId}>{createBusy ? 'Creating…' : createIntent ? 'Retry exact create' : 'Create work order'}</AppButton><AppButton type="button" variant="secondary" disabled={createBusy || Boolean(createIntent)} onClick={() => { setCreateOpen(false); setCreateFields({ assetId: '', title: '', description: '', category: '', priority: 'normal' }); setCreateError(''); }}>Cancel</AppButton></div>
+      <div className="form-row"><Field id="create-work-order-category" label="Category" required maxLength={100} disabled={createBusy || Boolean(createIntent)} value={createFields.category} onChange={(event) => setCreateFields((current) => ({ ...current, category: event.target.value }))} /><SelectField id="create-work-order-priority" label="Priority" disabled={createBusy || Boolean(createIntent)} value={createFields.priority} onChange={(event) => setCreateFields((current) => ({ ...current, priority: event.target.value as typeof createFields.priority }))}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="critical">Critical</option></SelectField></div>
+      {createFields.priority === 'critical' && <TextAreaField id="create-work-order-critical-reason" label="Critical priority reason" required maxLength={2000} disabled={createBusy || Boolean(createIntent)} value={createFields.criticalReason} onChange={(event) => setCreateFields((current) => ({ ...current, criticalReason: event.target.value }))} hint="This reason is recorded with the critical priority. It does not change asset availability." />}
+      <div className="compact-actions"><AppButton type="submit" disabled={createBusy || !createFields.assetId}>{createBusy ? 'Creating…' : createIntent ? 'Retry exact create' : 'Create work order'}</AppButton><AppButton type="button" variant="secondary" disabled={createBusy || Boolean(createIntent)} onClick={() => { setCreateOpen(false); setCreateFields({ assetId: '', title: '', description: '', category: '', priority: 'normal', criticalReason: '' }); setCreateError(''); }}>Cancel</AppButton></div>
     </form></section>}
-    {list.isPending ? <LoadingNotice label="Loading authorized work orders…" /> : list.isError ? <div className="empty-state"><ErrorNotice>Work orders are unavailable for this workspace or account.</ErrorNotice><AppButton variant="secondary" onClick={() => void list.refetch()}>Retry</AppButton></div> : list.data.length === 0 && !linkedId ? <div className="empty-state"><h2>No work orders are visible</h2><p>Accepted maintenance requests create draft work orders for the operations team.</p><Link className="button button--secondary" to="/requests">Open requests</Link></div> : <>
+    {list.isPending ? <LoadingNotice label="Loading authorized work orders…" /> : list.isError ? <div className="empty-state"><ErrorNotice>Work orders are unavailable for this workspace or account.</ErrorNotice><AppButton variant="secondary" onClick={() => void list.refetch()}>Retry</AppButton></div> : workOrderRows.length === 0 && !linkedId && !search.trim() && statusFilter === 'all' ? <div className="empty-state"><h2>No work orders are visible</h2><p>Create a work order or accept a maintenance request for the operations team.</p><Link className="button button--secondary" to="/requests">Open requests</Link></div> : <>
       <div className="work-order-filters">
         <Field id="work-order-search" label="Search work orders" type="search" placeholder="Number, title or category" value={search} onChange={(event) => setSearch(event.target.value)} />
         <SelectField id="work-order-status" label="Status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">All visible statuses</option>{operationalWorkOrder.shape.status.options.map((status) => <option key={status} value={status}>{status.replaceAll('_', ' ')}</option>)}</SelectField>
@@ -400,16 +475,33 @@ export function OperationalWorkOrderPage() {
         </table>
         {!visible.length && <p className="field-hint">No work orders match this filter.</p>}
       </div>}
+      {!workOrderRows.length && <p className="field-hint">No work orders match these filters.</p>}
+      {list.hasNextPage && <AppButton variant="secondary" disabled={list.isFetchingNextPage} onClick={() => void list.fetchNextPage()}>{list.isFetchingNextPage ? 'Loading more work orders…' : 'Load more work orders'}</AppButton>}
       {selectedDetailsOpen && <section className="record-preview work-order-detail" aria-label="Selected work order details" aria-live="polite">
           <div className="work-order-detail-actions"><h2>Selected work order</h2><AppButton variant="secondary" onClick={closeDetails}>Close details</AppButton></div>
           {linkedId && !listTarget && linkedTarget.isPending ? <LoadingNotice label="Checking the exact linked work order under your current access…" /> : linkedId && !listTarget && linkedTarget.isError ? <div className="empty-state"><h2>Work order unavailable</h2><p>This target could not be confirmed under your current workspace access.</p><AppButton variant="secondary" onClick={() => void linkedTarget.refetch()}>Retry target lookup</AppButton></div> : !selected ? <div className="empty-state"><h2>{linkedId ? 'Work order unavailable' : 'No work orders match'}</h2><p>{linkedId ? 'This target is not visible under your current workspace access.' : 'Change the search or status filter to find another work order.'}</p></div> : <>
             <div className="record-header"><div><p className="page-kicker">{workOrderLabel(selected.number)} · repair revision {selected.repair_revision}</p><h2>{selected.title}</h2></div><div className="compact-actions"><span className={`state-badge state-badge--${selected.status}`}>{selected.status.replaceAll('_', ' ')}</span><AppButton variant="secondary" onClick={() => void invalidate()}>Refresh record</AppButton></div></div>
             {selectedIntentEntry && <div className="info-callout" role="alert"><p>The outcome of a previous action is uncertain. The current record may have advanced; retry preserves the original request identity and values.</p>{notices[selectedIntentEntry[0]]?.error && <ErrorNotice>{notices[selectedIntentEntry[0]].error}</ErrorNotice>}<AppButton disabled={busyKey === selectedIntentEntry[0]} onClick={() => void run(selectedIntentEntry[0], selectedIntentEntry[1].execute, selectedIntentEntry[1].success)}>{busyKey === selectedIntentEntry[0] ? 'Retrying exact action…' : 'Retry pending action'}</AppButton></div>}
             {!selectedIntentEntry && resolvedIntent?.key.split(':')[1] === selected.id && <SuccessNotice>{resolvedIntent.message}</SuccessNotice>}
-            <dl className="detail-grid"><div><dt>Asset</dt><dd>{asset.isPending ? 'Loading authorized asset…' : asset.data ? <>{asset.data.code} · {asset.data.name}<br /><span className="state-badge">{asset.data.availability.replaceAll('_', ' ')}</span></> : 'Asset details unavailable'}</dd></div><div><dt>Priority</dt><dd>{selected.priority}{selected.priority_reason ? ` · ${selected.priority_reason}` : ''}</dd></div><div><dt>Category</dt><dd>{selected.category}</dd></div><div><dt>Due</dt><dd>{selected.due_at ? new Date(selected.due_at).toLocaleString() : 'No due date recorded'}</dd></div><div><dt>Record version</dt><dd>{selected.version}</dd></div><div><dt>Material revision</dt><dd>{selected.repair_revision}{selected.submitted_revision ? ` · submitted ${selected.submitted_revision}` : ''}</dd></div></dl>
+            <dl className="detail-grid"><div><dt>Asset</dt><dd>{asset.isPending ? 'Loading authorized asset…' : asset.data ? <>{asset.data.code} · {asset.data.name}<br /><span className="state-badge">{asset.data.availability.replaceAll('_', ' ')}</span></> : 'Asset details unavailable'}</dd></div><div><dt>Priority</dt><dd>{selected.priority}{selected.priority_reason ? ` · ${selected.priority_reason}` : ''}</dd></div><div><dt>Category</dt><dd>{selected.category}</dd></div><div><dt>Due date</dt><dd>{selected.due_at ? new Date(selected.due_at).toLocaleString() : 'Not recorded'}</dd></div><div><dt>Planned date</dt><dd>{selected.planned_on ?? 'Not scheduled'}</dd></div><div><dt>Responsible supervisor</dt><dd className="monospace">{selected.supervisor_id}</dd></div><div><dt>Record version</dt><dd>{selected.version}</dd></div><div><dt>Material revision</dt><dd>{selected.repair_revision}{selected.submitted_revision ? ` · submitted ${selected.submitted_revision}` : ''}</dd></div></dl>
             {selected.source_request_id && <p className="field-hint">Source request: <Link to={`/requests?request=${selected.source_request_id}`}>Open the linked request</Link></p>}
             <p className="record-description">{selected.description}</p>
             {selected.status === 'draft' && <p className="info-callout">Assignment and repair progress have not been recorded.</p>}
+
+            {isCoordinator && selected.status !== 'canceled' && <section className="operation-section" aria-labelledby="admin-edit-title">
+              <h3 id="admin-edit-title">Administrative work order details</h3>
+              <p className="field-hint">Changes are version-checked and recorded in work history. Due date and planned schedule date are separate.</p>
+              {notices[`admin:${selected.id}`]?.error && <ErrorNotice>{notices[`admin:${selected.id}`].error}</ErrorNotice>}{notices[`admin:${selected.id}`]?.success && <SuccessNotice>{notices[`admin:${selected.id}`].success}</SuccessNotice>}
+              <form className="form-stack" onSubmit={saveAdministrativeEdit}>
+                <Field id={`admin-title-${selected.id}`} label="Title" required maxLength={200} disabled={intentLocked || busyKey !== '' || !['draft', 'open', 'scheduled', 'in_progress'].includes(selected.status)} value={fieldOr('admin-title', selected.title)} onChange={(event) => setField('admin-title', event.target.value)} />
+                <TextAreaField id={`admin-description-${selected.id}`} label="Description" required maxLength={4000} disabled={intentLocked || busyKey !== '' || !['draft', 'open', 'scheduled', 'in_progress'].includes(selected.status)} value={fieldOr('admin-description', selected.description)} onChange={(event) => setField('admin-description', event.target.value)} />
+                <div className="form-row"><Field id={`admin-category-${selected.id}`} label="Category" required maxLength={100} disabled={intentLocked || busyKey !== ''} value={fieldOr('admin-category', selected.category)} onChange={(event) => setField('admin-category', event.target.value)} /><SelectField id={`admin-priority-${selected.id}`} label="Priority" disabled={intentLocked || busyKey !== ''} value={fieldOr('admin-priority', selected.priority)} onChange={(event) => setField('admin-priority', event.target.value)}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="critical">Critical</option></SelectField></div>
+                {fieldOr('admin-priority', selected.priority) === 'critical' && <TextAreaField id={`admin-priority-reason-${selected.id}`} label="Critical priority reason" required maxLength={2000} disabled={intentLocked || busyKey !== ''} value={fieldOr('admin-priority-reason', selected.priority_reason ?? '')} onChange={(event) => setField('admin-priority-reason', event.target.value)} />}
+                <div className="form-row"><Field id={`admin-due-${selected.id}`} label="Due date and time (optional)" type="datetime-local" disabled={intentLocked || busyKey !== ''} value={fieldOr('admin-due-at', localDateTime(selected.due_at))} onChange={(event) => setField('admin-due-at', event.target.value)} /><label className="field" htmlFor={`admin-supervisor-${selected.id}`}><span>Responsible supervisor</span><select id={`admin-supervisor-${selected.id}`} disabled={intentLocked || busyKey !== '' || team.isPending || team.isError} value={fieldOr('admin-supervisor', selected.supervisor_id)} onChange={(event) => setField('admin-supervisor', event.target.value)}>{team.data?.some((member) => member.active && member.user_id === selected.supervisor_id) ? null : <option value={selected.supervisor_id}>Current account · {selected.supervisor_id}</option>}{team.data?.filter((member) => member.active && ['owner', 'manager', 'supervisor'].includes(member.role)).map((member) => <option key={member.user_id} value={member.user_id}>{member.role} · {member.user_id}</option>)}</select></label></div>
+                {team.isError && <p className="field-hint">Current team roles could not be confirmed. Responsible supervisor editing is unavailable.</p>}
+                <AppButton type="submit" disabled={intentLocked || busyKey !== '' || team.isPending || team.isError}>{busyKey === `admin:${selected.id}` ? 'Saving…' : intents.current.has(`admin:${selected.id}`) ? 'Retry exact edit' : 'Save administrative changes'}</AppButton>
+              </form>
+            </section>}
 
             {notices[`transition:${selected.id}:open`]?.error && <ErrorNotice>{notices[`transition:${selected.id}:open`].error}</ErrorNotice>}
             <section className="operation-section" aria-labelledby="assignment-title">
@@ -424,18 +516,23 @@ export function OperationalWorkOrderPage() {
 
             <section className="operation-section" aria-labelledby="progress-title">
               <h3 id="progress-title">Work and repair record</h3>
+              {['open', 'blocked'].includes(selected.status) && isCoordinator && <Field id={`planned-on-${selected.id}`} label="Planned work date" type="date" required disabled={intentLocked || busyKey !== '' || Boolean(pendingTransition)} value={fieldOr('planned-on', selected.planned_on ?? '')} onChange={(event) => setField('planned-on', event.target.value)} hint="Scheduling records this date separately from the optional due date." />}
               <div className="compact-actions">
                 {isCoordinator && selected.status === 'draft' && <AppButton disabled={transitionLocked('open')} onClick={() => runTransition('open')}>{intents.current.has(`transition:${selected.id}:open`) ? 'Retry publish' : 'Publish work order'}</AppButton>}
-                {['open', 'scheduled'].includes(selected.status) && (isCoordinator || selectedActiveAssignments.includes(user.id)) && <AppButton disabled={transitionLocked('in_progress')} onClick={() => runTransition('in_progress')}>{intents.current.has(`transition:${selected.id}:in_progress`) ? 'Retry start work' : 'Start work'}</AppButton>}
-                {isCoordinator && selected.status === 'open' && <AppButton variant="secondary" disabled={transitionLocked('scheduled')} onClick={() => runTransition('scheduled')}>{intents.current.has(`transition:${selected.id}:scheduled`) ? 'Retry scheduling' : 'Schedule'}</AppButton>}
-                {isCoordinator && selected.status === 'blocked' && <AppButton disabled={transitionLocked('in_progress') || !field('transition-reason').trim()} onClick={() => runTransition('in_progress', field('transition-reason'))}>{intents.current.has(`transition:${selected.id}:in_progress`) ? 'Retry resume' : 'Resume work'}</AppButton>}
-                {isCoordinator && selected.status === 'blocked' && <AppButton variant="secondary" disabled={transitionLocked('scheduled') || !field('transition-reason').trim()} onClick={() => runTransition('scheduled', field('transition-reason'))}>{intents.current.has(`transition:${selected.id}:scheduled`) ? 'Retry scheduled resume' : 'Resume as scheduled'}</AppButton>}
+                {['open', 'scheduled'].includes(selected.status) && (isCoordinator || selectedActiveAssignments.includes(user.id)) && <AppButton disabled={transitionLocked('in_progress') || assignments.isPending || assignments.isError || selectedActiveAssignments.length === 0} onClick={() => runTransition('in_progress')}>{intents.current.has(`transition:${selected.id}:in_progress`) ? 'Retry start work' : 'Start work'}</AppButton>}
+                {isCoordinator && selected.status === 'open' && <AppButton variant="secondary" disabled={transitionLocked('scheduled') || !fieldOr('planned-on', selected.planned_on ?? '').trim()} onClick={runSchedule}>{intents.current.has(`schedule:${selected.id}`) ? 'Retry scheduling' : 'Schedule with planned date'}</AppButton>}
+                {isCoordinator && selected.status === 'blocked' && <AppButton disabled={transitionLocked('in_progress') || assignments.isPending || assignments.isError || selectedActiveAssignments.length === 0 || !field('transition-reason').trim()} onClick={() => runTransition('in_progress', field('transition-reason'))}>{intents.current.has(`transition:${selected.id}:in_progress`) ? 'Retry resume' : 'Resume work'}</AppButton>}
+                {isCoordinator && selected.status === 'blocked' && <AppButton variant="secondary" disabled={transitionLocked('scheduled') || !field('transition-reason').trim() || !fieldOr('planned-on', selected.planned_on ?? '').trim()} onClick={runSchedule}>{intents.current.has(`schedule:${selected.id}`) ? 'Retry scheduled resume' : 'Resume as scheduled'}</AppButton>}
                 {canWork && <AppButton variant="secondary" disabled={transitionLocked('blocked') || !field('transition-reason').trim()} onClick={() => runTransition('blocked', field('transition-reason'))}>{intents.current.has(`transition:${selected.id}:blocked`) ? 'Retry block' : 'Block work with reason'}</AppButton>}
+                {isCoordinator && selected.status === 'completed' && <AppButton disabled={transitionLocked('in_progress') || assignments.isPending || assignments.isError || selectedActiveAssignments.length === 0 || !field('transition-reason').trim()} onClick={() => runTransition('in_progress', field('transition-reason'))}>{intents.current.has(`transition:${selected.id}:in_progress`) ? 'Retry reopen' : 'Reopen for correction'}</AppButton>}
+                {isCoordinator && ['draft', 'open', 'scheduled', 'in_progress', 'blocked', 'awaiting_review'].includes(selected.status) && <AppButton variant="danger" disabled={transitionLocked('canceled') || !field('transition-reason').trim()} onClick={() => runTransition('canceled', field('transition-reason'))}>{intents.current.has(`transition:${selected.id}:canceled`) ? 'Retry cancellation' : 'Cancel work order'}</AppButton>}
               </div>
               {notices[`transition:${selected.id}:in_progress`]?.error && <ErrorNotice>{notices[`transition:${selected.id}:in_progress`].error}</ErrorNotice>}
               {notices[`transition:${selected.id}:scheduled`]?.error && <ErrorNotice>{notices[`transition:${selected.id}:scheduled`].error}</ErrorNotice>}
               {notices[`transition:${selected.id}:blocked`]?.error && <ErrorNotice>{notices[`transition:${selected.id}:blocked`].error}</ErrorNotice>}
-              {['blocked', 'in_progress'].includes(selected.status) && <Field id={`transition-reason-${selected.id}`} label="Block or resume reason" required maxLength={2000} disabled={intentLocked || busyKey !== '' || Boolean(pendingTransition)} value={field('transition-reason')} onChange={(event) => setField('transition-reason', event.target.value)} hint="A reason is required when blocking or resuming work." />}
+              {selected.status !== 'canceled' && <Field id={`transition-reason-${selected.id}`} label="Reason for block, resume, reopen or cancellation" required maxLength={2000} disabled={intentLocked || busyKey !== '' || Boolean(pendingTransition)} value={field('transition-reason')} onChange={(event) => setField('transition-reason', event.target.value)} hint="A reason is required for blocking, resuming blocked work, reopening completed work or cancellation." />}
+              {notices[`schedule:${selected.id}`]?.error && <ErrorNotice>{notices[`schedule:${selected.id}`].error}</ErrorNotice>}{notices[`schedule:${selected.id}`]?.success && <SuccessNotice>{notices[`schedule:${selected.id}`].success}</SuccessNotice>}
+              {isCoordinator && ['open', 'blocked'].includes(selected.status) && !selectedActiveAssignments.length && <p className="info-callout">An active same-workspace assignment is required before work can start or resume. Assign eligible work before continuing.</p>}
               {selected.status === 'in_progress' && <>
                 <form className="form-stack" onSubmit={(event) => void submitNote(event)}>
                   <TextAreaField id={`repair-note-${selected.id}`} label="Repair note or correction" maxLength={4000} disabled={intentLocked || !canWork || busyKey === `repair:${selected.id}` || intents.current.has(`repair:${selected.id}`)} value={field('note')} onChange={(event) => setField('note', event.target.value)} hint="After a returned review, add a correction here. Notes are append-only work events." />

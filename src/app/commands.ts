@@ -39,8 +39,12 @@ const workOrderSchema = z.strictObject({
 });
 const createWorkOrderFields = z.strictObject({
   title: z.string().trim().min(1).max(200), description: z.string().trim().min(1).max(4000), category: z.string().trim().min(1).max(100),
-  priority: z.enum(['low', 'normal', 'high', 'critical']), supervisor_id: z.uuid().nullable().optional(), due_at: z.iso.datetime().nullable().optional(),
-});
+  priority: z.enum(['low', 'normal', 'high', 'critical']), critical_reason: z.string().trim().min(1).max(2000).optional(),
+  supervisor_id: z.uuid().nullable().optional(), due_at: z.iso.datetime().nullable().optional(),
+}).refine((fields) => fields.priority === 'critical' ? Boolean(fields.critical_reason) : fields.critical_reason === undefined);
+const convertedWorkOrderFields = z.strictObject({
+  title: z.string().trim().min(1).max(200), priority: z.enum(['low', 'normal', 'high', 'critical']), critical_reason: z.string().trim().min(1).max(2000).optional(),
+}).refine((fields) => fields.priority === 'critical' ? Boolean(fields.critical_reason) : fields.critical_reason === undefined);
 const invitationAcceptedSchema = z.strictObject({ id: z.uuid(), organization_id: z.uuid(), user_id: z.uuid(), role: z.string(), active: z.boolean(), created_at: z.string(), version: z.number().int() });
 const memberSchema = z.strictObject({ id: z.uuid(), organization_id: z.uuid(), user_id: z.uuid(), role: z.string(), active: z.boolean(), created_at: z.string(), version: z.number().int() });
 const invitationRecordSchema = z.strictObject({
@@ -55,11 +59,12 @@ async function parseRpc<T extends z.ZodType>(response: PromiseLike<RpcResponse>,
   return commandResult(result.data, schema, requestId);
 }
 
-type SaveAssetCreateArgs = { ctx: CommandContext; asset_id: string | null; fields: { code: string; name: string; category: string; serial_number?: string | null; registration?: string | null } };
+type AssetFields = { code?: string; name?: string; category?: string; serial_number?: string | null; registration?: string | null; site_id?: string | null; archived?: boolean };
+type SaveAssetArgs = { ctx: CommandContext; asset_id: string | null; fields: AssetFields };
 type SaveRequestCreateArgs = { ctx: CommandContext; id: string | null; asset_id: string; description: string; category: string };
-function rpcWithNullableCreateKey(client: SupabaseClient<Database>, name: 'save_asset', args: SaveAssetCreateArgs): PromiseLike<RpcResponse> {
+function rpcWithNullableCreateKey(client: SupabaseClient<Database>, name: 'save_asset', args: SaveAssetArgs): PromiseLike<RpcResponse> {
   // The generated PostgREST Args type marks this UUID non-null, while the SQL create path intentionally uses NULL as its target sentinel.
-  const rpc = client.rpc as unknown as (functionName: 'save_asset', parameters: SaveAssetCreateArgs) => PromiseLike<RpcResponse>;
+  const rpc = client.rpc as unknown as (functionName: 'save_asset', parameters: SaveAssetArgs) => PromiseLike<RpcResponse>;
   return rpc.call(client, name, args);
 }
 function rpcWithNullableRequestId(client: SupabaseClient<Database>, name: 'save_request', args: SaveRequestCreateArgs): PromiseLike<RpcResponse> {
@@ -80,8 +85,12 @@ export function acceptInvitation(client: SupabaseClient<Database>, token: string
   return parseRpc(client.rpc('accept_organization_invitation', { token, request_id: requestId }), invitationAcceptedSchema, requestId);
 }
 
-export function saveAsset(client: SupabaseClient<Database>, organizationId: string, fields: { code: string; name: string; category: string; serial_number?: string | null; registration?: string | null }, requestId: string) {
-  return parseRpc(rpcWithNullableCreateKey(client, 'save_asset', { ctx: contextFor(organizationId, requestId), asset_id: null, fields }), assetSchema, requestId);
+export function saveAsset(client: SupabaseClient<Database>, organizationId: string, fields: AssetFields, requestId: string, target?: { id: string; version: number }) {
+  const parsed = z.strictObject({
+    code: z.string().trim().min(1).max(100).optional(), name: z.string().trim().min(1).max(200).optional(), category: z.string().trim().min(1).max(100).optional(),
+    serial_number: z.string().max(200).nullable().optional(), registration: z.string().max(200).nullable().optional(), site_id: z.uuid().nullable().optional(), archived: z.boolean().optional(),
+  }).refine((value) => Object.keys(value).length > 0).parse(fields);
+  return parseRpc(rpcWithNullableCreateKey(client, 'save_asset', { ctx: contextFor(organizationId, requestId, target?.version), asset_id: target?.id ?? null, fields: parsed }), assetSchema, requestId);
 }
 
 export function saveRequest(client: SupabaseClient<Database>, organizationId: string, fields: { asset_id: string; description: string; category: string }, requestId: string) {
@@ -104,8 +113,9 @@ export function triageRequest(client: SupabaseClient<Database>, organizationId: 
   return parseRpc(client.rpc('triage_request', { ctx: contextFor(organizationId, commandId), id: requestId, decision, reason }), requestSchema, commandId);
 }
 
-export function convertRequest(client: SupabaseClient<Database>, organizationId: string, requestId: string, fields: { title: string; priority: 'low' | 'normal' | 'high' | 'critical' }, commandId: string) {
-  return parseRpc(client.rpc('convert_request', { ctx: contextFor(organizationId, commandId), id: requestId, work_order_fields: fields }), workOrderSchema, commandId);
+export function convertRequest(client: SupabaseClient<Database>, organizationId: string, requestId: string, fields: z.input<typeof convertedWorkOrderFields>, commandId: string) {
+  const parsedFields = convertedWorkOrderFields.parse(fields);
+  return parseRpc(client.rpc('convert_request', { ctx: contextFor(organizationId, commandId), id: requestId, work_order_fields: parsedFields as Json }), workOrderSchema, commandId);
 }
 
 export function createWorkOrder(client: SupabaseClient<Database>, organizationId: string, assetId: string, fields: z.input<typeof createWorkOrderFields>, requestId: string) {
@@ -128,6 +138,11 @@ export function updateWorkOrder(client: SupabaseClient<Database>, organizationId
 
 export function transitionWorkOrder(client: SupabaseClient<Database>, organizationId: string, workOrderId: string, expectedVersion: number, target: 'open' | 'scheduled' | 'in_progress' | 'blocked' | 'awaiting_review' | 'completed' | 'canceled', reason: string | undefined, requestId: string) {
   return parseRpc(client.rpc('transition_work_order', { ctx: contextFor(organizationId, requestId, expectedVersion), id: workOrderId, target, ...(reason === undefined ? {} : { reason }) }), operationalWorkOrder, requestId);
+}
+
+export function scheduleWorkOrder(client: SupabaseClient<Database>, organizationId: string, workOrderId: string, expectedVersion: number, plannedOn: string, reason: string | undefined, requestId: string) {
+  const planned_on = z.iso.date().parse(plannedOn);
+  return parseRpc(client.rpc('schedule_work_order', { ctx: contextFor(organizationId, requestId, expectedVersion), id: workOrderId, planned_on, ...(reason === undefined ? {} : { reason }) }), operationalWorkOrder, requestId);
 }
 
 export function addWorkOrderTask(client: SupabaseClient<Database>, organizationId: string, workOrderId: string, expectedVersion: number, label: string, required: boolean, requestId: string) {
