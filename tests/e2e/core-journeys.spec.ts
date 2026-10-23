@@ -210,6 +210,7 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   test.setTimeout(240_000);
   const owner = await makeConfirmedUser('por24-owner');
   const technician = await makeConfirmedUser('por24-tech');
+  const reviewer = await makeConfirmedUser('por24-reviewer');
   allowWorkspaceBootstrap(owner);
   const ownerPage = await browser.newPage();
   const admin = createClient(url, service, { auth: { persistSession: false, autoRefreshToken: false } });
@@ -229,6 +230,16 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   if (ownerMembership.error) throw new Error('Synthetic owner workspace could not be read back.');
   const organizationId = ownerMembership.data.organization_id;
   sql(`insert into public.organization_members(organization_id,user_id,role) values ('${organizationId}','${technician.id}','technician');`);
+  sql(`insert into public.organization_members(organization_id,user_id,role) values ('${organizationId}','${reviewer.id}','supervisor');`);
+  const reviewerContext = await browser.newContext();
+  const reviewerPage = await reviewerContext.newPage();
+  await reviewerPage.goto('/');
+  await reviewerPage.getByLabel('Email').fill(reviewer.email);
+  await reviewerPage.getByLabel('Password').fill(reviewer.password);
+  await reviewerPage.getByRole('button', { name: 'Sign in' }).click();
+  await reviewerPage.getByRole('link', { name: 'Account security' }).click();
+  await enrollTOTP(reviewerPage, 'POR-24 reviewer authenticator');
+  await expect(reviewerPage.getByText('Second factor verified', { exact: true })).toBeVisible();
 
   const ownerNavigation = ownerPage.getByRole('navigation', { name: 'Primary navigation' });
   const workspaceNavigation = ownerPage.getByRole('complementary', { name: 'Workspace navigation' });
@@ -433,17 +444,47 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   await expect(technicianWorkOrder.getByRole('button', { name: 'Submit repair for review' })).toBeEnabled();
   await technicianWorkOrder.getByRole('button', { name: 'Submit repair for review' }).click();
   await expect(technicianWorkOrder.getByText('awaiting review', { exact: true })).toBeVisible();
+  const firstReviewSubmission = await admin.from('work_orders').select('version,repair_revision,submitted_revision,status')
+    .eq('organization_id', organizationId).eq('id', workOrderId).single();
+  if (firstReviewSubmission.error) throw new Error('Synthetic first review revision could not be read back.');
+  expect(firstReviewSubmission.data.status).toBe('awaiting_review');
+  expect(firstReviewSubmission.data.submitted_revision).toBe(firstReviewSubmission.data.repair_revision);
+  const firstReviewParticipants = await admin.from('work_order_participants').select('user_id,source')
+    .eq('organization_id', organizationId).eq('work_order_id', workOrderId);
+  if (firstReviewParticipants.error) throw new Error('Synthetic immutable participants could not be read before review.');
+  const firstReviewParticipantIds = firstReviewParticipants.data.map((participant) => participant.user_id);
+  expect(firstReviewParticipantIds).toEqual(expect.arrayContaining([owner.id, technician.id]));
+  expect(firstReviewParticipantIds).not.toContain(reviewer.id);
+  const reviewerMembership = await admin.from('organization_members').select('role,active')
+    .eq('organization_id', organizationId).eq('user_id', reviewer.id).single();
+  if (reviewerMembership.error) throw new Error('Synthetic independent reviewer membership could not be read back.');
+  expect(reviewerMembership.data).toMatchObject({ role: 'supervisor', active: true });
   await technicianNavigation.getByRole('link', { name: 'Notifications', exact: true }).click();
   await expect(technicianPage.locator('img.private-image')).toHaveCount(0);
   await expect.poll(() => technicianPage.evaluate(() => window.__revokedPrivateImageUrls)).toContain(privateSource);
   await technicianNavigation.getByRole('link', { name: 'Work orders', exact: true }).click();
   await technicianPage.goto(`/work-orders?workOrder=${workOrderId}`);
 
+  await ownerPage.goto(`/work-orders?workOrder=${workOrderId}`);
   await ownerWorkOrder.getByRole('button', { name: 'Refresh record' }).click();
   await expect(ownerWorkOrder.getByText('awaiting review', { exact: true })).toBeVisible();
-  await ownerWorkOrder.getByLabel('Review reason').fill('Return for the corrected bearing measurement and updated evidence.');
-  await ownerWorkOrder.getByRole('button', { name: 'Return for correction' }).click();
-  await expect(ownerWorkOrder.getByText('in progress', { exact: true })).toBeVisible();
+  await expect(ownerWorkOrder.getByText('Your account participated in this work order and cannot review it, even if your assignment has since changed.')).toBeVisible();
+  await expect(ownerWorkOrder.getByLabel('Review reason')).toHaveCount(0);
+  await expect(ownerWorkOrder.getByRole('button', { name: 'Return for correction' })).toHaveCount(0);
+  await expect(ownerWorkOrder.getByRole('button', { name: 'Approve repair' })).toHaveCount(0);
+
+  await reviewerPage.goto(`/work-orders?workOrder=${workOrderId}`);
+  const reviewerWorkOrder = reviewerPage.getByRole('region', { name: 'Selected work order details' });
+  await reviewerWorkOrder.getByRole('button', { name: 'Refresh record' }).click();
+  await expect(reviewerWorkOrder.getByText('awaiting review', { exact: true })).toBeVisible();
+  await expect(reviewerWorkOrder.getByLabel('Review reason')).toBeVisible();
+  await reviewerWorkOrder.getByLabel('Review reason').fill('Return for the corrected bearing measurement and updated evidence.');
+  await reviewerWorkOrder.getByRole('button', { name: 'Return for correction' }).click();
+  await expect(reviewerWorkOrder.getByText('in progress', { exact: true })).toBeVisible();
+  const returnedReview = await admin.from('work_order_reviews').select('reviewer_id,repair_revision,decision')
+    .eq('organization_id', organizationId).eq('work_order_id', workOrderId).eq('decision', 'returned').single();
+  if (returnedReview.error) throw new Error('Synthetic correction review could not be read back.');
+  expect(returnedReview.data).toMatchObject({ reviewer_id: reviewer.id, repair_revision: firstReviewSubmission.data.repair_revision, decision: 'returned' });
   await technicianWorkOrder.getByRole('button', { name: 'Refresh record' }).click();
   await technicianWorkOrder.getByLabel('Repair note or correction').fill('Corrected the bearing measurement after coordinator feedback.');
   await technicianWorkOrder.getByLabel('Labor minutes').fill('25');
@@ -491,8 +532,16 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   await technicianPage.goto(`/work-orders?workOrder=${workOrderId}`);
   await expect(technicianWorkOrder.getByText('Your account participated in this work order and cannot review it, even if your assignment has since changed.')).toBeVisible();
   await expect(technicianWorkOrder.getByRole('button', { name: 'Approve repair' })).toHaveCount(0);
-  const currentWorkOrder = await admin.from('work_orders').select('version').eq('id', workOrderId).single();
+  const currentWorkOrder = await admin.from('work_orders').select('version,repair_revision,submitted_revision,status')
+    .eq('organization_id', organizationId).eq('id', workOrderId).single();
   if (currentWorkOrder.error) throw new Error('Synthetic work-order version could not be read back.');
+  expect(currentWorkOrder.data.status).toBe('awaiting_review');
+  expect(currentWorkOrder.data.submitted_revision).toBe(currentWorkOrder.data.repair_revision);
+  expect(currentWorkOrder.data.repair_revision).toBeGreaterThan(firstReviewSubmission.data.repair_revision);
+  const finalReviewParticipants = await admin.from('work_order_participants').select('user_id')
+    .eq('organization_id', organizationId).eq('work_order_id', workOrderId);
+  if (finalReviewParticipants.error) throw new Error('Synthetic immutable participants could not be read before final approval.');
+  expect(finalReviewParticipants.data.map((participant) => participant.user_id)).not.toContain(reviewer.id);
   const deniedReview = await technicianPage.evaluate(async (input) => {
     const key = Object.keys(localStorage).find((item) => item.startsWith('sb-') && item.endsWith('-auth-token'));
     if (!key) throw new Error('Current authenticated session was not found.');
@@ -509,21 +558,56 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   expect(deniedReview.status).not.toBe(200);
   expect(deniedReview.message).toBe('FORBIDDEN');
 
-  await ownerPage.goto(`/work-orders?workOrder=${workOrderId}`);
-  await expect(ownerWorkOrder.getByRole('button', { name: 'Approve repair' })).toBeVisible();
-  await ownerWorkOrder.getByLabel('Review reason').fill('The corrected measurement and current revision are accepted.');
-  await ownerWorkOrder.getByRole('button', { name: 'Approve repair' }).click();
-  await expect(ownerWorkOrder.getByText('completed', { exact: true })).toBeVisible();
+  await reviewerPage.goto(`/work-orders?workOrder=${workOrderId}`);
+  await reviewerWorkOrder.getByRole('button', { name: 'Refresh record' }).click();
+  await expect(reviewerWorkOrder.getByText('awaiting review', { exact: true })).toBeVisible();
+  await expect(reviewerWorkOrder.getByRole('button', { name: 'Approve repair' })).toBeVisible();
+  await reviewerWorkOrder.getByLabel('Review reason').fill('The corrected measurement and current revision are accepted.');
+  await reviewerWorkOrder.getByRole('button', { name: 'Approve repair' }).click();
+  await expect(reviewerWorkOrder.getByText('completed', { exact: true })).toBeVisible();
+  const finalReviews = await admin.from('work_order_reviews').select('reviewer_id,repair_revision,decision')
+    .eq('organization_id', organizationId).eq('work_order_id', workOrderId).order('created_at').order('id');
+  if (finalReviews.error) throw new Error('Synthetic repair review history could not be read back.');
+  expect(finalReviews.data).toHaveLength(2);
+  expect(finalReviews.data).toEqual(expect.arrayContaining([
+    expect.objectContaining({ reviewer_id: reviewer.id, repair_revision: firstReviewSubmission.data.repair_revision, decision: 'returned' }),
+    expect.objectContaining({ reviewer_id: reviewer.id, repair_revision: currentWorkOrder.data.repair_revision, decision: 'approved' }),
+  ]));
+  await reviewerPage.reload();
+  await expect(reviewerWorkOrder.getByRole('heading', { name: 'Review history', exact: true })).toBeVisible();
+  await expect(reviewerWorkOrder.getByText(`Returned · revision ${firstReviewSubmission.data.repair_revision}`, { exact: true })).toBeVisible();
+  await expect(reviewerWorkOrder.getByText(`Approved · revision ${currentWorkOrder.data.repair_revision}`, { exact: true })).toBeVisible();
 
-  await ownerNavigation.getByRole('link', { name: 'Assets', exact: true }).click();
+  await reviewerPage.goto(`/assets?asset=${assetId}`);
+  const reviewerAsset = reviewerPage.getByRole('region', { name: 'Selected asset details' });
+  const reviewerOperations = reviewerAsset.getByRole('region', { name: /Operational details for/ });
+  await expect(reviewerOperations.getByText('Every active hold must be resolved, and a work-order hold must have approval for the current repair revision.', { exact: true })).toBeVisible();
+  await expect(reviewerOperations.getByRole('button', { name: 'Record asset release' })).toBeDisabled();
+
+  await ownerPage.goto(`/assets?asset=${assetId}`);
   const finalAsset = ownerPage.getByRole('region', { name: 'Selected asset details' });
   const finalOperations = finalAsset.getByRole('region', { name: /Operational details for/ });
-  await expect(finalOperations.getByText('Every active hold must be resolved', { exact: false })).toBeVisible();
+  await expect(finalOperations.getByText('Your account participated in work covered by an unreleased hold. You cannot release this asset.', { exact: true })).toBeVisible();
+  await expect(finalOperations.getByLabel('Release acknowledgment')).toBeDisabled();
+  await expect(finalOperations.getByRole('button', { name: 'Record asset release' })).toBeDisabled();
   await finalOperations.getByLabel('Resolution reason').fill('Inspection repair completed and the safety hold is cleared.');
   await finalOperations.getByRole('button', { name: 'Resolve repaired hold' }).click();
   await expect(finalOperations.getByText('Resolved · awaiting release')).toBeVisible();
-  await finalOperations.getByLabel('Release acknowledgment').fill('Reviewed the completed repair, cleared the hold, and checked the asset condition.');
-  await finalOperations.getByRole('button', { name: 'Record asset release' }).click();
+  await expect(finalOperations.getByText('Your account participated in work covered by an unreleased hold. You cannot release this asset.', { exact: true })).toBeVisible();
+  await expect(finalOperations.getByLabel('Release acknowledgment')).toBeDisabled();
+  await expect(finalOperations.getByRole('button', { name: 'Record asset release' })).toBeDisabled();
+
+  await reviewerPage.goto(`/assets?asset=${assetId}`);
+  await expect(reviewerOperations.getByText('Release eligibility checks passed against complete current records. The service rechecks all conditions when you submit.', { exact: true })).toBeVisible();
+  await reviewerOperations.getByLabel('Release acknowledgment').fill('Reviewed the completed repair, cleared the hold, and checked the asset condition.');
+  await reviewerOperations.getByRole('button', { name: 'Record asset release' }).click();
+  await expect(reviewerAsset.getByText('operational', { exact: true }).first()).toBeVisible();
+  const assetReleaseRecord = await admin.from('asset_releases').select('actor_id,acknowledgment')
+    .eq('organization_id', organizationId).eq('asset_id', assetId).single();
+  if (assetReleaseRecord.error) throw new Error('Synthetic asset release actor could not be read back.');
+  expect(assetReleaseRecord.data).toMatchObject({ actor_id: reviewer.id, acknowledgment: 'Reviewed the completed repair, cleared the hold, and checked the asset condition.' });
+
+  await ownerPage.goto(`/assets?asset=${assetId}`);
   await expect(finalAsset.getByText('operational', { exact: true }).first()).toBeVisible();
   const meterReadings = finalOperations.getByRole('region', { name: 'Meter readings', exact: true });
   await finalOperations.getByLabel('Reading').fill('125');
@@ -536,6 +620,16 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   await expect(meterReadings.getByText('124.5 hours', { exact: true })).toBeVisible();
   await expect(meterReadings.getByText('125 hours', { exact: true })).toBeVisible();
   await expect(meterReadings.locator('.record-card').filter({ hasText: '124.5 hours' })).toContainText('Corrected after the meter calibration check.');
+  const meterRecords = await admin.from('asset_meter_readings').select('id,value,recorded_by,correction_of,correction_reason')
+    .eq('organization_id', organizationId).eq('asset_id', assetId).order('recorded_at').order('id');
+  if (meterRecords.error) throw new Error('Synthetic meter correction actor could not be read back.');
+  expect(meterRecords.data).toHaveLength(2);
+  const originalReading = meterRecords.data.find((reading) => Number(reading.value) === 125 && reading.correction_of === null);
+  expect(originalReading?.recorded_by).toBe(owner.id);
+  const correctedReading = meterRecords.data.find((reading) => reading.correction_of === originalReading?.id);
+  expect(correctedReading).toMatchObject({ recorded_by: owner.id, correction_reason: 'Corrected after the meter calibration check.' });
+  expect(Number(correctedReading?.value)).toBe(124.5);
+  await reviewerContext.close();
   await technicianContext.close();
   await ownerPage.close();
 });
