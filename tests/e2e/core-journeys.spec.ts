@@ -154,8 +154,8 @@ test('owner onboards with native TOTP, creates maintenance records and invites a
   await expect(page.getByText('out of service', { exact: true }).first()).toBeVisible();
 
   await primaryNavigation.getByRole('link', { name: 'Requests', exact: true }).click();
-  const requestsHeader = page.locator('header.page-heading').filter({ has: page.getByRole('heading', { name: 'Requests', exact: true }) });
-  await requestsHeader.getByRole('button', { name: 'New request', exact: true }).click();
+  const requestsHeader = page.locator('header.page-heading').filter({ has: page.getByRole('heading', { name: 'Maintenance requests', exact: true }) });
+  await requestsHeader.getByRole('button', { name: /New request$/ }).click();
   const requestForm = page.getByRole('region', { name: 'Submit a request' });
   await requestForm.getByLabel('Asset code').fill('PUMP-SYN-01');
   await requestForm.getByLabel('What needs attention?').fill('Synthetic vibration report');
@@ -230,7 +230,8 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   sql(`insert into public.organization_members(organization_id,user_id,role) values ('${organizationId}','${technician.id}','technician');`);
 
   const ownerNavigation = ownerPage.getByRole('navigation', { name: 'Primary navigation' });
-  await ownerNavigation.getByRole('link', { name: 'Settings', exact: true }).click();
+  const workspaceNavigation = ownerPage.getByRole('complementary', { name: 'Workspace navigation' });
+  await workspaceNavigation.getByRole('link', { name: 'Settings', exact: true }).click();
   await expect(ownerPage.getByLabel('Workspace time zone')).toHaveValue('Asia/Manila');
   await ownerPage.getByRole('button', { name: 'Save settings' }).click();
   await expect(ownerPage.getByText('Workspace settings saved.')).toBeVisible();
@@ -309,7 +310,7 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   await expect(ownerWorkOrder.getByRole('checkbox', { name: new RegExp(technician.id) })).toBeVisible();
   await ownerWorkOrder.getByRole('checkbox', { name: new RegExp(technician.id) }).check();
   await ownerWorkOrder.getByRole('button', { name: 'Save assignment' }).click();
-  await expect(ownerWorkOrder.getByText(new RegExp(technician.id))).toBeVisible();
+  await expect(ownerWorkOrder.locator('.assigned-list').getByText(technician.id, { exact: true })).toBeVisible();
   await ownerWorkOrder.getByRole('button', { name: 'Publish work order' }).click();
   await expect(ownerWorkOrder.getByText('open', { exact: true })).toBeVisible();
 
@@ -337,9 +338,17 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   await technicianPage.getByRole('link', { name: 'Account security' }).click();
   await enrollTOTP(technicianPage, 'POR-24 technician authenticator');
   await technicianNavigation.getByRole('link', { name: 'Notifications', exact: true }).click();
-  await expect(technicianPage.getByText('assignment', { exact: true })).toBeVisible();
-  await technicianPage.getByRole('link', { name: 'Open current record' }).first().click();
-  await expect(technicianPage).toHaveURL(new RegExp(`workOrder=${workOrderId}`));
+  const yourNotifications = technicianPage.getByRole('region', { name: 'Your notifications' });
+  const assignmentNotification = yourNotifications.getByRole('button', { name: new RegExp(`assignment.*Source ${workOrderId}`) });
+  await expect(assignmentNotification).toHaveCount(1);
+  await assignmentNotification.click();
+  const selectedNotification = technicianPage.getByRole('region', { name: 'Selected notification' });
+  await expect(selectedNotification.getByRole('heading', { name: 'assignment', exact: true })).toBeVisible();
+  const notificationIdentifiers = selectedNotification.locator('.notification-identifiers');
+  await notificationIdentifiers.locator('summary').click();
+  await expect(notificationIdentifiers.getByText(workOrderId, { exact: true })).toBeVisible();
+  await selectedNotification.getByRole('link', { name: 'Open current record', exact: true }).click();
+  await expect(technicianPage).toHaveURL(`${appOrigin}/work-orders?workOrder=${workOrderId}`);
   const technicianWorkOrder = technicianPage.getByRole('region', { name: 'Selected work order details' });
   await expect(technicianWorkOrder.getByRole('heading', { name: 'Inspect pump bearing assembly' })).toBeVisible();
   await technicianWorkOrder.getByRole('button', { name: 'Start work' }).click();
@@ -452,10 +461,27 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   await ownerWorkOrder.getByRole('button', { name: 'Save assignment' }).click();
   await expect(ownerWorkOrder.getByText('No active technicians are assigned.')).toBeVisible();
   await ownerNavigation.getByRole('link', { name: 'Team', exact: true }).click();
-  const technicianCard = ownerPage.locator('.record-card').filter({ hasText: technician.id });
-  await technicianCard.getByLabel('Role').selectOption('supervisor');
-  await technicianCard.getByRole('button', { name: 'Save role' }).click();
-  await expect(technicianCard.getByText('Role: supervisor')).toBeVisible();
+  await ownerPage.getByRole('tab', { name: 'Members', exact: true }).click();
+  const memberTable = ownerPage.getByRole('region', { name: 'Workspace members' });
+  const technicianSummary = memberTable.locator(`summary[title="${technician.id}"]`);
+  const technicianRow = technicianSummary.locator('xpath=../../..');
+  await expect(technicianSummary).toHaveCount(1);
+  await technicianSummary.click();
+  await technicianRow.getByLabel(`Role for ${technician.id}`).selectOption('supervisor');
+  const saveMemberResponse = ownerPage.waitForResponse((response) =>
+    response.request().method() === 'POST' && new URL(response.url()).pathname === '/rest/v1/rpc/set_organization_member',
+  );
+  await technicianRow.getByRole('button', { name: 'Save role', exact: true }).click();
+  expect((await saveMemberResponse).ok()).toBe(true);
+  await ownerPage.reload();
+  await expect(ownerPage.getByRole('heading', { name: 'Team and workload', exact: true })).toBeVisible();
+  await ownerPage.getByRole('tab', { name: 'Members', exact: true }).click();
+  const persistedMemberTable = ownerPage.getByRole('region', { name: 'Workspace members' });
+  const persistedTechnicianSummary = persistedMemberTable.locator(`summary[title="${technician.id}"]`);
+  const persistedTechnicianRow = persistedTechnicianSummary.locator('xpath=../../..');
+  await expect(persistedTechnicianSummary).toHaveCount(1);
+  await persistedTechnicianSummary.click();
+  await expect(persistedTechnicianRow.getByLabel(`Role for ${technician.id}`)).toHaveValue('supervisor');
   await technicianPage.reload();
   await expect(technicianPage.getByRole('heading', { name: 'Operations at a glance' })).toBeVisible();
   await technicianPage.goto(`/work-orders?workOrder=${workOrderId}`);
@@ -495,14 +521,17 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   await finalOperations.getByLabel('Release acknowledgment').fill('Reviewed the completed repair, cleared the hold, and checked the asset condition.');
   await finalOperations.getByRole('button', { name: 'Record asset release' }).click();
   await expect(finalAsset.getByText('operational', { exact: true }).first()).toBeVisible();
+  const meterReadings = finalOperations.getByRole('region', { name: 'Meter readings', exact: true });
   await finalOperations.getByLabel('Reading').fill('125');
   await finalOperations.getByLabel('Observed at').fill(new Date(Date.now() - 60_000).toISOString().slice(0, 16));
   await finalOperations.getByRole('button', { name: 'Record meter reading' }).click();
-  await expect(finalOperations.getByText('125 hours', { exact: true })).toBeVisible();
+  await expect(meterReadings.getByText('125 hours', { exact: true })).toBeVisible();
   await finalOperations.getByLabel('Corrected value').fill('124.5');
   await finalOperations.getByLabel('Correction reason').fill('Corrected after the meter calibration check.');
   await finalOperations.getByRole('button', { name: 'Append correction' }).click();
-  await expect(finalOperations.getByText('124.5 hours', { exact: true })).toBeVisible();
+  await expect(meterReadings.getByText('124.5 hours', { exact: true })).toBeVisible();
+  await expect(meterReadings.getByText('125 hours', { exact: true })).toBeVisible();
+  await expect(meterReadings.locator('.record-card').filter({ hasText: '124.5 hours' })).toContainText('Corrected after the meter calibration check.');
   await technicianContext.close();
   await ownerPage.close();
 });
