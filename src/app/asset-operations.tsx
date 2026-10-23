@@ -231,11 +231,11 @@ export function AssetOperationsPanel({ asset, client, userId, organizationId, ro
   const meterIntentKey = `meter:${asset.id}`;
   const runMeter = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const kind = value('meter-kind') as 'hours' | 'distance';
+    const kind = (value('meter-kind') || 'hours') as 'hours' | 'distance';
     const reading = Number(value('meter-value'));
     const observed = new Date(value('meter-observed'));
     if (!['hours', 'distance'].includes(kind) || !Number.isFinite(reading) || reading < 0 || Number.isNaN(observed.getTime())) {
-      setErrors((current) => ({ ...current, meter: 'Enter a non-negative reading and a valid observation time.' })); return;
+      setErrors((current) => ({ ...current, [`meter:${asset.id}`]: 'Enter a non-negative reading and a valid observation time.' })); return;
     }
     const normalizedObserved = observed.toISOString();
     void run(`meter:${asset.id}`, (requestId) => recordMeterReading(client, organizationId, asset.id, kind, reading, normalizedObserved, requestId), 'Meter reading recorded in history.');

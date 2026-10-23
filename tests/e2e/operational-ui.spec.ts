@@ -460,6 +460,63 @@ function assetRecord(id: string, name: string) {
   return { id, organization_id: fixtureOrganizationIds.alpha, code: id === assetId ? 'ALPHA-01' : 'ALPHA-02', name, category: 'pump', site_id: null, serial_number: null, registration: null, archived_at: null, created_by: fixtureUserId, created_at: '2026-10-21T01:00:00.000Z', version: 1, availability: 'under_maintenance' };
 }
 
+test('meter entry defaults to hours, accepts explicit distance, and shows invalid input without an RPC', async ({ page }) => {
+  await prepareWorkspacePage(page);
+  const readings: Record<string, unknown>[] = [];
+  const writes: Record<string, unknown>[] = [];
+  await page.route(/\/rest\/v1\/assets(?:\?.*)?$/, async (route) => {
+    const query = new URL(route.request().url()).searchParams;
+    return fulfill(route, 200, query.get('id') === `eq.${assetId}` ? assetRecord(assetId, 'Alpha pump') : [assetRecord(assetId, 'Alpha pump')]);
+  });
+  await page.route(/\/rest\/v1\/(asset_holds|asset_releases|asset_meter_readings|work_orders|attachments)(?:\?.*)?$/, async (route) => {
+    const table = new URL(route.request().url()).pathname.split('/').at(-1);
+    return fulfill(route, 200, table === 'asset_meter_readings' ? readings : []);
+  });
+  await page.route(`${origin}/rest/v1/rpc/get_asset_history`, async (route) => fulfill(route, 200, { items: [], next_cursor: null }));
+  await page.route(`${origin}/rest/v1/rpc/record_meter_reading`, async (route) => {
+    const body = route.request().postDataJSON() as { ctx: { request_id: string }; asset_id: string; kind: 'hours' | 'distance'; value: number; observed_at: string };
+    writes.push(body as unknown as Record<string, unknown>);
+    const reading = {
+      id: `00000000-0000-4000-8000-${String(301 + writes.length).padStart(12, '0')}`,
+      organization_id: fixtureOrganizationIds.alpha, asset_id: body.asset_id, kind: body.kind, value: body.value,
+      observed_at: body.observed_at, recorded_at: `2026-10-24T12:00:0${writes.length}.000Z`, recorded_by: fixtureUserId,
+      correction_of: null, correction_reason: null,
+    };
+    readings.unshift(reading);
+    return fulfill(route, 200, { data: reading, version: 1, request_id: body.ctx.request_id });
+  });
+
+  await page.goto(`/assets?asset=${assetId}`);
+  const operations = page.getByRole('region', { name: /Operational details for/ });
+  const meterType = operations.getByRole('combobox', { name: 'Meter type', exact: true });
+  const reading = operations.getByRole('spinbutton', { name: 'Reading', exact: true });
+  const observedAt = operations.getByRole('textbox', { name: 'Observed at', exact: true });
+  const meterForm = reading.locator('xpath=ancestor::form');
+  const recordButton = operations.getByRole('button', { name: 'Record meter reading' });
+  await expect(meterType).toHaveValue('hours');
+  await reading.fill('125');
+  await observedAt.fill('2026-10-24T12:01');
+  await recordButton.click();
+  await expect.poll(() => writes.length).toBe(1);
+  await expect(operations.getByText('Meter reading recorded in history.', { exact: true })).toBeVisible();
+  expect(writes[0]).toMatchObject({ asset_id: assetId, kind: 'hours', value: 125 });
+
+  await meterType.selectOption('distance');
+  await reading.fill('12.5');
+  await observedAt.fill('2026-10-24T12:02');
+  await recordButton.click();
+  await expect(operations.getByText('Meter reading recorded in history.', { exact: true })).toBeVisible();
+  expect(writes[1]).toMatchObject({ asset_id: assetId, kind: 'distance', value: 12.5 });
+  expect(writes).toHaveLength(2);
+
+  await meterForm.evaluate((form: HTMLFormElement) => { form.noValidate = true; });
+  await reading.fill('-1');
+  await observedAt.fill('2026-10-24T12:03');
+  await recordButton.click();
+  await expect(operations.getByText('Enter a non-negative reading and a valid observation time.', { exact: true })).toBeVisible();
+  expect(writes).toHaveLength(2);
+});
+
 test('asset editing and archive state use versioned save commands and show a same-origin QR route', async ({ page }) => {
   await prepareWorkspacePage(page);
   let authoritative = { ...assetRecord(assetId, 'Alpha pump'), archived_at: null as string | null, availability: 'under_maintenance' as string, version: 1 };
