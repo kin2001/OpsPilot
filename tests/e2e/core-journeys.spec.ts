@@ -186,6 +186,7 @@ test('owner onboards with native TOTP, creates maintenance records and invites a
   await expect(page.getByText('Two verified authenticator factors are configured.')).toBeVisible();
 
   await primaryNavigation.getByRole('link', { name: 'Team', exact: true }).click();
+  await page.getByRole('tab', { name: 'Members', exact: true }).click();
   const invitationForm = page.getByRole('region', { name: 'Invite a teammate' });
   await invitationForm.getByLabel('Email').fill(recipientEmail);
   await invitationForm.getByLabel('Workspace role').selectOption('technician');
@@ -406,7 +407,7 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   const completedTaskRecord = await admin.from('work_orders').select('version,repair_revision,status').eq('organization_id', organizationId).eq('id', workOrderId).single();
   if (completedTaskRecord.error) throw new Error('Synthetic checklist update version could not be read back.');
   expect(completedTaskRecord.data.version).toBe(resumedRecord.data.version + 1);
-  expect(completedTaskRecord.data.repair_revision).toBe(resumedRecord.data.repair_revision);
+  expect(completedTaskRecord.data.repair_revision).toBe(resumedRecord.data.repair_revision + 1);
   expect(completedTaskRecord.data.status).toBe('in_progress');
   await expect(bearingTask).toBeChecked();
   await expect(technicianVersion).toHaveText(String(completedTaskRecord.data.version));

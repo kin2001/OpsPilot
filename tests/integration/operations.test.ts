@@ -165,6 +165,48 @@ describe('real T2 operational authorization and safety', { concurrent: false }, 
     expect((await people.performer.client.rpc('transition_work_order', { ctx: ctx(work.version), id: work.id, target: 'in_progress', reason: 'Cannot resume' })).error?.message).toBe('FORBIDDEN');
     work = await transition('owner', work, 'in_progress'); expect(work.status).toBe('in_progress');
   });
+  it('increments material revision once for task-only execution and replays the committed result', async () => {
+    const assetId = await asset(); let work = await job(assetId);
+    work = await command('owner', 'add_work_order_task', { ctx: ctx(work.version), id: work.id, label: 'Complete inspection step', required: true });
+    const taskResult = await people.owner.client.from('work_order_tasks').select('id').eq('organization_id', org).eq('work_order_id', work.id).single();
+    expect(taskResult.error).toBeNull();
+    const taskId = taskResult.data!.id;
+    work = await command('owner', 'assign_work_order', { ctx: ctx(work.version), id: work.id, user_ids: [people.performer.id] });
+    work = await transition('owner', work, 'open');
+    work = await transition('performer', work, 'in_progress');
+
+    async function snapshot() {
+      const workRow = await admin.from('work_orders').select('version,repair_revision,submitted_revision,status').eq('organization_id', org).eq('id', work.id).single();
+      const taskRow = await admin.from('work_order_tasks').select('id,required,completed,completed_by,completed_at').eq('organization_id', org).eq('work_order_id', work.id).eq('id', taskId).single();
+      const events = await admin.from('work_order_events').select('id,actor_id,request_id,action,status,repair_revision').eq('organization_id', org).eq('work_order_id', work.id).order('created_at', { ascending: true }).order('id', { ascending: true });
+      expect(workRow.error).toBeNull(); expect(taskRow.error).toBeNull(); expect(events.error).toBeNull();
+      return { work: workRow.data, task: taskRow.data, events: events.data };
+    }
+
+    const before = await snapshot();
+    if (before.work === null || before.task === null) throw new Error('Synthetic task execution baseline could not be read back.');
+    expect(before.work).toMatchObject({ version: work.version, repair_revision: work.repair_revision, submitted_revision: null, status: 'in_progress' });
+    expect(before.task).toMatchObject({ required: true, completed: false, completed_by: null, completed_at: null });
+    const requestId = randomUUID();
+    const args = { ctx: ctx(work.version, requestId), id: work.id, allowed_fields: { task_id: taskId, task_completed: true } };
+    const first = await people.performer.client.rpc('update_work_order', args);
+    expect(first.error).toBeNull();
+    expect(first.data.request_id).toBe(requestId);
+    expect(first.data.data).toMatchObject({ version: before.work.version + 1, repair_revision: before.work.repair_revision + 1, submitted_revision: null, status: 'in_progress' });
+
+    const committed = await snapshot();
+    expect(committed.work).toMatchObject({ version: before.work.version + 1, repair_revision: before.work.repair_revision + 1, submitted_revision: null, status: 'in_progress' });
+    expect(committed.task).toMatchObject({ required: true, completed: true, completed_by: people.performer.id, completed_at: expect.any(String) });
+    expect(committed.events).toHaveLength(before.events!.length + 1);
+    expect(committed.events!.filter((event) => event.request_id === requestId)).toEqual([
+      expect.objectContaining({ actor_id: people.performer.id, action: 'update_work_order', status: 'in_progress', repair_revision: before.work.repair_revision + 1 }),
+    ]);
+
+    const replay = await people.performer.client.rpc('update_work_order', args);
+    expect(replay.error).toBeNull();
+    expect(replay.data).toEqual(first.data);
+    expect(await snapshot()).toEqual(committed);
+  });
   it('keeps strict T1 responses and recorded receipts compatible after additive columns', async () => {
     const requestId = randomUUID(); const fields = { code: randomUUID(), name: 'Legacy shape', category: 'pump' };
     const first = await saveAsset(people.owner.client, org, fields, requestId);
