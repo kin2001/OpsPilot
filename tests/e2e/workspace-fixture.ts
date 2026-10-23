@@ -91,9 +91,56 @@ export async function prepareWorkspacePage(page: Page, initialMemberships = [fix
       return response(route, 200, memberships.map((organization_id) => ({ organization_id, user_id: authUser.id, role: 'owner', active: true, created_at: '2026-10-21T00:00:00.000Z', version: 1 })));
     }
     if (url.pathname === '/rest/v1/organizations') return response(route, 200, organizations.filter((organization) => memberships.includes(organization.id)));
-    if (url.pathname === '/rest/v1/assets') return response(route, 200, assets.filter((asset) => memberships.includes(asset.organization_id)));
-    if (url.pathname === '/rest/v1/maintenance_requests') return response(route, 200, requests.filter((requestRow) => memberships.includes(requestRow.organization_id)));
+    if (url.pathname === '/rest/v1/assets') {
+      const columns = url.searchParams.get('select')?.split(',') ?? ['*'];
+      const idFilter = url.searchParams.get('id');
+      const ids = idFilter?.startsWith('in.(') ? idFilter.slice(4, -1).split(',') : idFilter?.startsWith('eq.') ? [idFilter.slice(3)] : null;
+      const visible = assets.filter((asset) => memberships.includes(asset.organization_id) && (!ids || ids.includes(asset.id)));
+      return response(route, 200, visible.map((asset) => columns.includes('*') ? asset : Object.fromEntries(columns.map((column) => [column, asset[column as keyof typeof asset]]))));
+    }
+    if (url.pathname === '/rest/v1/maintenance_requests') {
+      const category = url.searchParams.get('category');
+      const status = url.searchParams.get('status');
+      const statuses = status?.startsWith('in.(') ? status.slice(4, -1).split(',') : status?.startsWith('eq.') ? [status.slice(3)] : null;
+      const visible = requests.filter((requestRow) => memberships.includes(requestRow.organization_id)
+        && (!category || category === `eq.${requestRow.category}`)
+        && (!statuses || statuses.includes(requestRow.status)));
+      if (request.method() === 'HEAD') {
+        const status = url.searchParams.get('status');
+        const statuses = status?.startsWith('in.(') ? status.slice(4, -1).split(',') : status?.startsWith('eq.') ? [status.slice(3)] : null;
+        const count = statuses ? visible.filter((row) => statuses.includes(row.status)).length : visible.length;
+        return route.fulfill({ status: 200, headers: {
+          'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET,HEAD,POST,PATCH,DELETE,OPTIONS',
+          'access-control-allow-headers': request.headers()['access-control-request-headers'] ?? 'authorization, apikey, x-client-info, content-type, prefer, accept-profile, content-profile',
+          'access-control-expose-headers': 'content-range', 'content-range': `*/${count}`,
+        }, body: '' });
+      }
+      const columns = url.searchParams.get('select')?.split(',') ?? ['*'];
+      return response(route, 200, visible.map((row) => columns.includes('*') ? row : Object.fromEntries(columns.map((column) => [column, row[column as keyof typeof row]]))));
+    }
     if (url.pathname === '/rest/v1/work_orders') return response(route, 200, workOrders.filter((workOrder) => memberships.includes(workOrder.organization_id)));
+    if (url.pathname === '/rest/v1/request_events') {
+      const rows = [
+        { id: '389437d8-01c7-4dd9-a80b-11349d09391a', organization_id: fixtureOrganizationIds.alpha, request_id: requests[0]!.id, actor_id: fixtureUserId, action: 'submit_request', status: 'submitted', reason: null, created_at: '2026-10-21T01:00:00.000Z' },
+        { id: 'a29aa58c-752c-48d6-921b-636a0ad23598', organization_id: fixtureOrganizationIds.alpha, request_id: requests[1]!.id, actor_id: fixtureUserId, action: 'submit_request', status: 'submitted', reason: null, created_at: '2026-10-21T02:00:00.000Z' },
+      ];
+      const requestId = url.searchParams.get('request_id')?.slice(3);
+      const columns = url.searchParams.get('select')?.split(',') ?? ['*'];
+      return response(route, 200, rows.filter((row) => memberships.includes(row.organization_id) && row.request_id === requestId)
+        .map((row) => columns.includes('*') ? row : Object.fromEntries(columns.map((column) => [column, row[column as keyof typeof row]]))));
+    }
+    if (url.pathname === '/rest/v1/work_order_assignments') {
+      const rows = workOrders.filter((workOrder) => memberships.includes(workOrder.organization_id)).map((workOrder, index) => ({
+        id: `00000000-0000-4000-8000-${(201 + index).toString(16).padStart(12, '0')}`,
+        organization_id: workOrder.organization_id, work_order_id: workOrder.id, user_id: fixtureUserId,
+        assigned_at: workOrder.created_at, unassigned_at: null,
+      }));
+      const assignmentFilter = url.searchParams.get('work_order_id');
+      const workOrderIds = assignmentFilter?.startsWith('in.(') ? assignmentFilter.slice(4, -1).split(',') : assignmentFilter?.startsWith('eq.') ? [assignmentFilter.slice(3)] : null;
+      const columns = url.searchParams.get('select')?.split(',') ?? ['*'];
+      const visible = rows.filter((row) => memberships.includes(row.organization_id) && (!workOrderIds || workOrderIds.includes(row.work_order_id)) && (!url.searchParams.has('unassigned_at') || row.unassigned_at === null));
+      return response(route, 200, visible.map((row) => columns.includes('*') ? row : Object.fromEntries(columns.map((column) => [column, row[column as keyof typeof row]]))));
+    }
     if (url.pathname === '/rest/v1/rpc/lookup_request_asset') {
       const body = request.postDataJSON() as { asset_id?: string; asset_code?: string };
       const asset = assets.find((item) => memberships.includes(item.organization_id) && (item.id === body.asset_id || item.code === body.asset_code));

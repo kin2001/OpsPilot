@@ -163,6 +163,7 @@ test('owner onboards with native TOTP, creates maintenance records and invites a
   await requestForm.getByRole('button', { name: 'Save and submit', exact: true }).click();
   const requestDetails = page.getByRole('region', { name: 'Selected request details' });
   await expect(requestDetails.getByText('submitted', { exact: true })).toBeVisible();
+  await requestDetails.getByText('Review and route request', { exact: true }).click();
   await requestDetails.getByRole('button', { name: 'Convert to draft work order', exact: true }).click();
   await expect(page.getByText('Draft work order created:')).toBeVisible();
   await primaryNavigation.getByRole('link', { name: 'Work orders', exact: true }).click();
@@ -174,7 +175,7 @@ test('owner onboards with native TOTP, creates maintenance records and invites a
   await expect(convertedDraftDetails.getByText('draft', { exact: true })).toBeVisible();
   await expect(convertedDraftDetails.getByText('Assignment and repair progress have not been recorded.')).toBeVisible();
 
-  await primaryNavigation.getByRole('link', { name: 'Security', exact: true }).click();
+  await page.getByRole('link', { name: 'Account security' }).click();
   await expect(page.getByRole('heading', { name: 'Authenticator verification' })).toBeVisible();
   await page.getByLabel('Backup authenticator name').fill('OpsPilot backup authenticator');
   await page.getByRole('button', { name: 'Add backup authenticator' }).click();
@@ -256,7 +257,7 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   await ownerNavigation.getByRole('link', { name: 'Work orders', exact: true }).click();
   await ownerPage.getByRole('button', { name: 'Create work order' }).click();
   const createForm = ownerPage.getByRole('region', { name: 'Create a work order' });
-  await createForm.getByLabel('Asset').selectOption(assetId);
+  await createForm.getByLabel('Asset', { exact: true }).selectOption(assetId);
   await createForm.getByLabel('Title').fill('Inspect pump bearing assembly');
   await createForm.getByLabel('Description').fill('Inspect the bearing condition, record labor, and attach a validated repair image.');
   await createForm.getByLabel('Category').fill('inspection');
@@ -333,7 +334,7 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   await technicianPage.getByRole('button', { name: 'Sign in' }).click();
   await expect(technicianPage.getByRole('heading', { name: 'Dashboard not available for this role' })).toBeVisible();
   const technicianNavigation = technicianPage.getByRole('navigation', { name: 'Primary navigation' });
-  await technicianNavigation.getByRole('link', { name: 'Security', exact: true }).click();
+  await technicianPage.getByRole('link', { name: 'Account security' }).click();
   await enrollTOTP(technicianPage, 'POR-24 technician authenticator');
   await technicianNavigation.getByRole('link', { name: 'Notifications', exact: true }).click();
   await expect(technicianPage.getByText('assignment', { exact: true })).toBeVisible();
@@ -359,6 +360,7 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   await expect(ownerWorkOrder.getByRole('button', { name: 'Resume work' })).toBeVisible();
   await expect(ownerWorkOrder.getByRole('button', { name: 'Resume as scheduled' })).toBeVisible();
   await ownerWorkOrder.getByLabel('Block or resume reason').fill('Resume after the coordinator reviewed the hold point.');
+  await ownerWorkOrder.getByLabel('Planned work date').fill('2026-10-23');
   await ownerWorkOrder.getByRole('button', { name: 'Resume as scheduled' }).click();
   await expect(ownerWorkOrder.getByText('scheduled', { exact: true })).toBeVisible();
   await technicianWorkOrder.getByRole('button', { name: 'Refresh record' }).click();
@@ -371,9 +373,10 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   await ownerWorkOrder.getByLabel('Block or resume reason').fill('Resume directly for the assigned technician to continue.');
   await ownerWorkOrder.getByRole('button', { name: 'Resume work' }).click();
   await expect(ownerWorkOrder.getByText('in progress', { exact: true })).toBeVisible();
-  const resumedRecord = await admin.from('work_orders').select('version,repair_revision,status').eq('organization_id', organizationId).eq('id', workOrderId).single();
+  const resumedRecord = await admin.from('work_orders').select('version,repair_revision,status,planned_on').eq('organization_id', organizationId).eq('id', workOrderId).single();
   if (resumedRecord.error) throw new Error('Synthetic resumed work-order version could not be read back.');
   expect(resumedRecord.data.status).toBe('in_progress');
+  expect(resumedRecord.data.planned_on).toBe('2026-10-23');
   await technicianWorkOrder.getByRole('button', { name: 'Refresh record' }).click();
   await expect(technicianWorkOrder.getByText('in progress', { exact: true })).toBeVisible();
   const technicianVersion = technicianWorkOrder.locator('.detail-grid > div').filter({ hasText: 'Record version' }).locator('dd');

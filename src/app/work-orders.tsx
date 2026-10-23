@@ -6,13 +6,16 @@ import { attachmentRecord, operationalWorkOrder, teamResult, workOrderEvent, wor
 import { domainError } from '../lib/domain-errors';
 import type { Json } from '../lib/database.types';
 import { addWorkOrderTask, assignWorkOrder, createWorkOrder, declareWorkOrderPerformers, reviewWorkOrder, scheduleWorkOrder, submitWorkOrder, transitionWorkOrder, updateWorkOrder } from './commands';
-import { recordFilter, recordPageSize, splitRecordPage, type RecordCursor } from './record-query';
+import { readBoundedRows, recordFilter, recordPageSize, splitRecordPage, type RecordCursor } from './record-query';
 import { PrivilegedArea } from './auth/security';
 import { PrivateImage, reserveWorkOrderImage, uploadPrivateImage } from './private-attachments';
 import { useWorkspace } from './workspace';
 import { AppButton, ErrorNotice, Field, LoadingNotice, PageHeader, SelectField, SuccessNotice, TextAreaField } from './ui';
 
-const assignmentRows = z.array(z.strictObject({ user_id: z.uuid(), unassigned_at: z.string().nullable() })).max(100);
+const assignmentRows = z.array(z.strictObject({ user_id: z.uuid(), unassigned_at: z.string().nullable() })).max(30);
+const boardAssignmentRow = z.strictObject({ id: z.uuid(), work_order_id: z.uuid(), user_id: z.uuid() });
+const boardReadPageSize = 100;
+const boardAssignmentLimit = 2500;
 const participantRows = z.array(z.strictObject({ user_id: z.uuid(), source: z.string(), recorded_at: z.string() })).max(1000);
 const taskRows = z.array(workOrderTask).max(100);
 const eventRows = z.array(workOrderEvent).max(500);
@@ -28,7 +31,6 @@ const workOrderLanes = [
   { id: 'in-progress', label: 'In progress', statuses: ['in_progress'] },
   { id: 'blocked', label: 'Blocked', statuses: ['blocked'] },
   { id: 'review', label: 'Awaiting review', statuses: ['awaiting_review'] },
-  { id: 'closed', label: 'Closed', statuses: ['completed', 'canceled'] },
 ] as const;
 
 function parseRpc<T extends z.ZodType>(data: Json | null, error: { message: string } | null, schema: T): z.output<T> {
@@ -40,6 +42,12 @@ function parseRpc<T extends z.ZodType>(data: Json | null, error: { message: stri
 
 function isAmbiguous(code: string) { return code === 'DEPENDENCY_UNAVAILABLE' || code === 'RATE_LIMITED'; }
 function workOrderLabel(number: number) { return `WO-${String(number).padStart(4, '0')}`; }
+function pageDate() {
+  return new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date());
+}
+function displayPlannedDate(value: string) {
+  return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${value}T12:00:00Z`));
+}
 function localDateTime(value: string | null) {
   if (!value) return '';
   const date = new Date(value);
@@ -56,6 +64,9 @@ export function OperationalWorkOrderPage() {
   const isCoordinator = ['owner', 'manager', 'supervisor'].includes(role);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [assigneeFilter, setAssigneeFilter] = useState('all');
+  const [priorityFilter, setPriorityFilter] = useState('all');
+  const [assetFilter, setAssetFilter] = useState('all');
   const [view, setView] = useState<'board' | 'table'>('board');
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [formValues, setFormValues] = useState<Record<string, string>>({});
@@ -64,7 +75,7 @@ export function OperationalWorkOrderPage() {
   const [busyKey, setBusyKey] = useState('');
   const [notices, setNotices] = useState<Record<string, { error?: string; success?: string }>>({});
   const [resolvedIntent, setResolvedIntent] = useState<{ key: string; message: string } | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(() => searchParams.get('create') === '1');
   const [createAssetSearch, setCreateAssetSearch] = useState('');
   const [createFields, setCreateFields] = useState({ assetId: '', title: '', description: '', category: '', priority: 'normal' as 'low' | 'normal' | 'high' | 'critical', criticalReason: '' });
   const [createBusy, setCreateBusy] = useState(false);
@@ -115,7 +126,56 @@ export function OperationalWorkOrderPage() {
   });
   const workOrderRows = list.data?.pages.flatMap((page) => page.rows) ?? [];
   const createAssetRowsList = createAssets.data?.pages.flatMap((page) => page.rows) ?? [];
-  const visible = workOrderRows;
+  const boardAssetIds = [...new Set(workOrderRows.map((workOrder) => workOrder.asset_id))];
+  const boardAssets = useQuery({
+    queryKey: ['work-order-board-assets', user.id, organization.id, boardAssetIds], enabled: boardAssetIds.length > 0,
+    queryFn: async ({ signal }) => {
+      const rows: z.output<typeof assetSummary>[] = [];
+      for (let offset = 0; offset < boardAssetIds.length; offset += boardReadPageSize) {
+        const ids = boardAssetIds.slice(offset, offset + boardReadPageSize);
+        const result = await client.from('assets').select('id,code,name,availability,archived_at').eq('organization_id', organization.id).in('id', ids).abortSignal(signal);
+        if (result.error) throw new Error(domainError(result.error).code);
+        const page = z.array(assetSummary).max(ids.length).safeParse(result.data ?? []);
+        if (!page.success) throw new Error('DEPENDENCY_UNAVAILABLE');
+        rows.push(...page.data);
+      }
+      return rows;
+    },
+  });
+  const boardAssetsById = new Map((boardAssets.data ?? []).map((asset) => [asset.id, asset]));
+  const boardAssignments = useQuery({
+    queryKey: ['work-order-board-assignments', user.id, organization.id, workOrderRows.map((workOrder) => workOrder.id)],
+    enabled: workOrderRows.length > 0,
+    queryFn: async ({ signal }) => readBoundedRows(async (cursor) => {
+      let query = client.from('work_order_assignments').select('id,work_order_id,user_id')
+        .eq('organization_id', organization.id).in('work_order_id', workOrderRows.map((workOrder) => workOrder.id))
+        .is('unassigned_at', null).order('id', { ascending: true }).limit(boardReadPageSize);
+      if (cursor) query = query.gt('id', cursor);
+      const result = await query.abortSignal(signal);
+      if (result.error) throw new Error(domainError(result.error).code);
+      const page = z.array(boardAssignmentRow).max(boardReadPageSize).safeParse(result.data ?? []);
+      if (!page.success) throw new Error('DEPENDENCY_UNAVAILABLE');
+      return page.data;
+    }, boardReadPageSize, boardAssignmentLimit),
+  });
+  const assigneesByWorkOrder = new Map<string, Set<string>>();
+  for (const assignment of boardAssignments.data ?? []) {
+    const ids = assigneesByWorkOrder.get(assignment.work_order_id) ?? new Set<string>();
+    ids.add(assignment.user_id);
+    assigneesByWorkOrder.set(assignment.work_order_id, ids);
+  }
+  const assigneeIdsForOrder = (workOrderId: string) => [...(assigneesByWorkOrder.get(workOrderId) ?? [])].sort();
+  const assigneeIds = [...new Set((boardAssignments.data ?? []).map((assignment) => assignment.user_id))].sort();
+  const assigneeLabel = (id: string) => {
+    if (id === user.id) return 'You';
+    const member = team.data?.find((item) => item.user_id === id);
+    return `${member?.role ? member.role.replaceAll('_', ' ') : 'Account'} · ${id.slice(0, 8)}`;
+  };
+  const visible = workOrderRows.filter((workOrder) =>
+    (priorityFilter === 'all' || workOrder.priority === priorityFilter)
+    && (assetFilter === 'all' || workOrder.asset_id === assetFilter)
+    && (assigneeFilter === 'all' || assigneesByWorkOrder.get(workOrder.id)?.has(assigneeFilter) === true));
+  const boardFiltersActive = assigneeFilter !== 'all' || priorityFilter !== 'all' || assetFilter !== 'all';
   const selected = linkedId ? listTarget ?? linkedTarget.data ?? undefined : visible[0];
   const selectedId = selected?.id ?? null;
   const select = (id: string) => { setDetailsOpen(true); setSearchParams({ workOrder: id }); };
@@ -140,7 +200,7 @@ export function OperationalWorkOrderPage() {
   const assignments = useQuery({
     queryKey: ['work-order-assignments', user.id, organization.id, selectedId], enabled: Boolean(selected),
     queryFn: async ({ signal }) => {
-      const result = await client.from('work_order_assignments').select('user_id,unassigned_at').eq('organization_id', organization.id).eq('work_order_id', selected!.id).abortSignal(signal);
+      const result = await client.from('work_order_assignments').select('user_id,unassigned_at').eq('organization_id', organization.id).eq('work_order_id', selected!.id).is('unassigned_at', null).order('id', { ascending: true }).limit(30).abortSignal(signal);
       if (result.error) throw new Error(domainError(result.error).code);
       return assignmentRows.parse(result.data ?? []);
     },
@@ -438,7 +498,7 @@ export function OperationalWorkOrderPage() {
   };
 
   return <>
-    <PageHeader eyebrow="Maintenance planning" title="Work orders" description="Follow assigned work, repair revisions, reviews and the separate asset-release decision." action={<div className="compact-actions">{isCoordinator && <AppButton disabled={Boolean(createIntent)} onClick={() => { setCreateOpen((open) => !open); if (!createIntent) setCreateError(''); }}>{createOpen ? createIntent ? 'Pending create · retry below' : 'Close create form' : 'Create work order'}</AppButton>}<Link className="button button--secondary" to="/requests">Review requests</Link></div>} />
+    <PageHeader eyebrow="Maintenance planning" title="Work orders" description={pageDate()} action={isCoordinator && <AppButton disabled={Boolean(createIntent)} onClick={() => { setCreateOpen((open) => !open); if (!createIntent) setCreateError(''); }}>{createOpen ? createIntent ? 'Pending create · retry below' : 'Close create form' : 'Create work order'}</AppButton>} />
     {createOpen && isCoordinator && <section className="panel" aria-label="Create a work order"><h2>Create a work order</h2><p className="field-hint">Creates a draft only. Assignment and repair progress are separate recorded actions.</p>{createError && <ErrorNotice>{createError}</ErrorNotice>}<form className="form-stack" onSubmit={(event) => void createDraft(event)}>
       <Field id="create-work-order-asset-search" label="Find active assets" type="search" placeholder="Code or name" disabled={createBusy || Boolean(createIntent)} value={createAssetSearch} onChange={(event) => setCreateAssetSearch(event.target.value)} />
       <SelectField id="create-work-order-asset" label="Asset" required disabled={createBusy || Boolean(createIntent) || createAssets.isPending || createAssets.isError} value={createFields.assetId} onChange={(event) => setCreateFields((current) => ({ ...current, assetId: event.target.value }))}><option value="">Choose an active asset</option>{createAssetRowsList.map((item) => <option key={item.id} value={item.id}>{item.code} · {item.name}</option>)}</SelectField>
@@ -450,24 +510,39 @@ export function OperationalWorkOrderPage() {
       <div className="compact-actions"><AppButton type="submit" disabled={createBusy || !createFields.assetId}>{createBusy ? 'Creating…' : createIntent ? 'Retry exact create' : 'Create work order'}</AppButton><AppButton type="button" variant="secondary" disabled={createBusy || Boolean(createIntent)} onClick={() => { setCreateOpen(false); setCreateFields({ assetId: '', title: '', description: '', category: '', priority: 'normal', criticalReason: '' }); setCreateError(''); }}>Cancel</AppButton></div>
     </form></section>}
     {list.isPending ? <LoadingNotice label="Loading authorized work orders…" /> : list.isError ? <div className="empty-state"><ErrorNotice>Work orders are unavailable for this workspace or account.</ErrorNotice><AppButton variant="secondary" onClick={() => void list.refetch()}>Retry</AppButton></div> : workOrderRows.length === 0 && !linkedId && !search.trim() && statusFilter === 'all' ? <div className="empty-state"><h2>No work orders are visible</h2><p>Create a work order or accept a maintenance request for the operations team.</p><Link className="button button--secondary" to="/requests">Open requests</Link></div> : <>
-      <div className="work-order-filters">
+      <div className="work-order-toolbar">
+        <div className={`work-order-filters${view === 'table' ? ' work-order-filters--table' : ''}`}>
         <Field id="work-order-search" label="Search work orders" type="search" placeholder="Number, title or category" value={search} onChange={(event) => setSearch(event.target.value)} />
-        <SelectField id="work-order-status" label="Status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">All visible statuses</option>{operationalWorkOrder.shape.status.options.map((status) => <option key={status} value={status}>{status.replaceAll('_', ' ')}</option>)}</SelectField>
+        {view === 'table' && <SelectField id="work-order-status" label="Status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">All visible statuses</option>{operationalWorkOrder.shape.status.options.map((status) => <option key={status} value={status}>{status.replaceAll('_', ' ')}</option>)}</SelectField>}
+        <SelectField id="work-order-assignee-filter" label="Assignee" value={assigneeFilter} disabled={boardAssignments.isPending || boardAssignments.isError} onChange={(event) => setAssigneeFilter(event.target.value)}><option value="all">All assignees</option>{assigneeIds.map((id) => <option key={id} value={id}>{id === user.id ? 'You' : `${team.data?.find((member) => member.user_id === id)?.role ?? 'Account'} · ${id}`}</option>)}</SelectField>
+        <SelectField id="work-order-priority-filter" label="Priority filter" value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value)}><option value="all">All priorities</option>{operationalWorkOrder.shape.priority.options.map((priority) => <option key={priority} value={priority}>{priority}</option>)}</SelectField>
+        <SelectField id="work-order-asset-filter" label="Asset filter" value={assetFilter} disabled={boardAssets.isPending || boardAssets.isError} onChange={(event) => setAssetFilter(event.target.value)}><option value="all">All assets</option>{(boardAssets.data ?? []).map((asset) => <option key={asset.id} value={asset.id}>{asset.code} · {asset.name}</option>)}</SelectField>
+        </div>
+        <div className="view-toggle" role="group" aria-label="Work order view">
+          <button type="button" aria-pressed={view === 'table'} onClick={() => setView('table')}>Table</button>
+          <button type="button" aria-pressed={view === 'board'} onClick={() => setView('board')}>Board</button>
+        </div>
       </div>
-      <div className="view-toggle" role="group" aria-label="Work order view">
-        <button type="button" aria-pressed={view === 'board'} onClick={() => setView('board')}>Board</button>
-        <button type="button" aria-pressed={view === 'table'} onClick={() => setView('table')}>Table</button>
-      </div>
-      {selected && !selectedDetailsOpen && <div className="work-order-selected-summary"><span>Selected: <strong>{workOrderLabel(selected.number)} · {selected.title}</strong></span><AppButton variant="secondary" onClick={() => setDetailsOpen(true)}>Open selected details</AppButton></div>}
-      {view === 'board' ? <div className="work-order-board" role="group" aria-label="Work orders by status">
+      {boardAssignments.isError && <ErrorNotice>Assignee filters are unavailable because authorized assignment records could not be read completely.</ErrorNotice>}
+      {boardFiltersActive && list.hasNextPage && <p className="field-hint">Assignee, priority and asset filters apply to the currently loaded authorized work orders. Load more records to include older results.</p>}
+      {view === 'board' ? <><p id="work-order-board-help" className="sr-only">Lane counts cover the currently loaded authorized records. Completed and canceled work remains available in Table view and the status filter.</p><div className="work-order-board" role="group" aria-label="Work orders by status" aria-describedby="work-order-board-help">
         {workOrderLanes.map((lane) => {
           const rows = visible.filter((workOrder) => lane.statuses.some((status) => status === workOrder.status));
-          return <section className="board-lane" key={lane.id} aria-label={`${lane.label} work orders`}>
-            <h2>{lane.label} <span className="state-badge">{rows.length}</span></h2>
-            {rows.length ? <ol className="record-picker-list">{rows.map((workOrder) => <li key={workOrder.id}><button className="board-card" type="button" aria-current={selected?.id === workOrder.id ? 'true' : undefined} onClick={() => select(workOrder.id)}><span className="record-picker-title">{workOrderLabel(workOrder.number)}</span><span className={`state-badge state-badge--${workOrder.status}`}>{workOrder.status.replaceAll('_', ' ')}</span><span className="work-order-card-title">{workOrder.title}</span><span className="record-picker-meta">{workOrder.priority} priority · revision {workOrder.repair_revision}</span></button></li>)}</ol> : <p className="field-hint">No matching work orders.</p>}
+          return <section className={`board-lane board-lane--${lane.id}`} key={lane.id} aria-label={`${lane.label} work orders`}>
+            <h2>{lane.label} <span className="state-badge" aria-label={`${rows.length} loaded work orders`}>{rows.length}</span></h2>
+            {rows.length ? <ol className="record-picker-list">{rows.map((workOrder) => {
+              const boardAsset = boardAssetsById.get(workOrder.asset_id);
+              const cardDate = workOrder.planned_on ? `Planned ${displayPlannedDate(workOrder.planned_on)}` : workOrder.due_at ? `Due ${new Date(workOrder.due_at).toLocaleDateString('en-GB')}` : 'Date not recorded';
+              return <li key={workOrder.id}><button className="board-card" type="button" aria-current={selected?.id === workOrder.id ? 'true' : undefined} onClick={() => select(workOrder.id)}>
+                <span className="record-picker-title work-order-card-id">{workOrderLabel(workOrder.number)}</span><span className={`work-order-priority work-order-priority--${workOrder.priority}`}>{workOrder.priority}</span>
+                <span className="work-order-card-title">{workOrder.title}</span>
+                <span className="work-order-card-meta" title={boardAsset ? `${boardAsset.code} · ${boardAsset.name}` : undefined}>{boardAssets.isPending ? 'Loading authorized asset…' : boardAsset ? `${boardAsset.code} · ${boardAsset.name}` : 'Asset details unavailable'}</span>
+                <span className="work-order-card-footer"><span className="work-order-card-meta" title={assigneeIdsForOrder(workOrder.id).join(', ')}>{boardAssignments.isPending ? 'Loading assignees…' : boardAssignments.isError ? 'Assignees unavailable' : assigneeIdsForOrder(workOrder.id).length ? `Assigned to · ${assigneeIdsForOrder(workOrder.id).map(assigneeLabel).join(', ')}` : 'Unassigned'}</span><span className="work-order-card-meta work-order-card-date">{cardDate}</span></span>
+              </button></li>;
+            })}</ol> : <p className="field-hint">No matching work orders.</p>}
           </section>;
         })}
-      </div> : <div className="record-picker table-picker work-order-table">
+      </div></> : <div className="record-picker table-picker work-order-table">
         <table aria-label="Authorized work orders"><thead><tr><th scope="col">Work order</th><th scope="col">Title</th><th scope="col">Status</th><th scope="col">Priority</th><th scope="col">Due</th><th scope="col">Revision</th><th scope="col">Action</th></tr></thead>
           <tbody>{visible.map((workOrder) => <tr key={workOrder.id} aria-selected={selected?.id === workOrder.id}>
             <td>{workOrderLabel(workOrder.number)}</td><td>{workOrder.title}</td><td><span className={`state-badge state-badge--${workOrder.status}`}>{workOrder.status.replaceAll('_', ' ')}</span></td><td>{workOrder.priority}</td><td>{workOrder.due_at ? new Date(workOrder.due_at).toLocaleDateString() : 'Not recorded'}</td><td>{workOrder.repair_revision}</td><td><button className="table-select" type="button" onClick={() => select(workOrder.id)}>{selected?.id === workOrder.id ? 'Selected' : 'Open details'}</button></td>
@@ -530,7 +605,7 @@ export function OperationalWorkOrderPage() {
               {notices[`transition:${selected.id}:in_progress`]?.error && <ErrorNotice>{notices[`transition:${selected.id}:in_progress`].error}</ErrorNotice>}
               {notices[`transition:${selected.id}:scheduled`]?.error && <ErrorNotice>{notices[`transition:${selected.id}:scheduled`].error}</ErrorNotice>}
               {notices[`transition:${selected.id}:blocked`]?.error && <ErrorNotice>{notices[`transition:${selected.id}:blocked`].error}</ErrorNotice>}
-              {selected.status !== 'canceled' && <Field id={`transition-reason-${selected.id}`} label="Reason for block, resume, reopen or cancellation" required maxLength={2000} disabled={intentLocked || busyKey !== '' || Boolean(pendingTransition)} value={field('transition-reason')} onChange={(event) => setField('transition-reason', event.target.value)} hint="A reason is required for blocking, resuming blocked work, reopening completed work or cancellation." />}
+              {selected.status !== 'canceled' && <Field id={`transition-reason-${selected.id}`} label="Block or resume reason" required maxLength={2000} disabled={intentLocked || busyKey !== '' || Boolean(pendingTransition)} value={field('transition-reason')} onChange={(event) => setField('transition-reason', event.target.value)} hint="A reason is required for blocking, resuming blocked work, reopening completed work or cancellation." />}
               {notices[`schedule:${selected.id}`]?.error && <ErrorNotice>{notices[`schedule:${selected.id}`].error}</ErrorNotice>}{notices[`schedule:${selected.id}`]?.success && <SuccessNotice>{notices[`schedule:${selected.id}`].success}</SuccessNotice>}
               {isCoordinator && ['open', 'blocked'].includes(selected.status) && !selectedActiveAssignments.length && <p className="info-callout">An active same-workspace assignment is required before work can start or resume. Assign eligible work before continuing.</p>}
               {selected.status === 'in_progress' && <>

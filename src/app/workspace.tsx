@@ -15,6 +15,7 @@ import { OperationalWorkOrderPage } from './work-orders';
 import { AppButton, BrandLogo, ErrorNotice, Field, LoadingNotice, PageHeader, SuccessNotice } from './ui';
 import type { CapturedAuthRedirect } from './auth/capture-url';
 import { acceptInvitation } from './commands';
+import { recordFilter } from './record-query';
 
 type Organization = Tables<'organizations'>;
 type OrganizationAccess = { organization: Organization; role: string };
@@ -141,31 +142,108 @@ function MobileMenuButton({ open, setOpen }: { open: boolean; setOpen: (open: bo
   return <button className="mobile-nav-toggle" aria-label={open ? 'Close navigation' : 'Open navigation'} aria-expanded={open} aria-controls="primary-navigation" onClick={() => setOpen(!open)}><span aria-hidden="true">{open ? '×' : '☰'}</span></button>;
 }
 
+function WorkspaceGlyph({ name }: { name: string }) {
+  const shared = { fill: 'none', stroke: 'currentColor', strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, strokeWidth: 1.7 };
+  const paths: Record<string, ReactNode> = {
+    dashboard: <><path d="M3.5 10.2 12 3.5l8.5 6.7v9.3a1 1 0 0 1-1 1h-5.2v-6.2h-4.6v6.2H4.5a1 1 0 0 1-1-1z" /><path d="M8.2 8.5h.1M15.7 8.5h.1" /></>,
+    requests: <><path d="M6 3.5h8l4 4v13H6a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2z" /><path d="M14 3.5v4h4M8 12h6M8 16h6" /></>,
+    work: <><path d="M14.8 6.3a4.6 4.6 0 0 0-5.9 5.9l-5.5 5.5a1.9 1.9 0 0 0 2.7 2.7l5.5-5.5a4.6 4.6 0 0 0 5.9-5.9l-2.8 2.8-2.7-2.7z" /></>,
+    assets: <><path d="M5 6.5 7 4h10l2 2.5v12a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 18.5z" /><path d="M5 9h14M8 17h2M14 17h2" /></>,
+    team: <><circle cx="9" cy="8" r="3.2" /><path d="M3.5 20v-1.2a5.5 5.5 0 0 1 11 0V20zM15 5.2a3.2 3.2 0 0 1 0 6.1M17 14.2a4.7 4.7 0 0 1 3.5 4.6V20h-4" /></>,
+    notifications: <><path d="M18.5 9.8a6.5 6.5 0 0 0-13 0c0 7-2.2 7.2-2.2 8.7h17.4c0-1.5-2.2-1.7-2.2-8.7zM9.5 21h5" /></>,
+    settings: <><circle cx="12" cy="12" r="3" /><path d="m19.4 15 .1.1a1.7 1.7 0 1 1-2.4 2.4L17 17.4a1.7 1.7 0 0 0-2.9 1.2v.2a1.7 1.7 0 1 1-3.4 0v-.2a1.7 1.7 0 0 0-2.9-1.2l-.1.1a1.7 1.7 0 1 1-2.4-2.4l.1-.1a1.7 1.7 0 0 0-1.2-2.9H4a1.7 1.7 0 1 1 0-3.4h.2a1.7 1.7 0 0 0 1.2-2.9l-.1-.1a1.7 1.7 0 1 1 2.4-2.4l.1.1a1.7 1.7 0 0 0 2.9-1.2V2a1.7 1.7 0 1 1 3.4 0v.2a1.7 1.7 0 0 0 2.9 1.2l.1-.1a1.7 1.7 0 1 1 2.4 2.4l-.1.1a1.7 1.7 0 0 0 1.2 2.9h.2a1.7 1.7 0 1 1 0 3.4h-.2a1.7 1.7 0 0 0-1.2 2.9z" transform="translate(-1 -1) scale(.96)" /></>,
+    security: <><path d="M12 3 19 6v5.2c0 4.6-2.8 7.7-7 9.8-4.2-2.1-7-5.2-7-9.8V6z" /><path d="m9 12 2 2 4-4" /></>,
+    search: <><circle cx="10.8" cy="10.8" r="6.4" /><path d="m15.5 15.5 4.3 4.3" /></>,
+    calendar: <><rect x="3.5" y="5" width="17" height="15.5" rx="1.5" /><path d="M7.5 3v4M16.5 3v4M3.5 9h17" /></>,
+  };
+  return <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" {...shared}>{paths[name] ?? paths.dashboard}</svg>;
+}
+
+type SearchRecord = { id: string; kind: 'Asset' | 'Request' | 'Work order'; title: string; detail: string; href: string };
+
+function WorkspaceRecordSearch() {
+  const { client, user, organization } = useWorkspace();
+  const navigate = useNavigate();
+  const [value, setValue] = useState('');
+  const [term, setTerm] = useState('');
+  const [focused, setFocused] = useState(false);
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const focusSearch = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); input.current?.focus(); }
+    };
+    window.addEventListener('keydown', focusSearch);
+    return () => window.removeEventListener('keydown', focusSearch);
+  }, []);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setTerm(value.trim()), 180);
+    return () => window.clearTimeout(timeout);
+  }, [value]);
+  const search = useQuery({
+    queryKey: ['workspace-record-search', user.id, organization.id, term],
+    enabled: term.length >= 2,
+    staleTime: 5_000,
+    queryFn: async ({ signal }): Promise<SearchRecord[]> => {
+      const assetFilter = recordFilter(['name', 'code', 'category'], term, null)!;
+      const requestFilter = recordFilter(['category', 'description'], term, null)!;
+      const numberSearch = term.match(/^(?:WO[-\s]?)?0*(\d{1,10})$/i);
+      const workFilter = recordFilter(['title', 'category', 'description'], term, null, numberSearch ? [`number.eq.${Number(numberSearch[1])}`] : [])!;
+      const [assets, requests, workOrders] = await Promise.all([
+        client.from('assets').select('id,code,name,category').eq('organization_id', organization.id).or(assetFilter).order('created_at', { ascending: false }).order('id', { ascending: false }).limit(4).abortSignal(signal),
+        client.from('maintenance_requests').select('id,category,description,status').eq('organization_id', organization.id).or(requestFilter).order('created_at', { ascending: false }).order('id', { ascending: false }).limit(4).abortSignal(signal),
+        client.from('work_orders').select('id,number,title,status').eq('organization_id', organization.id).or(workFilter).order('created_at', { ascending: false }).order('id', { ascending: false }).limit(4).abortSignal(signal),
+      ]);
+      for (const result of [assets, requests, workOrders]) if (result.error) throw new Error(domainError(result.error).code);
+      return [
+        ...(assets.data ?? []).map((asset) => ({ id: asset.id, kind: 'Asset' as const, title: asset.name, detail: `${asset.code} · ${asset.category}`, href: `/assets?asset=${encodeURIComponent(asset.id)}` })),
+        ...(requests.data ?? []).map((request) => ({ id: request.id, kind: 'Request' as const, title: request.category, detail: `${request.status} · ${request.description}`, href: `/requests?request=${encodeURIComponent(request.id)}` })),
+        ...(workOrders.data ?? []).map((workOrder) => ({ id: workOrder.id, kind: 'Work order' as const, title: `WO-${String(workOrder.number).padStart(4, '0')} · ${workOrder.title}`, detail: workOrder.status.replaceAll('_', ' '), href: `/work-orders?workOrder=${encodeURIComponent(workOrder.id)}` })),
+      ].slice(0, 10);
+    },
+  });
+  const showResults = focused && term.length >= 2;
+  const openResult = (record: SearchRecord) => {
+    setValue(''); setTerm(''); setFocused(false); navigate(record.href);
+  };
+  return <div className="global-search">
+    <form role="search" onSubmit={(event) => { event.preventDefault(); if (search.data?.[0]) openResult(search.data[0]); }}>
+      <WorkspaceGlyph name="search" />
+      <input ref={input} type="search" role="searchbox" aria-label="Search records" aria-controls="global-search-results" aria-expanded={showResults} autoComplete="off" placeholder="Search records…" value={value} onFocus={() => setFocused(true)} onBlur={(event) => { if (!event.currentTarget.parentElement?.parentElement?.contains(event.relatedTarget as Node)) setFocused(false); }} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') { setValue(''); setTerm(''); setFocused(false); } }} />
+      <kbd aria-hidden="true">Ctrl K</kbd>
+    </form>
+    {showResults && <div className="global-search-results" id="global-search-results">
+      {search.isFetching ? <p role="status">Searching authorized workspace records…</p> : search.isError ? <div><p role="status">Search is unavailable. Your workspace access remains in force.</p><AppButton variant="secondary" onClick={() => void search.refetch()}>Retry search</AppButton></div> : search.data?.length ? <ul>{search.data.map((record) => <li key={`${record.kind}:${record.id}`}><Link to={record.href} onMouseDown={(event) => event.preventDefault()} onClick={(event) => { event.preventDefault(); openResult(record); }}><span className="global-search-kind">{record.kind}</span><strong>{record.title}</strong><small>{record.detail}</small></Link></li>)}</ul> : <p role="status">No matching records are visible in this workspace.</p>}
+    </div>}
+  </div>;
+}
+
 function WorkspaceShell({ memberships, selected, onSwitch }: { memberships: OrganizationAccess[]; selected: OrganizationAccess; onSwitch: (id: string) => void }) {
   const { user, signOut } = useAuth();
   const location = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => setMenuOpen(false), [location.pathname]);
+  const pageNames: Record<string, string> = { '/': 'Dashboard', '/requests': 'Requests', '/work-orders': 'Work orders', '/assets': 'Assets', '/team': 'Team', '/notifications': 'Notifications', '/settings': 'Settings', '/settings/security': 'Security' };
+  const pageName = pageNames[location.pathname] ?? 'Dashboard';
+  const today = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: selected.organization.timezone }).format(new Date());
+  const duplicateNames = new Set(memberships.filter((membership, index) => memberships.some((other, otherIndex) => otherIndex !== index && other.organization.name === membership.organization.name)).map((membership) => membership.organization.id));
   const navigation = [
-    { to: '/', label: 'Overview', glyph: '◫', end: true },
-    { to: '/requests', label: 'Requests', glyph: '↗' },
-    { to: '/work-orders', label: 'Work orders', glyph: '▤' },
-    { to: '/assets', label: 'Assets', glyph: '◇' },
-    ...(['owner', 'manager', 'supervisor'].includes(selected.role) ? [{ to: '/team', label: 'Team', glyph: '♙' }] : []),
-    { to: '/notifications', label: 'Notifications', glyph: '◉' },
-    ...(selected.role === 'owner' ? [{ to: '/settings', label: 'Settings', glyph: '⚙' }] : []),
-    { to: '/settings/security', label: 'Security', glyph: '⌑' },
+    { to: '/', label: 'Dashboard', glyph: 'dashboard', end: true },
+    { to: '/requests', label: 'Requests', glyph: 'requests' },
+    { to: '/work-orders', label: 'Work orders', glyph: 'work' },
+    { to: '/assets', label: 'Assets', glyph: 'assets' },
+    ...(['owner', 'manager', 'supervisor'].includes(selected.role) ? [{ to: '/team', label: 'Team', glyph: 'team' }] : []),
+    { to: '/notifications', label: 'Notifications', glyph: 'notifications' },
   ];
   return <div className="app-shell">
     <a className="skip-link" href="#main-content">Skip to content</a>
     <aside className="side-rail" data-open={menuOpen} aria-label="Workspace navigation">
       <div className="side-brand"><BrandLogo /></div>
-      <div className="workspace-picker"><label htmlFor="workspace-switcher">Workspace</label><select id="workspace-switcher" aria-label="Workspace" value={selected.organization.id} onChange={(event) => onSwitch(event.target.value)}>{memberships.map((membership) => <option key={membership.organization.id} value={membership.organization.id}>{membership.organization.name} · {membership.role}</option>)}</select></div>
-      <nav id="primary-navigation" className="side-nav" aria-label="Primary navigation">{navigation.map((item) => <NavLink key={item.to} to={item.to} end={item.end}><span className="nav-icon" aria-hidden="true">{item.glyph}</span>{item.label}</NavLink>)}</nav>
-      <div className="side-footer"><p className="user-caption">Signed in as<br /><strong>{user?.email ?? 'Verified account'}</strong></p>{error && <ErrorNotice>{error}</ErrorNotice>}<AppButton variant="quiet" className="button--full" onClick={() => void signOut().catch(() => setError('Could not sign out. Please try again.'))}>Sign out</AppButton></div>
+      <div className="workspace-picker"><label className="sr-only" htmlFor="workspace-switcher">Workspace</label><select id="workspace-switcher" aria-label="Workspace" value={selected.organization.id} onChange={(event) => onSwitch(event.target.value)}>{memberships.map((membership) => <option key={membership.organization.id} value={membership.organization.id}>{membership.organization.name}{duplicateNames.has(membership.organization.id) ? ` · ${membership.role}` : ''}</option>)}</select><span className="workspace-chevron" aria-hidden="true">⌄</span></div>
+      <nav id="primary-navigation" className="side-nav" aria-label="Primary navigation">{navigation.map((item) => <NavLink key={item.to} to={item.to} end={item.end}><span className="nav-icon" aria-hidden="true"><WorkspaceGlyph name={item.glyph} /></span>{item.label}</NavLink>)}</nav>
+      <div className="side-footer">{selected.role === 'owner' && <NavLink className="side-utility-link" to="/settings"><span className="nav-icon" aria-hidden="true"><WorkspaceGlyph name="settings" /></span>Settings</NavLink>}{error && <ErrorNotice>{error}</ErrorNotice>}<div className="account-summary"><Link className="account-profile" to="/settings/security" aria-label="Account security"><span className="account-avatar" aria-hidden="true">{(user?.email?.[0] ?? 'U').toUpperCase()}</span><span className="account-email">{user?.email ?? 'Verified account'}</span></Link><AppButton variant="quiet" aria-label="Sign out" onClick={() => void signOut().catch(() => setError('Could not sign out. Please try again.'))}>⌄</AppButton></div></div>
     </aside>
-    <div className="main-frame"><header className="topbar"><MobileMenuButton open={menuOpen} setOpen={setMenuOpen} /><div className="mobile-brand"><BrandLogo small /></div><span className="muted">{selected.organization.name}</span></header><main id="main-content" className="main-content"><Routes>
+    <div className="main-frame"><header className="topbar"><div className="topbar-left"><MobileMenuButton open={menuOpen} setOpen={setMenuOpen} /><nav className="breadcrumb" aria-label="Breadcrumb"><Link to="/">Dashboard</Link>{location.pathname !== '/' && <><span aria-hidden="true">›</span><span aria-current="page">{pageName}</span></>}</nav></div><WorkspaceRecordSearch /><div className="topbar-date"><span className="nav-icon" aria-hidden="true"><WorkspaceGlyph name="calendar" /></span><time>{today}</time></div></header><main id="main-content" className="main-content"><Routes>
       <Route path="/" element={<WorkspaceOverview />} />
       <Route path="/assets" element={<AssetPage />} />
       <Route path="/requests" element={<RequestPage />} />
