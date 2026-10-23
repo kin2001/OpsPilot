@@ -528,6 +528,7 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   await persistedTechnicianSummary.click();
   await expect(persistedTechnicianRow.getByLabel(`Role for ${technician.id}`)).toHaveValue('supervisor');
   await technicianPage.reload();
+  await technicianPage.goto('/');
   await expect(technicianPage.getByRole('heading', { name: 'Operations at a glance' })).toBeVisible();
   await technicianPage.goto(`/work-orders?workOrder=${workOrderId}`);
   await expect(technicianWorkOrder.getByText('Your account participated in this work order and cannot review it, even if your assignment has since changed.')).toBeVisible();
