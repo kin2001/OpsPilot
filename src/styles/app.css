@@ -137,6 +137,16 @@ a:hover { color: var(--action); }
 .work-order-layout { margin-top: 10px; }
 .board-lane { background: #f4f5f1; }
 .board-lane h2 { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 0; font-size: 1rem; }
+.work-order-board { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: start; gap: 12px; margin-top: 14px; }
+.work-order-board .board-lane { display: grid; align-content: start; gap: 12px; min-height: 150px; padding: 13px; }
+.work-order-board .record-picker-list { margin: 0; }
+.work-order-board .board-card[aria-current="true"] { border-color: var(--action); background: #f4f6ff; box-shadow: inset 3px 0 var(--action); }
+.work-order-card-title { grid-column: 1 / -1; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
+.work-order-selected-summary, .work-order-detail-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.work-order-selected-summary { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 4px; background: white; }
+.work-order-detail { margin-top: 18px; scroll-margin-top: 16px; }
+.work-order-detail-actions h2 { margin: 0; font-size: 1.1rem; }
+.work-order-table { margin-top: 14px; }
 .board-card { min-height: 82px; box-shadow: 0 1px 2px #2026230b; }
 .table-picker { overflow-x: auto; }
 .table-picker table { width: 100%; border-collapse: collapse; text-align: left; }
@@ -176,11 +186,64 @@ a:hover { color: var(--action); }
 .skip-link:focus { transform: translateY(0); }
 .mobile-nav-toggle { display: none; }
 
+.dashboard-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
+.dashboard-count { min-width: 0; display: grid; gap: 12px; padding: 18px; border: 1px solid var(--line); border-radius: 5px; background: white; }
+.dashboard-count span { color: var(--muted); font-size: .82rem; font-weight: 650; }
+.dashboard-count strong { font-size: clamp(1.35rem, 3vw, 2rem); line-height: 1; letter-spacing: -.04em; }
+.dashboard-count small { color: var(--muted); font-size: .75rem; font-weight: 500; letter-spacing: 0; }
+.dashboard-panel { margin-top: 14px; }
+.dashboard-panel h2 { margin: 0; }
+.availability-strip { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px; margin: 22px 0 8px; }
+.availability-day { min-width: 0; display: grid; justify-items: center; gap: 8px; color: var(--muted); font-size: .73rem; text-align: center; }
+.availability-day strong { min-height: 1em; color: var(--ink); font-size: .7rem; }
+.availability-track { width: min(100%, 42px); height: 94px; display: flex; align-items: flex-end; overflow: hidden; border: 1px solid var(--line); border-radius: 4px; background: #f2f3ef; }
+.availability-bar { width: 100%; background: #3c8d67; }
+.availability-bar--unknown { background: repeating-linear-gradient(135deg, #e2e4dd, #e2e4dd 5px, #cdd1c9 5px, #cdd1c9 9px); }
+.dashboard-links { margin-top: 16px; }
+.notification-card { display: grid; gap: 10px; }
+.notification-card h2 { margin: 0; font-size: 1rem; text-transform: capitalize; }
+.settings-form { margin-top: 18px; }
+.setting-toggle { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px; border: 1px solid var(--line); border-radius: 4px; background: #fbfbf9; }
+.setting-toggle > span:first-child { display: grid; gap: 6px; }
+.setting-toggle input { width: 22px; height: 22px; accent-color: var(--action); flex: 0 0 22px; }
+.work-order-filters { display: grid; grid-template-columns: minmax(0, 1fr) minmax(190px, .35fr); gap: 14px; margin-top: 18px; }
+.work-order-detail { gap: 18px; }
+.work-order-detail .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.work-order-detail .operation-section { display: grid; gap: 12px; padding-top: 18px; border-top: 1px solid var(--line); }
+.operation-section h3, .operation-section h4 { margin: 0; font-size: 1rem; letter-spacing: -.015em; }
+.operation-section h4 { font-size: .95rem; }
+.operation-section > .button, .operation-section > .form-stack { min-width: 0; }
+.choice-fieldset { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 14px; border: 1px solid var(--line); border-radius: 4px; }
+.choice-fieldset legend { padding: 0 6px; color: #39413d; font-size: .86rem; font-weight: 700; }
+.choice-row { min-width: 0; display: flex; align-items: flex-start; gap: 10px; line-height: 1.4; overflow-wrap: anywhere; }
+.choice-row input { width: 18px; height: 18px; margin-top: 2px; flex: 0 0 18px; accent-color: var(--action); }
+.assigned-list { display: grid; gap: 8px; margin: 0; padding-left: 20px; font-size: .86rem; overflow-wrap: anywhere; }
+.task-list { display: grid; gap: 10px; margin: 0; padding: 14px; border: 1px solid var(--line); border-radius: 4px; list-style: none; }
+.task-list li { min-width: 0; }
+.timeline { display: grid; gap: 0; margin: 0; padding: 0 0 0 18px; border-left: 1px solid var(--line); list-style: none; }
+.timeline li { position: relative; display: grid; gap: 5px; min-width: 0; padding: 0 0 18px 14px; overflow-wrap: anywhere; }
+.timeline li::before { position: absolute; left: -23px; top: 3px; width: 9px; height: 9px; border: 2px solid white; border-radius: 50%; background: var(--action); content: ""; box-shadow: 0 0 0 1px var(--action); }
+.timeline small { color: var(--muted); }
+.asset-operations { display: grid; gap: 18px; margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); }
+.asset-operations-controls { min-width: 0; margin: 0; padding: 0; border: 0; }
+.asset-operations .operation-section { display: grid; gap: 12px; padding-top: 16px; border-top: 1px solid var(--line); }
+.asset-operations .operation-section:first-of-type { border-top: 0; padding-top: 0; }
+.private-image { display: block; width: min(100%, 540px); max-height: 360px; object-fit: contain; object-position: left center; border: 1px solid var(--line); border-radius: 4px; background: #f7f8f5; }
+.state-badge--open, .state-badge--scheduled { color: #234baf; background: #eaf0ff; }
+.state-badge--in_progress { color: #7d4c11; background: #fff1d7; }
+.state-badge--blocked, .state-badge--canceled { color: #8b2727; background: #fff0ef; }
+.state-badge--awaiting_review { color: #5a408b; background: #f0ebfa; }
+.state-badge--completed, .state-badge--operational { color: #176241; background: #e9f5ed; }
+.state-badge--under_maintenance, .state-badge--pending_release { color: #79520e; background: #fff4dc; }
+.state-badge--out_of_service { color: #8b2727; background: #fff0ef; }
+
 @media (max-width: 920px) {
   .app-shell { grid-template-columns: 218px minmax(0, 1fr); }
   .main-frame { padding-right: 24px; padding-left: 24px; }
   .flow-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .record-workspace { grid-template-columns: minmax(0, 1fr); }
+  .dashboard-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .work-order-board { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 760px) {
   .record-workspace .record-table-scroll { display: none; }
@@ -205,10 +268,20 @@ a:hover { color: var(--action); }
   .flow-card { min-height: 130px; }
   .record-workspace, .work-order-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
   .record-picker, .record-preview, .board-lane { padding: 15px; }
+  .work-order-board { grid-template-columns: minmax(0, 1fr); }
+  .work-order-selected-summary, .work-order-detail-actions { align-items: stretch; flex-direction: column; }
+  .work-order-table { overflow-x: auto; }
   .detail-grid { grid-template-columns: minmax(0, 1fr); }
   .view-toggle { justify-content: stretch; }
   .view-toggle button { flex: 1; }
   .form-row { grid-template-columns: 1fr; }
+  .work-order-filters { grid-template-columns: 1fr; }
+  .work-order-detail .detail-grid { grid-template-columns: 1fr; }
+  .dashboard-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .availability-strip { gap: 5px; }
+  .availability-day { font-size: .65rem; }
+  .availability-track { height: 72px; }
+  .setting-toggle { align-items: flex-start; padding: 12px; }
   .panel { padding: 18px; }
   .record-card { padding: 15px; }
   .record-header { align-items: flex-start; }

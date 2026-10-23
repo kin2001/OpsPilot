@@ -1,10 +1,12 @@
 import { useRef, useState, type FormEvent } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { z } from 'zod';
 import type { Tables } from '../lib/database.types';
 import { domainError } from '../lib/domain-errors';
 import { useWorkspace } from './workspace';
+import { AssetOperationsPanel } from './asset-operations';
+import { RequestEvidence } from './request-evidence';
 import {
   convertRequest, inviteMember, revokeInvitation, reviseRequest, saveAsset, saveRequest,
   setMember, submitRequest, triageRequest, withdrawRequest,
@@ -14,6 +16,16 @@ import { AppButton, ErrorNotice, Field, LoadingNotice, PageHeader, SelectField, 
 type MaintenanceRequest = Tables<'maintenance_requests'>;
 type Membership = Tables<'organization_members'>;
 type Invitation = Tables<'organization_invitations'>;
+
+const requestTargetSchema = z.strictObject({
+  id: z.uuid(), organization_id: z.uuid(), asset_id: z.uuid(), reporter_id: z.uuid(), description: z.string(), category: z.string(),
+  status: z.string(), transition_reason: z.string().nullable(), converted_work_order_id: z.uuid().nullable(), created_at: z.string(), version: z.number().int(),
+});
+const assetTargetSchema = z.strictObject({
+  id: z.uuid(), organization_id: z.uuid(), code: z.string(), name: z.string(), category: z.string(), site_id: z.uuid().nullable(),
+  serial_number: z.string().nullable(), registration: z.string().nullable(), archived_at: z.string().nullable(), created_by: z.uuid(),
+  created_at: z.string(), version: z.number().int(), availability: z.enum(['operational', 'under_maintenance', 'out_of_service', 'pending_release']),
+});
 
 function errorCode(error: unknown) {
   return domainError(error).code;
@@ -30,6 +42,7 @@ function QueryFailure({ retry }: { retry: () => void }) {
 export function AssetPage() {
   const { client, user, organization, role } = useWorkspace();
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [formOpen, setFormOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -54,7 +67,18 @@ export function AssetPage() {
   });
   const mayRegister = ['owner', 'manager', 'supervisor'].includes(role);
   const visibleAssets = (assets.data ?? []).filter((asset) => `${asset.name} ${asset.code} ${asset.category}`.toLowerCase().includes(search.trim().toLowerCase()));
-  const selectedAsset = visibleAssets.find((asset) => asset.id === selectedId) ?? visibleAssets[0];
+  const linkedAssetId = searchParams.get('asset');
+  const listedLinkedAsset = assets.data?.find((asset) => asset.id === linkedAssetId);
+  const linkedAsset = useQuery({
+    queryKey: ['asset-target', user.id, organization.id, linkedAssetId], enabled: Boolean(linkedAssetId && !listedLinkedAsset),
+    queryFn: async ({ signal }) => {
+      const result = await client.from('assets').select('*').eq('organization_id', organization.id).eq('id', linkedAssetId!).abortSignal(signal).maybeSingle();
+      if (result.error) throw new Error(domainError(result.error).code);
+      return result.data ? assetTargetSchema.parse(result.data) : null;
+    },
+  });
+  const selectedAsset = linkedAssetId ? listedLinkedAsset ?? linkedAsset.data ?? undefined : visibleAssets.find((asset) => asset.id === selectedId) ?? visibleAssets[0];
+  const selectAsset = (id: string) => linkedAssetId ? setSearchParams({ asset: id }) : setSelectedId(id);
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setBusy(true);
@@ -90,23 +114,24 @@ export function AssetPage() {
       <div className="button-row"><AppButton type="submit" disabled={busy}>{busy ? 'Saving…' : uncertain ? 'Retry with the same request' : 'Save asset'}</AppButton><AppButton type="button" variant="secondary" onClick={() => { setFormOpen(false); setError(''); setUncertain(false); requestId.current = crypto.randomUUID(); void queryClient.invalidateQueries({ queryKey }); }} disabled={busy}>Cancel</AppButton></div>
       </form>
     </section>}
-    {assets.isPending ? <LoadingNotice label="Loading assets…" /> : assets.isError ? <QueryFailure retry={() => void assets.refetch()} /> : assets.data.length === 0 ? <div className="empty-state"><h2>No assets are visible</h2><p>{mayRegister ? 'Register the first asset before submitting a maintenance request.' : 'Ask a workspace owner or supervisor to register an asset.'}</p>{mayRegister && <AppButton onClick={() => setFormOpen(true)}>Register asset</AppButton>}</div> : <div className="record-workspace" aria-label="Assets in this workspace">
+    {assets.isPending ? <LoadingNotice label="Loading assets…" /> : assets.isError ? <QueryFailure retry={() => void assets.refetch()} /> : assets.data.length === 0 && !linkedAssetId ? <div className="empty-state"><h2>No assets are visible</h2><p>{mayRegister ? 'Register the first asset before submitting a maintenance request.' : 'Ask a workspace owner or supervisor to register an asset.'}</p>{mayRegister && <AppButton onClick={() => setFormOpen(true)}>Register asset</AppButton>}</div> : <div className="record-workspace" aria-label="Assets in this workspace">
       <section className="record-picker" aria-label="Asset registry">
         <label className="field-label" htmlFor="asset-search">Search assets</label>
         <input className="record-search" id="asset-search" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Name, code or category" />
         {visibleAssets.length ? <>
           <div className="record-table-scroll"><table className="responsive-record-table" aria-label="Asset registry results"><thead><tr><th scope="col">Asset</th><th scope="col">Code</th><th scope="col">Category</th><th scope="col">Record</th></tr></thead><tbody>{visibleAssets.map((asset) => <tr key={asset.id} aria-selected={selectedAsset?.id === asset.id}>
-            <td><button className="table-select" type="button" aria-pressed={selectedAsset?.id === asset.id} onClick={() => setSelectedId(asset.id)}>{asset.name}</button></td><td>{asset.code}</td><td>{asset.category}</td><td><span className="state-badge">{asset.archived_at ? 'Archived' : 'Registered'}</span></td>
+            <td><button className="table-select" type="button" aria-pressed={selectedAsset?.id === asset.id} onClick={() => selectAsset(asset.id)}>{asset.name}</button></td><td>{asset.code}</td><td>{asset.category}</td><td><span className="state-badge">{asset.archived_at ? 'Archived' : 'Registered'}</span></td>
           </tr>)}</tbody></table></div>
-          <ol className="record-picker-list mobile-record-list">{visibleAssets.map((asset) => <li key={asset.id}><button className="record-picker-option" type="button" aria-pressed={selectedAsset?.id === asset.id} onClick={() => setSelectedId(asset.id)}>
+          <ol className="record-picker-list mobile-record-list">{visibleAssets.map((asset) => <li key={asset.id}><button className="record-picker-option" type="button" aria-pressed={selectedAsset?.id === asset.id} onClick={() => selectAsset(asset.id)}>
           <span className="record-picker-title">{asset.name}</span><span className="record-picker-meta">{asset.code} · {asset.category}</span><span className="state-badge">{asset.archived_at ? 'Archived' : 'Registered'}</span>
           </button></li>)}</ol>
         </> : <p className="field-hint">No assets match your search.</p>}
       </section>
       <section className="record-preview" aria-label="Selected asset details" aria-live="polite">
-        {selectedAsset ? <>
+        {linkedAssetId && !listedLinkedAsset && linkedAsset.isPending ? <LoadingNotice label="Checking the exact asset target under your current access…" /> : linkedAssetId && !listedLinkedAsset && (linkedAsset.isError || !linkedAsset.data) ? <div className="empty-state"><h2>Asset unavailable</h2><p>This target is not visible under your current workspace access.</p><AppButton variant="secondary" onClick={() => void linkedAsset.refetch()}>Retry target lookup</AppButton></div> : selectedAsset ? <>
           <div className="record-header"><div><p className="page-kicker">Asset record</p><h2>{selectedAsset.name}</h2></div><span className="state-badge">{selectedAsset.archived_at ? 'Archived' : 'Registered'}</span></div>
-          <dl className="detail-grid"><div><dt>Asset code</dt><dd>{selectedAsset.code}</dd></div><div><dt>Category</dt><dd>{selectedAsset.category}</dd></div>{selectedAsset.serial_number && <div><dt>Serial number</dt><dd>{selectedAsset.serial_number}</dd></div>}{selectedAsset.registration && <div><dt>Registration</dt><dd>{selectedAsset.registration}</dd></div>}<div><dt>Availability</dt><dd>Not recorded</dd></div></dl>
+          <dl className="detail-grid"><div><dt>Asset code</dt><dd>{selectedAsset.code}</dd></div><div><dt>Category</dt><dd>{selectedAsset.category}</dd></div>{selectedAsset.serial_number && <div><dt>Serial number</dt><dd>{selectedAsset.serial_number}</dd></div>}{selectedAsset.registration && <div><dt>Registration</dt><dd>{selectedAsset.registration}</dd></div>}<div><dt>Availability</dt><dd>{selectedAsset.availability.replaceAll('_', ' ')}</dd></div></dl>
+          <AssetOperationsPanel asset={selectedAsset} client={client} userId={user.id} organizationId={organization.id} role={role} />
         </> : <p className="field-hint">Select an asset to view its recorded details.</p>}
       </section>
     </div>}
@@ -128,6 +153,7 @@ async function lookupAsset(client: ReturnType<typeof useWorkspace>['client'], or
 
 export function RequestPage() {
   const { client, user, organization, role } = useWorkspace();
+  const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const [formOpen, setFormOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -167,7 +193,18 @@ export function RequestPage() {
   const visibleRequests = (requests.data ?? []).filter((request) =>
     (statusFilter === 'all' || request.status === statusFilter)
     && `${request.category} ${request.description} ${request.status}`.toLowerCase().includes(search.trim().toLowerCase()));
-  const selectedRequest = visibleRequests.find((request) => request.id === selectedId) ?? visibleRequests[0];
+  const linkedRequestId = searchParams.get('request');
+  const listedLinkedRequest = requests.data?.find((request) => request.id === linkedRequestId);
+  const linkedRequest = useQuery({
+    queryKey: ['request-target', user.id, organization.id, linkedRequestId], enabled: Boolean(linkedRequestId && !listedLinkedRequest),
+    queryFn: async ({ signal }) => {
+      const result = await client.from('maintenance_requests').select('*').eq('organization_id', organization.id).eq('id', linkedRequestId!).abortSignal(signal).maybeSingle();
+      if (result.error) throw new Error(domainError(result.error).code);
+      return result.data ? requestTargetSchema.parse(result.data) : null;
+    },
+  });
+  const selectedRequest = linkedRequestId ? listedLinkedRequest ?? linkedRequest.data ?? undefined : visibleRequests.find((request) => request.id === selectedId) ?? visibleRequests[0];
+  const selectRequest = (id: string) => linkedRequestId ? setSearchParams({ request: id }) : setSelectedId(id);
   const selectedAsset = useQuery({
     queryKey: ['request-asset', user.id, organization.id, selectedRequest?.asset_id ?? null],
     enabled: Boolean(selectedRequest),
@@ -288,20 +325,20 @@ export function RequestPage() {
         <div className="button-row"><AppButton type="submit" disabled={busy}>{busy ? 'Saving…' : locked ? 'Retry with the same request IDs' : editing ? 'Save and resubmit' : 'Save and submit'}</AppButton><AppButton type="button" variant="secondary" disabled={busy || locked} onClick={resetForm}>Cancel</AppButton></div>
       </form>
     </section>}
-    {requests.isPending ? <LoadingNotice label="Loading requests…" /> : requests.isError ? <QueryFailure retry={() => void requests.refetch()} /> : requests.data.length === 0 ? <div className="empty-state"><h2>No requests yet</h2><p>Start with a registered asset and describe the issue for your workspace team.</p><AppButton onClick={() => setFormOpen(true)}>Create request</AppButton></div> : <div className="record-workspace" aria-label="Maintenance requests">
+    {requests.isPending ? <LoadingNotice label="Loading requests…" /> : requests.isError ? <QueryFailure retry={() => void requests.refetch()} /> : requests.data.length === 0 && !linkedRequestId ? <div className="empty-state"><h2>No requests yet</h2><p>Start with a registered asset and describe the issue for your workspace team.</p><AppButton onClick={() => setFormOpen(true)}>Create request</AppButton></div> : <div className="record-workspace" aria-label="Maintenance requests">
       <section className="record-picker" aria-label="Request inbox">
         <div className="record-filters"><div className="field"><label htmlFor="request-search">Search requests</label><input className="record-search" id="request-search" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Description or category" /></div><div className="field"><label htmlFor="request-status-filter">Status</label><select className="record-search" id="request-status-filter" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">All statuses</option><option value="draft">Draft</option><option value="submitted">Submitted</option><option value="returned">Returned</option><option value="converted">Converted</option><option value="rejected">Rejected</option><option value="withdrawn">Withdrawn</option></select></div></div>
         {visibleRequests.length ? <>
           <div className="record-table-scroll"><table className="responsive-record-table" aria-label="Request inbox results"><thead><tr><th scope="col">Request</th><th scope="col">Status</th><th scope="col">Created</th></tr></thead><tbody>{visibleRequests.map((request) => <tr key={request.id} aria-selected={selectedRequest?.id === request.id}>
-            <td><button className="table-select table-select--record" type="button" aria-label={`${request.category} request: ${request.description}`} aria-pressed={selectedRequest?.id === request.id} onClick={() => setSelectedId(request.id)}><span className="record-picker-title">{request.category} request</span><span className="table-description">{request.description}</span></button></td><td><span className={`state-badge state-badge--${request.status}`}>{request.status}</span></td><td>{new Date(request.created_at).toLocaleDateString()}</td>
+            <td><button className="table-select table-select--record" type="button" aria-label={`${request.category} request: ${request.description}`} aria-pressed={selectedRequest?.id === request.id} onClick={() => selectRequest(request.id)}><span className="record-picker-title">{request.category} request</span><span className="table-description">{request.description}</span></button></td><td><span className={`state-badge state-badge--${request.status}`}>{request.status}</span></td><td>{new Date(request.created_at).toLocaleDateString()}</td>
           </tr>)}</tbody></table></div>
-          <ol className="record-picker-list mobile-record-list">{visibleRequests.map((request) => <li key={request.id}><button className="record-picker-option" type="button" aria-pressed={selectedRequest?.id === request.id} onClick={() => setSelectedId(request.id)}>
+          <ol className="record-picker-list mobile-record-list">{visibleRequests.map((request) => <li key={request.id}><button className="record-picker-option" type="button" aria-pressed={selectedRequest?.id === request.id} onClick={() => selectRequest(request.id)}>
           <span className="record-picker-title">{request.category} request</span><span className={`state-badge state-badge--${request.status}`}>{request.status}</span><span className="record-picker-meta">{request.description}</span><span className="field-hint">{new Date(request.created_at).toLocaleDateString()}</span>
           </button></li>)}</ol>
         </> : <p className="field-hint">No requests match these filters.</p>}
       </section>
       <section className="record-preview" aria-label="Selected request details" aria-live="polite">
-        {selectedRequest ? <>
+        {linkedRequestId && !listedLinkedRequest && linkedRequest.isPending ? <LoadingNotice label="Checking the exact request target under your current access…" /> : linkedRequestId && !listedLinkedRequest && (linkedRequest.isError || !linkedRequest.data) ? <div className="empty-state"><h2>Request unavailable</h2><p>This target is not visible under your current workspace access.</p><AppButton variant="secondary" onClick={() => void linkedRequest.refetch()}>Retry target lookup</AppButton></div> : selectedRequest ? <>
           {(() => {
             const request = selectedRequest;
             const mayEdit = request.reporter_id === user.id && ['draft', 'returned'].includes(request.status);
@@ -313,6 +350,7 @@ export function RequestPage() {
               <p className="record-description">{request.description}</p>
               {request.transition_reason && <p className="field-hint">Latest reason: {request.transition_reason}</p>}
               {request.converted_work_order_id && <p className="field-hint">Draft work order created: <Link to="/work-orders">view work orders</Link></p>}
+              <RequestEvidence client={client} organizationId={organization.id} userId={user.id} requestId={request.id} enabled={['draft', 'returned'].includes(request.status) && (request.reporter_id === user.id || isCoordinator)} />
               {(mayEdit || mayWithdraw || mayTriage) && <div className="record-actions">
                 {mayEdit && <div className="compact-actions"><AppButton variant="secondary" onClick={() => void beginEdit(request)}>Edit and resubmit</AppButton></div>}
                 {mayTriage && <>
@@ -328,7 +366,7 @@ export function RequestPage() {
               <span className="sr-only">Request reference {request.id}</span>
             </>;
           })()}
-        </> : <p className="field-hint">Select a request to review its details.</p>}
+        </> : <p className="field-hint">{linkedRequestId ? 'This request is not visible under your current workspace access.' : 'Select a request to review its details.'}</p>}
       </section>
     </div>}
   </>;

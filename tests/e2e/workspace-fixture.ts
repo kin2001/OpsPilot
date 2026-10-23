@@ -28,9 +28,9 @@ const organizations = [
 ];
 
 const assets = [
-  { id: 'c2daf4c7-e68c-4783-87c6-26b009a1169d', organization_id: fixtureOrganizationIds.alpha, code: 'ALPHA-01', name: 'Alpha pump', category: 'pump', site_id: null, serial_number: null, registration: null, archived_at: null, created_by: fixtureUserId, created_at: '2026-10-21T01:00:00.000Z', version: 1 },
-  { id: '25f68b8a-9711-4c0a-a619-d7a9e4133c38', organization_id: fixtureOrganizationIds.alpha, code: 'ALPHA-02', name: 'Alpha fan', category: 'fan', site_id: null, serial_number: null, registration: null, archived_at: null, created_by: fixtureUserId, created_at: '2026-10-21T02:00:00.000Z', version: 1 },
-  { id: 'c3baccc6-29ed-4a97-90e5-febd413bc7c1', organization_id: fixtureOrganizationIds.beta, code: 'BETA-01', name: 'Beta pump', category: 'pump', site_id: null, serial_number: null, registration: null, archived_at: null, created_by: fixtureUserId, created_at: '2026-10-21T03:00:00.000Z', version: 1 },
+  { id: 'c2daf4c7-e68c-4783-87c6-26b009a1169d', organization_id: fixtureOrganizationIds.alpha, code: 'ALPHA-01', name: 'Alpha pump', category: 'pump', site_id: null, serial_number: null, registration: null, archived_at: null, created_by: fixtureUserId, created_at: '2026-10-21T01:00:00.000Z', version: 1, availability: 'out_of_service' },
+  { id: '25f68b8a-9711-4c0a-a619-d7a9e4133c38', organization_id: fixtureOrganizationIds.alpha, code: 'ALPHA-02', name: 'Alpha fan', category: 'fan', site_id: null, serial_number: null, registration: null, archived_at: null, created_by: fixtureUserId, created_at: '2026-10-21T02:00:00.000Z', version: 1, availability: 'out_of_service' },
+  { id: 'c3baccc6-29ed-4a97-90e5-febd413bc7c1', organization_id: fixtureOrganizationIds.beta, code: 'BETA-01', name: 'Beta pump', category: 'pump', site_id: null, serial_number: null, registration: null, archived_at: null, created_by: fixtureUserId, created_at: '2026-10-21T03:00:00.000Z', version: 1, availability: 'out_of_service' },
 ];
 
 const requests = [
@@ -40,8 +40,8 @@ const requests = [
 ];
 
 const workOrders = [
-  { id: 'abfc36f2-44f3-4c85-b0b5-696e4c6626bf', organization_id: fixtureOrganizationIds.alpha, number: 1, asset_id: assets[0]!.id, source_request_id: requests[0]!.id, title: 'Review pump seal', description: 'Inspect and document the reported seal condition.', category: 'inspection', priority: 'normal', due_at: null, supervisor_id: fixtureUserId, status: 'draft', blocks_operation: false, created_by: fixtureUserId, created_at: '2026-10-21T03:00:00.000Z', version: 1 },
-  { id: '7d014e2c-141c-4c6a-8644-5c0e7809d531', organization_id: fixtureOrganizationIds.alpha, number: 2, asset_id: assets[1]!.id, source_request_id: requests[1]!.id, title: 'Check fan vibration', description: 'Review the submitted vibration report.', category: 'vibration', priority: 'high', due_at: null, supervisor_id: fixtureUserId, status: 'draft', blocks_operation: false, created_by: fixtureUserId, created_at: '2026-10-21T04:00:00.000Z', version: 1 },
+  { id: 'abfc36f2-44f3-4c85-b0b5-696e4c6626bf', organization_id: fixtureOrganizationIds.alpha, number: 1, asset_id: assets[0]!.id, source_request_id: requests[0]!.id, title: 'Review pump seal', description: 'Inspect and document the reported seal condition.', category: 'inspection', priority: 'normal', due_at: null, supervisor_id: fixtureUserId, status: 'draft', blocks_operation: false, created_by: fixtureUserId, created_at: '2026-10-21T03:00:00.000Z', version: 1, repair_revision: 1, submitted_revision: null, opened_at: null, completed_at: null, priority_reason: null },
+  { id: '7d014e2c-141c-4c6a-8644-5c0e7809d531', organization_id: fixtureOrganizationIds.alpha, number: 2, asset_id: assets[1]!.id, source_request_id: requests[1]!.id, title: 'Check fan vibration', description: 'Review the submitted vibration report.', category: 'vibration', priority: 'high', due_at: null, supervisor_id: fixtureUserId, status: 'draft', blocks_operation: false, created_by: fixtureUserId, created_at: '2026-10-21T04:00:00.000Z', version: 1, repair_revision: 1, submitted_revision: null, opened_at: null, completed_at: null, priority_reason: null },
 ];
 
 function jwt() {

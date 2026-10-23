@@ -1,7 +1,7 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { createClient } from '@supabase/supabase-js';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { readIsolatedServiceConfig } from './service-config';
 import { prepareWorkspacePage } from './workspace-fixture';
 
@@ -11,6 +11,13 @@ const anon = serviceConfig?.anon ?? '';
 const service = serviceConfig?.service ?? '';
 const isolated = serviceConfig !== null;
 const appOrigin = 'http://127.0.0.1:5173';
+
+declare global {
+  interface Window {
+    __privateImageUrls: string[];
+    __revokedPrivateImageUrls: string[];
+  }
+}
 
 function sql(statement: string) {
   const result = spawnSync('docker', ['exec', '-i', 'supabase_db_opspilot-t1', 'psql', '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-q'], { input: statement, encoding: 'utf8' });
@@ -80,6 +87,16 @@ async function invitationRedirect(email: string) {
   throw new Error('Synthetic invitation email did not arrive in local Mailpit.');
 }
 
+async function enrollTOTP(page: Page, name: string) {
+  await expect(page.getByRole('heading', { name: 'Authenticator verification' })).toBeVisible();
+  await page.getByLabel('Authenticator name').fill(name);
+  await page.getByRole('button', { name: 'Set up an authenticator' }).click();
+  await expect(page.locator('.secret-value')).toBeVisible();
+  const secret = await page.locator('.secret-value').innerText();
+  await page.getByLabel('Six-digit authenticator code').fill(totp(secret));
+  await page.getByRole('button', { name: 'Verify authenticator' }).click();
+}
+
 test('asset header action remains selectable beside its empty-state action', async ({ page }) => {
   await prepareWorkspacePage(page);
   await page.route(/\/rest\/v1\/assets(?:\?.*)?$/, async (route) => {
@@ -134,7 +151,7 @@ test('owner onboards with native TOTP, creates maintenance records and invites a
   await assetForm.getByLabel('Category').fill('pump');
   await assetForm.getByRole('button', { name: 'Save asset', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Synthetic pump' })).toBeVisible();
-  await expect(page.getByText('Not recorded', { exact: true })).toBeVisible();
+  await expect(page.getByText('out of service', { exact: true }).first()).toBeVisible();
 
   await primaryNavigation.getByRole('link', { name: 'Requests', exact: true }).click();
   const requestsHeader = page.locator('header.page-heading').filter({ has: page.getByRole('heading', { name: 'Requests', exact: true }) });
@@ -179,6 +196,283 @@ test('owner onboards with native TOTP, creates maintenance records and invites a
   await page.getByRole('button', { name: 'Open workspace' }).click();
   await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
   await expect(page.getByRole('combobox', { name: 'Workspace' })).toHaveValue(/.+/);
+});
+
+test('synthetic service completes a repair correction, preserves ambiguous create identity, and records separate asset release', async ({ browser }) => {
+  test.skip(!isolated, 'This journey requires the job-owned loopback Supabase, Storage and Auth services.');
+  test.setTimeout(240_000);
+  const owner = await makeConfirmedUser('por24-owner');
+  const technician = await makeConfirmedUser('por24-tech');
+  allowWorkspaceBootstrap(owner);
+  const ownerPage = await browser.newPage();
+  const admin = createClient(url, service, { auth: { persistSession: false, autoRefreshToken: false } });
+  await ownerPage.goto('/');
+  await ownerPage.getByLabel('Email').fill(owner.email);
+  await ownerPage.getByLabel('Password').fill(owner.password);
+  await ownerPage.getByRole('button', { name: 'Sign in' }).click();
+  await enrollTOTP(ownerPage, 'POR-24 owner authenticator');
+  await expect(ownerPage.getByRole('heading', { name: 'Create your workspace' })).toBeVisible();
+  await ownerPage.getByLabel('Workspace name').fill(`Synthetic repair ${randomUUID().slice(0, 8)}`);
+  await ownerPage.getByLabel('Time zone').fill('Asia/Manila');
+  await ownerPage.getByLabel('Currency code').fill('PHP');
+  await ownerPage.getByRole('button', { name: 'Create workspace' }).click();
+  await expect(ownerPage.getByRole('heading', { name: 'Overview' })).toBeVisible();
+
+  const ownerMembership = await admin.from('organization_members').select('organization_id').eq('user_id', owner.id).single();
+  if (ownerMembership.error) throw new Error('Synthetic owner workspace could not be read back.');
+  const organizationId = ownerMembership.data.organization_id;
+  sql(`insert into public.organization_members(organization_id,user_id,role) values ('${organizationId}','${technician.id}','technician');`);
+
+  const ownerNavigation = ownerPage.getByRole('navigation', { name: 'Primary navigation' });
+  await ownerNavigation.getByRole('link', { name: 'Settings', exact: true }).click();
+  await expect(ownerPage.getByLabel('Workspace time zone')).toHaveValue('Asia/Manila');
+  await ownerPage.getByRole('button', { name: 'Save settings' }).click();
+  await expect(ownerPage.getByText('Workspace settings saved.')).toBeVisible();
+
+  const assetCode = `PUMP-${randomUUID().slice(0, 8).toUpperCase()}`;
+  await ownerNavigation.getByRole('link', { name: 'Assets', exact: true }).click();
+  const assetsHeader = ownerPage.locator('header.page-heading').filter({ has: ownerPage.getByRole('heading', { name: 'Assets', exact: true }) });
+  await assetsHeader.getByRole('button', { name: 'Register asset', exact: true }).click();
+  const assetForm = ownerPage.getByRole('region', { name: 'Register an asset' });
+  await assetForm.getByLabel('Asset code').fill(assetCode);
+  await assetForm.getByLabel('Name', { exact: true }).fill('Synthetic service pump');
+  await assetForm.getByLabel('Category').fill('pump');
+  await assetForm.getByRole('button', { name: 'Save asset', exact: true }).click();
+  await expect(ownerPage.getByRole('heading', { name: 'Synthetic service pump' })).toBeVisible();
+  const assetRecord = await admin.from('assets').select('id').eq('organization_id', organizationId).eq('code', assetCode).single();
+  if (assetRecord.error) throw new Error('Synthetic asset creation could not be read back.');
+  const assetId = assetRecord.data.id;
+  const assetDetails = ownerPage.getByRole('region', { name: 'Selected asset details' });
+  const operations = assetDetails.getByRole('region', { name: /Operational details for/ });
+  await operations.getByLabel('Reason for manual safety hold').fill('Isolate pending the inspection repair.');
+  await operations.getByRole('button', { name: 'Place safety hold' }).click();
+  await expect(operations.getByText('Active', { exact: true })).toBeVisible();
+
+  await ownerNavigation.getByRole('link', { name: 'Work orders', exact: true }).click();
+  await ownerPage.getByRole('button', { name: 'Create work order' }).click();
+  const createForm = ownerPage.getByRole('region', { name: 'Create a work order' });
+  await createForm.getByLabel('Asset').selectOption(assetId);
+  await createForm.getByLabel('Title').fill('Inspect pump bearing assembly');
+  await createForm.getByLabel('Description').fill('Inspect the bearing condition, record labor, and attach a validated repair image.');
+  await createForm.getByLabel('Category').fill('inspection');
+  const createBodies: unknown[] = [];
+  let createCommitCount = 0;
+  let workOrderId = '';
+  let createReceiptRequestId = '';
+  const createRpc = new URL('/rest/v1/rpc/create_work_order', url).href;
+  await ownerPage.route(createRpc, async (route) => {
+    createBodies.push(route.request().postDataJSON());
+    const committed = await route.fetch();
+    const responseValue = await committed.json() as { data?: { id?: string }; version?: number; request_id?: string };
+    if (!committed.ok()) throw new Error('Synthetic create did not commit successfully before simulating a lost response.');
+    const requestBody = route.request().postDataJSON() as { ctx?: { organization_id?: string; request_id?: string }; asset_id?: string; fields?: { title?: string } };
+    if (!responseValue.data?.id || !responseValue.request_id || !requestBody.ctx?.request_id || !requestBody.ctx.organization_id || !requestBody.asset_id || !requestBody.fields?.title) {
+      throw new Error('Synthetic create response did not contain its strict T1 receipt identity.');
+    }
+    if (responseValue.request_id !== requestBody.ctx.request_id) throw new Error('Synthetic create receipt did not match the submitted request identity.');
+    workOrderId = responseValue.data.id;
+    createReceiptRequestId = responseValue.request_id;
+    createCommitCount++;
+    if (createCommitCount === 1) {
+      await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ message: 'Response lost after commit.' }) });
+      return;
+    }
+    await route.fulfill({ response: committed });
+  });
+  await createForm.getByRole('button', { name: 'Create work order', exact: true }).click();
+  await expect(createForm.getByRole('button', { name: 'Retry exact create' })).toBeVisible();
+  await expect(createForm.getByLabel('Title')).toBeDisabled();
+  await createForm.getByRole('button', { name: 'Retry exact create' }).click();
+  await expect(ownerPage.getByRole('heading', { name: 'Inspect pump bearing assembly' })).toBeVisible();
+  expect(createBodies).toHaveLength(2);
+  expect(createBodies[1]).toEqual(createBodies[0]);
+  expect(createCommitCount).toBe(2);
+  expect(workOrderId).toMatch(/^[0-9a-f-]{36}$/);
+  const createBody = createBodies[0] as { ctx: { organization_id: string; request_id: string }; asset_id: string; fields: { title: string } };
+  expect(createBody.asset_id).toBe(assetId);
+  expect(createBody.fields.title).toBe('Inspect pump bearing assembly');
+  expect(createReceiptRequestId).toBe(createBody.ctx.request_id);
+  const createdCount = await admin.from('work_orders').select('id', { count: 'exact', head: true })
+    .eq('organization_id', organizationId).eq('asset_id', createBody.asset_id).eq('title', createBody.fields.title);
+  if (createdCount.error) throw new Error('Synthetic work-order receipt could not be checked.');
+  expect(createdCount.count).toBe(1);
+
+  const ownerWorkOrder = ownerPage.getByRole('region', { name: 'Selected work order details' });
+  await expect(ownerWorkOrder).toBeVisible();
+  await expect(ownerWorkOrder.getByRole('heading', { name: 'Inspect pump bearing assembly' })).toBeVisible();
+  await expect(ownerWorkOrder.getByRole('checkbox', { name: new RegExp(technician.id) })).toBeVisible();
+  await ownerWorkOrder.getByRole('checkbox', { name: new RegExp(technician.id) }).check();
+  await ownerWorkOrder.getByRole('button', { name: 'Save assignment' }).click();
+  await expect(ownerWorkOrder.getByText(new RegExp(technician.id))).toBeVisible();
+  await ownerWorkOrder.getByRole('button', { name: 'Publish work order' }).click();
+  await expect(ownerWorkOrder.getByText('open', { exact: true })).toBeVisible();
+
+  const technicianContext = await browser.newContext();
+  const technicianPage = await technicianContext.newPage();
+  const signedStorageUrls: string[] = [];
+  technicianPage.on('request', (request) => {
+    const target = new URL(request.url());
+    if (target.pathname.includes('/storage/v1/object/sign/')) signedStorageUrls.push(target.pathname);
+  });
+  await technicianPage.addInitScript(() => {
+    window.__privateImageUrls = [];
+    window.__revokedPrivateImageUrls = [];
+    const create = URL.createObjectURL.bind(URL);
+    const revoke = URL.revokeObjectURL.bind(URL);
+    URL.createObjectURL = (blob) => { const value = create(blob); window.__privateImageUrls.push(value); return value; };
+    URL.revokeObjectURL = (value) => { window.__revokedPrivateImageUrls.push(value); revoke(value); };
+  });
+  await technicianPage.goto('/');
+  await technicianPage.getByLabel('Email').fill(technician.email);
+  await technicianPage.getByLabel('Password').fill(technician.password);
+  await technicianPage.getByRole('button', { name: 'Sign in' }).click();
+  await expect(technicianPage.getByRole('heading', { name: 'Dashboard not available for this role' })).toBeVisible();
+  const technicianNavigation = technicianPage.getByRole('navigation', { name: 'Primary navigation' });
+  await technicianNavigation.getByRole('link', { name: 'Security', exact: true }).click();
+  await enrollTOTP(technicianPage, 'POR-24 technician authenticator');
+  await technicianNavigation.getByRole('link', { name: 'Notifications', exact: true }).click();
+  await expect(technicianPage.getByText('assignment', { exact: true })).toBeVisible();
+  await technicianPage.getByRole('link', { name: 'Open current record' }).first().click();
+  await expect(technicianPage).toHaveURL(new RegExp(`workOrder=${workOrderId}`));
+  const technicianWorkOrder = technicianPage.getByRole('region', { name: 'Selected work order details' });
+  await expect(technicianWorkOrder.getByRole('heading', { name: 'Inspect pump bearing assembly' })).toBeVisible();
+  await technicianWorkOrder.getByRole('button', { name: 'Start work' }).click();
+  await expect(technicianWorkOrder.getByText('in progress', { exact: true })).toBeVisible();
+
+  await ownerWorkOrder.getByRole('button', { name: 'Refresh record' }).click();
+  await expect(ownerWorkOrder.getByText('in progress', { exact: true })).toBeVisible();
+  await ownerWorkOrder.getByLabel('Add required task').fill('Verify bearing clearance');
+  await ownerWorkOrder.getByRole('button', { name: 'Add task' }).click();
+  await expect(ownerWorkOrder.getByText('Required task added to the repair record.')).toBeVisible();
+  await technicianWorkOrder.getByRole('button', { name: 'Refresh record' }).click();
+  await technicianWorkOrder.getByLabel('Block or resume reason').fill('Pause for coordinator review of the inspection route.');
+  await technicianWorkOrder.getByRole('button', { name: 'Block work with reason' }).click();
+  await expect(technicianWorkOrder.getByText('blocked', { exact: true })).toBeVisible();
+  await expect(technicianWorkOrder.getByRole('button', { name: 'Resume work' })).toHaveCount(0);
+  await expect(technicianWorkOrder.getByRole('button', { name: 'Resume as scheduled' })).toHaveCount(0);
+  await ownerWorkOrder.getByRole('button', { name: 'Refresh record' }).click();
+  await expect(ownerWorkOrder.getByRole('button', { name: 'Resume work' })).toBeVisible();
+  await expect(ownerWorkOrder.getByRole('button', { name: 'Resume as scheduled' })).toBeVisible();
+  await ownerWorkOrder.getByLabel('Block or resume reason').fill('Resume after the coordinator reviewed the hold point.');
+  await ownerWorkOrder.getByRole('button', { name: 'Resume as scheduled' }).click();
+  await expect(ownerWorkOrder.getByText('scheduled', { exact: true })).toBeVisible();
+  await technicianWorkOrder.getByRole('button', { name: 'Refresh record' }).click();
+  await technicianWorkOrder.getByRole('button', { name: 'Start work' }).click();
+  await expect(technicianWorkOrder.getByText('in progress', { exact: true })).toBeVisible();
+  await technicianWorkOrder.getByLabel('Block or resume reason').fill('Pause again while the coordinator confirms the final repair checkpoint.');
+  await technicianWorkOrder.getByRole('button', { name: 'Block work with reason' }).click();
+  await expect(technicianWorkOrder.getByText('blocked', { exact: true })).toBeVisible();
+  await ownerWorkOrder.getByRole('button', { name: 'Refresh record' }).click();
+  await ownerWorkOrder.getByLabel('Block or resume reason').fill('Resume directly for the assigned technician to continue.');
+  await ownerWorkOrder.getByRole('button', { name: 'Resume work' }).click();
+  await expect(ownerWorkOrder.getByText('in progress', { exact: true })).toBeVisible();
+  await technicianWorkOrder.getByRole('button', { name: 'Refresh record' }).click();
+  await expect(technicianWorkOrder.getByRole('button', { name: 'Resume work' })).toHaveCount(0);
+  await technicianWorkOrder.getByRole('checkbox', { name: /Verify bearing clearance/ }).check();
+  await expect(technicianWorkOrder.getByText('Checklist updated.')).toBeVisible();
+  await technicianWorkOrder.getByLabel('Repair note or correction').fill('Measured bearing clearance and completed the initial inspection.');
+  await technicianWorkOrder.getByLabel('Labor minutes').fill('35');
+  await technicianWorkOrder.getByRole('button', { name: 'Record repair update' }).click();
+  await expect(technicianWorkOrder.getByText('Repair update recorded.')).toBeVisible();
+  const validPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jhGQAAAAASUVORK5CYII=', 'base64');
+  await technicianWorkOrder.getByLabel('Choose a repair image').setInputFiles({ name: 'bearing-inspection.png', mimeType: 'image/png', buffer: validPng });
+  await technicianWorkOrder.getByRole('button', { name: 'Upload private image' }).click();
+  await expect(technicianPage.locator('img.private-image')).toBeVisible({ timeout: 20_000 });
+  const privateSource = await technicianPage.locator('img.private-image').first().getAttribute('src');
+  expect(privateSource).toMatch(/^blob:/);
+  expect(signedStorageUrls).toEqual([]);
+  await technicianWorkOrder.getByRole('checkbox', { name: /I performed this repair/ }).check();
+  await technicianWorkOrder.getByRole('button', { name: 'Declare performers' }).click();
+  await expect(technicianWorkOrder.getByText(/you are recorded/)).toBeVisible();
+  await technicianWorkOrder.getByLabel('Submission attestation').fill('I verified the declared repair performers and the submitted evidence.');
+  await expect(technicianWorkOrder.getByRole('button', { name: 'Submit repair for review' })).toBeEnabled();
+  await technicianWorkOrder.getByRole('button', { name: 'Submit repair for review' }).click();
+  await expect(technicianWorkOrder.getByText('awaiting review', { exact: true })).toBeVisible();
+  await technicianNavigation.getByRole('link', { name: 'Notifications', exact: true }).click();
+  await expect(technicianPage.locator('img.private-image')).toHaveCount(0);
+  await expect.poll(() => technicianPage.evaluate(() => window.__revokedPrivateImageUrls)).toContain(privateSource);
+  await technicianNavigation.getByRole('link', { name: 'Work orders', exact: true }).click();
+  await technicianPage.goto(`/work-orders?workOrder=${workOrderId}`);
+
+  await ownerWorkOrder.getByRole('button', { name: 'Refresh record' }).click();
+  await expect(ownerWorkOrder.getByText('awaiting review', { exact: true })).toBeVisible();
+  await ownerWorkOrder.getByLabel('Review reason').fill('Return for the corrected bearing measurement and updated evidence.');
+  await ownerWorkOrder.getByRole('button', { name: 'Return for correction' }).click();
+  await expect(ownerWorkOrder.getByText('in progress', { exact: true })).toBeVisible();
+  await technicianWorkOrder.getByRole('button', { name: 'Refresh record' }).click();
+  await technicianWorkOrder.getByLabel('Repair note or correction').fill('Corrected the bearing measurement after coordinator feedback.');
+  await technicianWorkOrder.getByLabel('Labor minutes').fill('25');
+  await technicianWorkOrder.getByRole('button', { name: 'Record repair update' }).click();
+  await technicianWorkOrder.getByLabel('Choose a repair image').setInputFiles({ name: 'bearing-correction.png', mimeType: 'image/png', buffer: validPng });
+  await technicianWorkOrder.getByRole('button', { name: 'Upload private image' }).click();
+  await expect(technicianPage.locator('img.private-image')).toHaveCount(2, { timeout: 20_000 });
+  await technicianWorkOrder.getByRole('checkbox', { name: /I performed this repair/ }).check();
+  await technicianWorkOrder.getByRole('button', { name: 'Declare performers' }).click();
+  await expect(technicianWorkOrder.getByText(/you are recorded/)).toBeVisible();
+  await technicianWorkOrder.getByLabel('Submission attestation').fill('The corrected measurements and current repair revision are ready for review.');
+  await technicianWorkOrder.getByRole('button', { name: 'Submit repair for review' }).click();
+  await expect(technicianWorkOrder.getByText('awaiting review', { exact: true })).toBeVisible();
+
+  await ownerWorkOrder.getByRole('button', { name: 'Refresh record' }).click();
+  await expect(ownerWorkOrder.getByText('awaiting review', { exact: true })).toBeVisible();
+  const activeTechnicianAssignment = ownerWorkOrder.getByRole('checkbox', { name: new RegExp(technician.id) });
+  await activeTechnicianAssignment.uncheck();
+  await ownerWorkOrder.getByRole('button', { name: 'Save assignment' }).click();
+  await expect(ownerWorkOrder.getByText('No active technicians are assigned.')).toBeVisible();
+  await ownerNavigation.getByRole('link', { name: 'Team', exact: true }).click();
+  const technicianCard = ownerPage.locator('.record-card').filter({ hasText: technician.id });
+  await technicianCard.getByLabel('Role').selectOption('supervisor');
+  await technicianCard.getByRole('button', { name: 'Save role' }).click();
+  await expect(technicianCard.getByText('Role: supervisor')).toBeVisible();
+  await technicianPage.reload();
+  await expect(technicianPage.getByRole('heading', { name: 'Overview' })).toBeVisible();
+  await technicianPage.goto(`/work-orders?workOrder=${workOrderId}`);
+  await expect(technicianWorkOrder.getByText('Your account participated in this work order and cannot review it, even if your assignment has since changed.')).toBeVisible();
+  await expect(technicianWorkOrder.getByRole('button', { name: 'Approve repair' })).toHaveCount(0);
+  const currentWorkOrder = await admin.from('work_orders').select('version').eq('id', workOrderId).single();
+  if (currentWorkOrder.error) throw new Error('Synthetic work-order version could not be read back.');
+  const deniedReview = await technicianPage.evaluate(async (input) => {
+    const key = Object.keys(localStorage).find((item) => item.startsWith('sb-') && item.endsWith('-auth-token'));
+    if (!key) throw new Error('Current authenticated session was not found.');
+    const saved = JSON.parse(localStorage.getItem(key) ?? 'null') as { access_token?: string } | null;
+    if (!saved?.access_token) throw new Error('Current authenticated session is unavailable.');
+    const response = await fetch(input.rpcUrl, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${saved.access_token}`, apikey: input.anon, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ctx: { organization_id: input.organizationId, request_id: input.requestId, expected_version: input.version }, id: input.workOrderId, decision: 'approved', reason: 'Testing immutable participant exclusion.' }),
+    });
+    const body = await response.json() as { message?: string };
+    return { status: response.status, message: body.message };
+  }, { rpcUrl: new URL('/rest/v1/rpc/review_work_order', url).href, anon, organizationId, requestId: randomUUID(), version: currentWorkOrder.data.version, workOrderId });
+  expect(deniedReview.status).not.toBe(200);
+  expect(deniedReview.message).toBe('FORBIDDEN');
+
+  await ownerPage.goto(`/work-orders?workOrder=${workOrderId}`);
+  await expect(ownerWorkOrder.getByRole('button', { name: 'Approve repair' })).toBeVisible();
+  await ownerWorkOrder.getByLabel('Review reason').fill('The corrected measurement and current revision are accepted.');
+  await ownerWorkOrder.getByRole('button', { name: 'Approve repair' }).click();
+  await expect(ownerWorkOrder.getByText('completed', { exact: true })).toBeVisible();
+
+  await ownerNavigation.getByRole('link', { name: 'Assets', exact: true }).click();
+  const finalAsset = ownerPage.getByRole('region', { name: 'Selected asset details' });
+  const finalOperations = finalAsset.getByRole('region', { name: /Operational details for/ });
+  await expect(finalOperations.getByText('Every active hold must be resolved', { exact: false })).toBeVisible();
+  await finalOperations.getByLabel('Resolution reason').fill('Inspection repair completed and the safety hold is cleared.');
+  await finalOperations.getByRole('button', { name: 'Resolve repaired hold' }).click();
+  await expect(finalOperations.getByText('Resolved · awaiting release')).toBeVisible();
+  await finalOperations.getByLabel('Release acknowledgment').fill('Reviewed the completed repair, cleared the hold, and checked the asset condition.');
+  await finalOperations.getByRole('button', { name: 'Record asset release' }).click();
+  await expect(finalAsset.getByText('operational', { exact: true }).first()).toBeVisible();
+  await finalOperations.getByLabel('Reading').fill('125');
+  await finalOperations.getByLabel('Observed at').fill(new Date(Date.now() - 60_000).toISOString().slice(0, 16));
+  await finalOperations.getByRole('button', { name: 'Record meter reading' }).click();
+  await expect(finalOperations.getByText('125 hours', { exact: true })).toBeVisible();
+  await finalOperations.getByLabel('Corrected value').fill('124.5');
+  await finalOperations.getByLabel('Correction reason').fill('Corrected after the meter calibration check.');
+  await finalOperations.getByRole('button', { name: 'Append correction' }).click();
+  await expect(finalOperations.getByText('124.5 hours', { exact: true })).toBeVisible();
+  await technicianContext.close();
+  await ownerPage.close();
 });
 
 test('workspace switching changes the visible tenant records', async ({ page }) => {

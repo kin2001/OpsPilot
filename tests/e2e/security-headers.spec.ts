@@ -17,6 +17,7 @@ test('static-host baseline defines SPA fallback, CSP and private auth routes', a
   const headers = await readFile('public/_headers', 'utf8');
   const redirects = await readFile('public/_redirects', 'utf8');
   expect(headers).toContain('Content-Security-Policy:');
+  expect(headers).toMatch(/img-src 'self' data: blob:/);
   expect(headers).toContain('connect-src');
   expect(headers).toContain('Cache-Control: private, no-store');
   expect(headers).toContain('/invite\n  Referrer-Policy: no-referrer');

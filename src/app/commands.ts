@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { commandContext, type CommandContext } from '../contracts/core';
+import { assetHold, assetRelease, meterReading, operationalWorkOrder, performerDeclarationInput, releaseAcknowledgment, settingsResult, workUpdate } from '../contracts/operational';
 import { domainError } from '../lib/domain-errors';
 import type { Database, Json } from '../lib/database.types';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -35,6 +36,10 @@ const workOrderSchema = z.strictObject({
   id: z.uuid(), organization_id: z.uuid(), number: z.number().int(), asset_id: z.uuid(), source_request_id: z.uuid().nullable(),
   title: z.string(), description: z.string(), category: z.string(), priority: z.string(), due_at: z.string().nullable(),
   supervisor_id: z.uuid(), status: z.string(), blocks_operation: z.boolean(), created_by: z.uuid(), created_at: z.string(), version: z.number().int(),
+});
+const createWorkOrderFields = z.strictObject({
+  title: z.string().trim().min(1).max(200), description: z.string().trim().min(1).max(4000), category: z.string().trim().min(1).max(100),
+  priority: z.enum(['low', 'normal', 'high', 'critical']), supervisor_id: z.uuid().nullable().optional(), due_at: z.iso.datetime().nullable().optional(),
 });
 const invitationAcceptedSchema = z.strictObject({ id: z.uuid(), organization_id: z.uuid(), user_id: z.uuid(), role: z.string(), active: z.boolean(), created_at: z.string(), version: z.number().int() });
 const memberSchema = z.strictObject({ id: z.uuid(), organization_id: z.uuid(), user_id: z.uuid(), role: z.string(), active: z.boolean(), created_at: z.string(), version: z.number().int() });
@@ -103,8 +108,72 @@ export function convertRequest(client: SupabaseClient<Database>, organizationId:
   return parseRpc(client.rpc('convert_request', { ctx: contextFor(organizationId, commandId), id: requestId, work_order_fields: fields }), workOrderSchema, commandId);
 }
 
+export function createWorkOrder(client: SupabaseClient<Database>, organizationId: string, assetId: string, fields: z.input<typeof createWorkOrderFields>, requestId: string) {
+  const parsedFields = createWorkOrderFields.parse(fields);
+  return parseRpc(client.rpc('create_work_order', { ctx: contextFor(organizationId, requestId), asset_id: z.uuid().parse(assetId), fields: parsedFields as Json }), workOrderSchema, requestId);
+}
+
 export function setMember(client: SupabaseClient<Database>, organizationId: string, userId: string, role: 'manager' | 'supervisor' | 'technician' | 'inventory', active: boolean, expectedVersion: number, commandId: string) {
   return parseRpc(client.rpc('set_organization_member', { ctx: contextFor(organizationId, commandId, expectedVersion), user_id: userId, role, active }), memberSchema, commandId);
+}
+
+export function assignWorkOrder(client: SupabaseClient<Database>, organizationId: string, workOrderId: string, expectedVersion: number, userIds: string[], requestId: string) {
+  const ids = z.array(z.uuid()).max(30).parse(userIds);
+  return parseRpc(client.rpc('assign_work_order', { ctx: contextFor(organizationId, requestId, expectedVersion), id: workOrderId, user_ids: ids }), workOrderSchema, requestId);
+}
+
+export function updateWorkOrder(client: SupabaseClient<Database>, organizationId: string, workOrderId: string, expectedVersion: number, fields: z.output<typeof workUpdate>, requestId: string) {
+  return parseRpc(client.rpc('update_work_order', { ctx: contextFor(organizationId, requestId, expectedVersion), id: workOrderId, allowed_fields: workUpdate.parse(fields) }), operationalWorkOrder, requestId);
+}
+
+export function transitionWorkOrder(client: SupabaseClient<Database>, organizationId: string, workOrderId: string, expectedVersion: number, target: 'open' | 'scheduled' | 'in_progress' | 'blocked' | 'awaiting_review' | 'completed' | 'canceled', reason: string | undefined, requestId: string) {
+  return parseRpc(client.rpc('transition_work_order', { ctx: contextFor(organizationId, requestId, expectedVersion), id: workOrderId, target, ...(reason === undefined ? {} : { reason }) }), operationalWorkOrder, requestId);
+}
+
+export function addWorkOrderTask(client: SupabaseClient<Database>, organizationId: string, workOrderId: string, expectedVersion: number, label: string, required: boolean, requestId: string) {
+  return parseRpc(client.rpc('add_work_order_task', { ctx: contextFor(organizationId, requestId, expectedVersion), id: workOrderId, label: z.string().trim().min(1).max(500).parse(label), required }), operationalWorkOrder, requestId);
+}
+
+export function declareWorkOrderPerformers(client: SupabaseClient<Database>, organizationId: string, workOrderId: string, expectedVersion: number, userIds: string[], requestId: string) {
+  return parseRpc(client.rpc('declare_work_order_performers', { ctx: contextFor(organizationId, requestId, expectedVersion), id: workOrderId, user_ids: performerDeclarationInput.parse(userIds) }), operationalWorkOrder, requestId);
+}
+
+export function submitWorkOrder(client: SupabaseClient<Database>, organizationId: string, workOrderId: string, expectedVersion: number, acknowledgment: string, requestId: string) {
+  return parseRpc(client.rpc('submit_work_order', { ctx: contextFor(organizationId, requestId, expectedVersion), id: workOrderId, acknowledgment: releaseAcknowledgment.parse(acknowledgment) }), operationalWorkOrder, requestId);
+}
+
+export function reviewWorkOrder(client: SupabaseClient<Database>, organizationId: string, workOrderId: string, expectedVersion: number, decision: 'approved' | 'returned', reason: string, requestId: string) {
+  return parseRpc(client.rpc('review_work_order', { ctx: contextFor(organizationId, requestId, expectedVersion), id: workOrderId, decision, reason: releaseAcknowledgment.parse(reason) }), operationalWorkOrder, requestId);
+}
+
+export function setAssetHold(client: SupabaseClient<Database>, organizationId: string, assetId: string, expectedVersion: number, reason: string, requestId: string) {
+  return parseRpc(client.rpc('set_asset_hold', { ctx: contextFor(organizationId, requestId, expectedVersion), asset_id: assetId, reason: releaseAcknowledgment.parse(reason) }), assetHold, requestId);
+}
+
+export function resolveAssetHold(client: SupabaseClient<Database>, organizationId: string, holdId: string, expectedVersion: number, disposition: 'repaired' | 'withdrawn_with_reason', reason: string, requestId: string) {
+  return parseRpc(client.rpc('resolve_asset_hold', { ctx: contextFor(organizationId, requestId, expectedVersion), hold_id: holdId, disposition, reason: releaseAcknowledgment.parse(reason) }), assetHold, requestId);
+}
+
+export function releaseAsset(client: SupabaseClient<Database>, organizationId: string, assetId: string, expectedVersion: number, acknowledgment: string, requestId: string) {
+  return parseRpc(client.rpc('release_asset', { ctx: contextFor(organizationId, requestId, expectedVersion), asset_id: assetId, acknowledgment: releaseAcknowledgment.parse(acknowledgment) }), assetRelease, requestId);
+}
+
+export function recordMeterReading(client: SupabaseClient<Database>, organizationId: string, assetId: string, kind: 'hours' | 'distance', value: number, observedAt: string, requestId: string) {
+  return parseRpc(client.rpc('record_meter_reading', { ctx: contextFor(organizationId, requestId), asset_id: assetId, kind, value: z.number().finite().nonnegative().parse(value), observed_at: z.iso.datetime().parse(observedAt) }), meterReading, requestId);
+}
+
+export function correctMeterReading(client: SupabaseClient<Database>, organizationId: string, readingId: string, value: number, reason: string, requestId: string) {
+  return parseRpc(client.rpc('correct_meter_reading', { ctx: contextFor(organizationId, requestId), id: readingId, value: z.number().finite().nonnegative().parse(value), reason: releaseAcknowledgment.parse(reason) }), meterReading, requestId);
+}
+
+export function saveOrganizationSettings(client: SupabaseClient<Database>, organizationId: string, expectedVersion: number, fields: { evidence_required?: boolean; timezone?: string; currency?: string }, requestId: string) {
+  const parsed = z.strictObject({ evidence_required: z.boolean().optional(), timezone: z.string().trim().min(1).max(100).optional(), currency: z.string().regex(/^[A-Z]{3}$/).optional() }).refine((value) => Object.keys(value).length > 0).parse(fields);
+  return parseRpc(client.rpc('save_organization_settings', { ctx: contextFor(organizationId, requestId, expectedVersion), fields: parsed }), settingsResult, requestId);
+}
+
+export function markNotificationsRead(client: SupabaseClient<Database>, organizationId: string, ids: string[], requestId: string) {
+  const notificationIds = z.array(z.uuid()).max(100).parse(ids);
+  return parseRpc(client.rpc('mark_notifications_read', { ctx: contextFor(organizationId, requestId), ids: notificationIds }), z.strictObject({ id: z.uuid(), marked: z.literal(true) }), requestId);
 }
 
 export function revokeInvitation(client: SupabaseClient<Database>, organizationId: string, invitationId: string, expectedVersion: number, commandId: string) {

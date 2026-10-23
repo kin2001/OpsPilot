@@ -9,7 +9,9 @@ import { clearAuthenticatedData } from './query-client';
 import { useAuth } from './auth/session';
 import { CreateAccountPage, ResetPasswordPage, SignInForm } from './auth/forms';
 import { SecurityPanel, PrivilegedArea } from './auth/security';
-import { AssetPage, RequestPage, TeamPage, WorkOrderPage } from './features';
+import { AssetPage, RequestPage, TeamPage } from './features';
+import { DashboardPage, NotificationsPage, OperationsTeamPage, OrganizationSettingsPage } from './operations';
+import { OperationalWorkOrderPage } from './work-orders';
 import { AppButton, BrandLogo, ErrorNotice, Field, LoadingNotice, PageHeader, SuccessNotice } from './ui';
 import type { CapturedAuthRedirect } from './auth/capture-url';
 import { acceptInvitation } from './commands';
@@ -132,19 +134,7 @@ function WorkspaceOnboarding({ user, client, onCreated }: { user: User; client: 
 }
 
 function WorkspaceOverview() {
-  const { role } = useWorkspace();
-  const links = [
-    { to: '/requests', label: 'Requests', description: 'Report a maintenance issue and follow its review.', glyph: '↗' },
-    { to: '/work-orders', label: 'Work orders', description: 'Review draft work created from accepted requests.', glyph: '▤' },
-    { to: '/assets', label: 'Assets', description: 'Find equipment and register an asset when permitted.', glyph: '◇' },
-    ...(role === 'owner' ? [{ to: '/team', label: 'Team', description: 'Invite people and manage workspace membership.', glyph: '♙' }] : []),
-    { to: '/settings/security', label: 'Account security', description: 'Verify and manage authenticator factors.', glyph: '⌑' },
-  ];
-  return <>
-    <PageHeader eyebrow="Workspace" title="Overview" description="Choose a workflow. Records and permissions are scoped to the workspace shown in the navigation." />
-    <div className="info-callout" role="note">Asset availability is not recorded. A draft work order does not mean equipment is safe or operational.</div>
-    <div className="flow-grid" style={{ marginTop: 18 }}>{links.map((link) => <Link className="flow-card" to={link.to} key={link.to}><span className="nav-icon" aria-hidden="true">{link.glyph}</span><strong>{link.label}</strong><span>{link.description}</span></Link>)}</div>
-  </>;
+  return <DashboardPage />;
 }
 
 function MobileMenuButton({ open, setOpen }: { open: boolean; setOpen: (open: boolean) => void }) {
@@ -162,7 +152,9 @@ function WorkspaceShell({ memberships, selected, onSwitch }: { memberships: Orga
     { to: '/requests', label: 'Requests', glyph: '↗' },
     { to: '/work-orders', label: 'Work orders', glyph: '▤' },
     { to: '/assets', label: 'Assets', glyph: '◇' },
-    ...(selected.role === 'owner' ? [{ to: '/team', label: 'Team', glyph: '♙' }] : []),
+    ...(['owner', 'manager', 'supervisor'].includes(selected.role) ? [{ to: '/team', label: 'Team', glyph: '♙' }] : []),
+    { to: '/notifications', label: 'Notifications', glyph: '◉' },
+    ...(selected.role === 'owner' ? [{ to: '/settings', label: 'Settings', glyph: '⚙' }] : []),
     { to: '/settings/security', label: 'Security', glyph: '⌑' },
   ];
   return <div className="app-shell">
@@ -177,8 +169,10 @@ function WorkspaceShell({ memberships, selected, onSwitch }: { memberships: Orga
       <Route path="/" element={<WorkspaceOverview />} />
       <Route path="/assets" element={<AssetPage />} />
       <Route path="/requests" element={<RequestPage />} />
-      <Route path="/work-orders" element={<WorkOrderPage />} />
-      <Route path="/team" element={selected.role === 'owner' ? <PrivilegedArea label="managing workspace membership"><TeamPage /></PrivilegedArea> : <AccessDeniedPage />} />
+      <Route path="/work-orders" element={<OperationalWorkOrderPage />} />
+      <Route path="/team" element={selected.role === 'owner' ? <PrivilegedArea label="managing workspace membership"><TeamPage /></PrivilegedArea> : ['manager', 'supervisor'].includes(selected.role) ? <OperationsTeamPage /> : <AccessDeniedPage />} />
+      <Route path="/notifications" element={<NotificationsPage />} />
+      <Route path="/settings" element={selected.role === 'owner' ? <PrivilegedArea label="changing workspace settings"><OrganizationSettingsPage /></PrivilegedArea> : <AccessDeniedPage />} />
       <Route path="/settings/security" element={<SecurityPage />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes></main></div>
