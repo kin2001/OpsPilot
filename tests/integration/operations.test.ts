@@ -30,6 +30,7 @@ async function job(assetId: string) {
   return command('owner', 'create_work_order', { ctx: ctx(), asset_id: assetId, fields: { title: 'Repair pump', description: 'Synthetic leak', category: 'pump', priority: 'normal' } });
 }
 async function transition(person: string, work: { id: string; version: number }, target: string) {
+  if (target === 'scheduled') return command(person, 'schedule_work_order', { ctx: ctx(work.version), id: work.id, planned_on: '2026-10-31', reason: 'Synthetic recorded reason' });
   if (target === 'awaiting_review') {
     const declared = await command(person, 'declare_work_order_performers', { ctx: ctx(work.version), id: work.id, user_ids: [people[person].id] });
     return command(person, 'submit_work_order', { ctx: ctx(declared.version), id: work.id, acknowledgment: 'I have declared everyone who performed this repair.' });
@@ -57,6 +58,61 @@ beforeAll(async () => {
 });
 
 describe('real T2 operational authorization and safety', () => {
+  it('requires a separate planned calendar date with atomic scheduling and durable replay', async () => {
+    const assetId = await asset(); let work = await job(assetId);
+    expect(Object.hasOwn(work, 'planned_on')).toBe(false);
+    const due = '2026-11-05T01:00:00+00:00';
+    work = await command('owner', 'update_work_order', { ctx: ctx(work.version), id: work.id, allowed_fields: { due_at: due } });
+    work = await transition('reviewer', work, 'open');
+    async function snapshot() {
+      const state: Record<string, unknown> = { asset: await assetRow(assetId) };
+      for (const table of ['work_orders', 'work_order_events', 'work_order_participants', 'asset_holds', 'notifications', 'audit_logs']) {
+        const column = table === 'work_orders' ? 'id' : table === 'notifications' ? 'source_id' : table === 'audit_logs' ? 'entity_id' : 'work_order_id';
+        const rows = await admin.from(table).select('*').eq('organization_id', org).eq(column, work.id);
+        expect(rows.error).toBeNull(); state[table] = rows.data;
+      }
+      return state;
+    }
+    async function denied(name: string, values: Record<string, unknown>, person = 'reviewer', code?: string) {
+      const before = await snapshot(); const request = ctx(work.version);
+      const result = await people[person].client.rpc(name, { ctx: request, id: work.id, ...values });
+      expect(result.error).not.toBeNull(); if (code) expect(result.error?.message).toBe(code);
+      expect(await snapshot()).toEqual(before);
+      sql(`do $$ begin if exists(select 1 from private.command_receipts where organization_id='${org}' and actor_id='${people[person].id}' and request_id='${request.request_id}') then raise exception 'Denied scheduling recorded a receipt'; end if; end $$;`);
+    }
+    await denied('transition_work_order', { target: 'scheduled', reason: null }, 'reviewer', 'VALIDATION');
+    for (const planned_on of [null, 'infinity', '-infinity', '2026-02-30', 'invalid']) await denied('schedule_work_order', { planned_on, reason: null });
+    const args = { ctx: ctx(work.version), id: work.id, planned_on: '2026-10-31', reason: null };
+    const scheduled = await people.reviewer.client.rpc('schedule_work_order', args); expect(scheduled.error).toBeNull();
+    work = scheduled.data.data; operationalWorkOrder.parse(work);
+    expect(work.planned_on).toBe(args.planned_on); expect(work.due_at).toBe(due);
+    expect(work.version).toBe(args.ctx.expected_version! + 1);
+    const material = work.repair_revision;
+    work = await transition('reviewer', work, 'open'); expect(work.planned_on).toBe(args.planned_on);
+    const beforeReplay = await snapshot(); const replay = await people.reviewer.client.rpc('schedule_work_order', args);
+    expect(replay.error).toBeNull(); expect(replay.data).toEqual(scheduled.data); expect(await snapshot()).toEqual(beforeReplay);
+    expect((await people.reviewer.client.rpc('schedule_work_order', { ...args, planned_on: '2026-11-01' })).error?.message).toBe('CONFLICT');
+    // A retained prior date cannot make the old undated API schedule again.
+    await denied('transition_work_order', { target: 'scheduled', reason: null }, 'reviewer', 'VALIDATION');
+    await denied('schedule_work_order', { planned_on: '2026-11-01', reason: null }, 'outsider', 'FORBIDDEN');
+    sql(`update public.organization_members set active=false where organization_id='${org}' and user_id='${people.reviewer.id}';`);
+    try { await denied('schedule_work_order', { planned_on: '2026-11-01', reason: null }, 'reviewer', 'FORBIDDEN'); }
+    finally { sql(`update public.organization_members set active=true where organization_id='${org}' and user_id='${people.reviewer.id}';`); }
+    work = await command('owner', 'assign_work_order', { ctx: ctx(work.version), id: work.id, user_ids: [people.performer.id] });
+    await denied('schedule_work_order', { planned_on: '2026-11-01', reason: null }, 'performer', 'FORBIDDEN');
+    work = await transition('performer', work, 'in_progress'); work = await transition('performer', work, 'blocked');
+    await denied('schedule_work_order', { planned_on: '2026-11-01', reason: null }, 'reviewer', 'VALIDATION');
+    await denied('transition_work_order', { target: 'scheduled', reason: 'Resolved' }, 'reviewer', 'VALIDATION');
+    work = await command('reviewer', 'schedule_work_order', { ctx: ctx(work.version), id: work.id, planned_on: '2026-11-01', reason: 'Resolved supply issue' });
+    expect(work.planned_on).toBe('2026-11-01'); expect(work.repair_revision).toBe(material); expect(work.due_at).toBe(due);
+    const event = await people.reviewer.client.from('work_order_events').select('changes,note').eq('work_order_id', work.id).eq('status', 'scheduled').order('created_at', { ascending: false }).limit(1).single();
+    expect(event.error).toBeNull(); expect(event.data!.changes).toMatchObject({ prior_planned_on: '2026-10-31', planned_on: '2026-11-01' });
+    expect(event.data!.note).toBe('Resolved supply issue');
+    work = await transition('reviewer', work, 'open');
+    const attempts = await Promise.all(['2026-11-02', '2026-11-03'].map((planned_on) => people.reviewer.client.rpc('schedule_work_order', { ctx: ctx(work.version), id: work.id, planned_on, reason: null })));
+    expect(attempts.filter((result) => result.error === null)).toHaveLength(1);
+    expect(attempts.filter((result) => result.error?.message === 'CONFLICT')).toHaveLength(1);
+  });
   it('requires a current eligible assignment before starts and resumes without changing denied work or successful receipts', async () => {
     const assetId = await asset(); let work = await job(assetId);
     work = await transition('owner', work, 'open');
@@ -112,7 +168,7 @@ describe('real T2 operational authorization and safety', () => {
     const request = await command('performer', 'save_request', { ctx: ctx(), id: null, asset_id: first.id, description: 'Synthetic report', category: 'pump' });
     await command('performer', 'submit_request', { ctx: ctx(), id: request.id });
     const converted = await convertRequest(people.owner.client, org, request.id, { title: 'Legacy conversion', priority: 'normal' }, randomUUID());
-    expect(Object.hasOwn(converted, 'repair_revision')).toBe(false); expect((await assetRow(first.id)).availability).toBe('out_of_service');
+    expect(Object.hasOwn(converted, 'repair_revision')).toBe(false); expect(Object.hasOwn(converted, 'planned_on')).toBe(false); expect((await assetRow(first.id)).availability).toBe('out_of_service');
   });
   it('retains former participants and separates rejection, correction, completion and release', async () => {
     const assetId = await asset(); let work = await job(assetId);

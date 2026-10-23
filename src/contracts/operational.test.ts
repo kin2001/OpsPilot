@@ -1,7 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { imageMetadata, inspectImage, workUpdate, releaseAcknowledgment, performerDeclarationInput, dashboardResult, assetHistoryResult } from '../../supabase/functions/_shared/operational';
+import { imageMetadata, inspectImage, workUpdate, releaseAcknowledgment, performerDeclarationInput, dashboardResult, assetHistoryResult, operationalWorkOrder } from '../../supabase/functions/_shared/operational';
 
 describe('operational trust boundaries', () => {
+  it('keeps legacy receipts strict while accepting an independent planned calendar date', () => {
+    const id = 'c2daf4c7-e68c-4783-87c6-26b009a1169d';
+    const legacy = { id, organization_id: id, number: 1, asset_id: id, source_request_id: null,
+      title: 'Synthetic repair', description: 'Synthetic', category: 'pump', priority: 'normal', due_at: '2026-11-05T01:00:00Z',
+      supervisor_id: id, status: 'scheduled', blocks_operation: true, created_by: id, created_at: '2026-10-23T00:00:00Z', version: 2,
+      repair_revision: 1, submitted_revision: null, opened_at: '2026-10-23T00:00:00Z', completed_at: null, priority_reason: null };
+    expect(operationalWorkOrder.parse(legacy)).toEqual(legacy);
+    expect(operationalWorkOrder.parse({ ...legacy, planned_on: null }).planned_on).toBeNull();
+    const scheduled = operationalWorkOrder.parse({ ...legacy, planned_on: '2026-10-31' });
+    expect(scheduled.planned_on).toBe('2026-10-31'); expect(scheduled.due_at).toBe(legacy.due_at);
+    for (const planned_on of ['2026-02-30', 'infinity', '2026-10-31T00:00:00Z', 123]) expect(operationalWorkOrder.safeParse({ ...legacy, planned_on }).success).toBe(false);
+    expect(operationalWorkOrder.safeParse({ ...legacy, planned_on: '2026-10-31', unexpected: true }).success).toBe(false);
+    expect(workUpdate.safeParse({ planned_on: '2026-10-31' }).success).toBe(false);
+  });
   it('rejects empty or duplicate performer declarations and unknown read-model fields', () => {
     expect(performerDeclarationInput.safeParse([]).success).toBe(false);
     const actor = 'c2daf4c7-e68c-4783-87c6-26b009a1169d';

@@ -1,0 +1,10 @@
+begin;
+set local search_path=public,extensions;
+select plan(5);
+select col_type_is('public','work_orders','planned_on','date','Planned organization-local day is separate from due timestamp');
+select ok(has_function_privilege('authenticated','public.schedule_work_order(jsonb,uuid,date,text)','EXECUTE'),'Authenticated callers can request scheduling subject to command authorization');
+select ok(not has_function_privilege('anon','public.schedule_work_order(jsonb,uuid,date,text)','EXECUTE'),'Anonymous scheduling is denied');
+select ok(not has_function_privilege('service_role','public.schedule_work_order(jsonb,uuid,date,text)','EXECUTE'),'Scheduling requires the current user command boundary');
+select ok(not has_function_privilege('authenticated','private.operational_command_base(jsonb,text,jsonb)','EXECUTE'),'Clients cannot bypass the scheduling boundary');
+select * from finish();
+rollback;

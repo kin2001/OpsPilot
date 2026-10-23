@@ -21,7 +21,7 @@ export const imageMetadata = z.strictObject({
 export const operationalWorkOrder = z.strictObject({
   id: z.uuid(), organization_id: z.uuid(), number: z.int(), asset_id: z.uuid(), source_request_id: z.uuid().nullable(),
   title: z.string(), description: z.string(), category: z.string(), priority: z.enum(['low', 'normal', 'high', 'critical']),
-  due_at: z.string().nullable(), supervisor_id: z.uuid(), status: z.enum(['draft', 'open', 'scheduled', 'in_progress', 'blocked', 'awaiting_review', 'completed', 'canceled']),
+  due_at: z.string().nullable(), planned_on: z.iso.date().nullable().optional(), supervisor_id: z.uuid(), status: z.enum(['draft', 'open', 'scheduled', 'in_progress', 'blocked', 'awaiting_review', 'completed', 'canceled']),
   blocks_operation: z.boolean(), created_by: z.uuid(), created_at: z.string(), version: z.int().positive(),
   repair_revision: z.int().positive(), submitted_revision: z.int().positive().nullable(), opened_at: z.string().nullable(), completed_at: z.string().nullable(), priority_reason: z.string().nullable(),
 });
