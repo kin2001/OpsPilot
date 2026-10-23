@@ -415,7 +415,10 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   await technicianWorkOrder.getByLabel('Repair note or correction').fill('Measured bearing clearance and completed the initial inspection.');
   await technicianWorkOrder.getByLabel('Labor minutes').fill('35');
   await technicianWorkOrder.getByRole('button', { name: 'Record repair update' }).click();
-  await expect(technicianWorkOrder.getByText('Repair update recorded.')).toBeVisible();
+  const repairRecord = technicianWorkOrder.getByRole('region', { name: 'Work and repair record', exact: true });
+  const repairUpdateStatus = repairRecord.getByRole('status');
+  await expect(repairUpdateStatus).toBeVisible();
+  await expect(repairUpdateStatus).toHaveText('Repair update recorded.');
   const validPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jhGQAAAAASUVORK5CYII=', 'base64');
   await technicianWorkOrder.getByLabel('Choose a repair image').setInputFiles({ name: 'bearing-inspection.png', mimeType: 'image/png', buffer: validPng });
   await technicianWorkOrder.getByRole('button', { name: 'Upload private image' }).click();
