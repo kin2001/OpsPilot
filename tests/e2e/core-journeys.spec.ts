@@ -139,7 +139,7 @@ test('owner onboards with native TOTP, creates maintenance records and invites a
   await page.getByLabel('Time zone').fill('Asia/Manila');
   await page.getByLabel('Currency code').fill('PHP');
   await page.getByRole('button', { name: 'Create workspace' }).click();
-  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Operations at a glance' })).toBeVisible();
 
   const primaryNavigation = page.getByRole('navigation', { name: 'Primary navigation' });
   await primaryNavigation.getByRole('link', { name: 'Assets', exact: true }).click();
@@ -200,7 +200,7 @@ test('owner onboards with native TOTP, creates maintenance records and invites a
   await page.getByRole('button', { name: `Accept as ${recipientEmail}` }).click();
   await expect(page.getByRole('heading', { name: 'Invitation accepted' })).toBeVisible();
   await page.getByRole('button', { name: 'Open workspace' }).click();
-  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Operations at a glance' })).toBeVisible();
   await expect(page.getByRole('combobox', { name: 'Workspace' })).toHaveValue(/.+/);
 });
 
@@ -222,7 +222,7 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   await ownerPage.getByLabel('Time zone').fill('Asia/Manila');
   await ownerPage.getByLabel('Currency code').fill('PHP');
   await ownerPage.getByRole('button', { name: 'Create workspace' }).click();
-  await expect(ownerPage.getByRole('heading', { name: 'Overview' })).toBeVisible();
+  await expect(ownerPage.getByRole('heading', { name: 'Operations at a glance' })).toBeVisible();
 
   const ownerMembership = await admin.from('organization_members').select('organization_id').eq('user_id', owner.id).single();
   if (ownerMembership.error) throw new Error('Synthetic owner workspace could not be read back.');
@@ -457,7 +457,7 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   await technicianCard.getByRole('button', { name: 'Save role' }).click();
   await expect(technicianCard.getByText('Role: supervisor')).toBeVisible();
   await technicianPage.reload();
-  await expect(technicianPage.getByRole('heading', { name: 'Overview' })).toBeVisible();
+  await expect(technicianPage.getByRole('heading', { name: 'Operations at a glance' })).toBeVisible();
   await technicianPage.goto(`/work-orders?workOrder=${workOrderId}`);
   await expect(technicianWorkOrder.getByText('Your account participated in this work order and cannot review it, even if your assignment has since changed.')).toBeVisible();
   await expect(technicianWorkOrder.getByRole('button', { name: 'Approve repair' })).toHaveCount(0);
@@ -538,14 +538,14 @@ test('workspace switching changes the visible tenant records', async ({ page }) 
   await page.getByLabel('Email').fill(ownerA.email);
   await page.getByLabel('Password').fill(ownerA.password);
   await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Operations at a glance' })).toBeVisible();
   const primaryNavigation = page.getByRole('navigation', { name: 'Primary navigation' });
   await primaryNavigation.getByRole('link', { name: 'Assets', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Synthetic asset A' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Synthetic asset B' })).toHaveCount(0);
 
   await page.getByRole('combobox', { name: 'Workspace' }).selectOption(orgB);
-  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Operations at a glance' })).toBeVisible();
   await primaryNavigation.getByRole('link', { name: 'Assets', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Synthetic asset B' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Synthetic asset A' })).toHaveCount(0);

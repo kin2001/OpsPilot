@@ -149,7 +149,7 @@ test('assets use a searchable registry with a selected detail preview on desktop
   await fan.press('Enter');
   await expect(preview.getByRole('heading', { name: 'Alpha fan' })).toBeVisible();
   await expect(desktopTable.locator('tr[aria-selected="true"]')).toContainText('ALPHA-02');
-  await expect(preview.getByRole('definition').filter({ hasText: 'out of service' })).toBeVisible();
+  await expect(preview.locator('.asset-record-heading .state-badge')).toHaveText('out of service');
   await page.screenshot({ path: `${evidenceDirectory}/assets-desktop.png`, fullPage: true });
 
   await page.emulateMedia({ reducedMotion: 'reduce' });
@@ -437,7 +437,7 @@ test('automatic selected-workspace revocation navigates away and remounts form s
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
     window.dispatchEvent(new Event('visibilitychange'));
   });
-  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Operations at a glance' })).toBeVisible();
   await expect(page.getByText('Tenant A private draft text')).toHaveCount(0);
   await page.getByRole('link', { name: 'Requests', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Selected request details' }).getByText('Beta workspace request.')).toBeVisible();
@@ -481,12 +481,27 @@ test('POR-24 dashboard, work orders, assets, team, notifications and settings re
       });
     }
     if (url.pathname === '/rest/v1/rpc/get_team') return fulfillJson(route, visualTeam);
-    if (url.pathname === '/rest/v1/organization_members' && url.searchParams.get('select') === 'organization_id,role,active') return fulfillJson(route, [
-      { organization_id: fixtureOrganizationIds.alpha, role: 'owner', active: true },
-    ]);
-    if (url.pathname === '/rest/v1/organization_members') return fulfillJson(route, visualTeam.map((member, index) => ({
-      organization_id: fixtureOrganizationIds.alpha, ...member, created_at: `2026-10-21T0${index}:00:00.000Z`,
-    })));
+    if (url.pathname === '/rest/v1/organization_members') {
+      const membershipRows = visualTeam.map((member, index) => ({
+        organization_id: fixtureOrganizationIds.alpha, ...member, created_at: `2026-10-21T0${index}:00:00.000Z`,
+      }));
+      const organizationFilter = url.searchParams.get('organization_id');
+      const userFilter = url.searchParams.get('user_id');
+      const activeFilter = url.searchParams.get('active');
+      const cursor = userFilter?.match(/^gt\.(.+)$/)?.[1];
+      let rows = membershipRows.filter((member) =>
+        (!organizationFilter?.startsWith('eq.') || member.organization_id === organizationFilter.slice(3))
+        && (!userFilter?.startsWith('eq.') || member.user_id === userFilter.slice(3))
+        && (!activeFilter?.startsWith('eq.') || String(member.active) === activeFilter.slice(3))
+        && (!cursor || member.user_id > cursor),
+      );
+      const order = url.searchParams.get('order') ?? '';
+      if (order.split(',').some((column) => column.startsWith('user_id.'))) rows = rows.sort((left, right) => left.user_id.localeCompare(right.user_id));
+      else if (order.split(',').some((column) => column.startsWith('created_at.'))) rows = rows.sort((left, right) => left.created_at.localeCompare(right.created_at));
+      const limit = Number(url.searchParams.get('limit') ?? rows.length);
+      const columns = url.searchParams.get('select')?.split(',') ?? ['*'];
+      return fulfillJson(route, rows.slice(0, limit).map((member) => columns.includes('*') ? member : Object.fromEntries(columns.map((column) => [column, member[column as keyof typeof member]]))));
+    }
     if (url.pathname === '/rest/v1/rpc/get_asset_history') return fulfillJson(route, { items: [], next_cursor: null });
     if (url.pathname === '/rest/v1/maintenance_requests') {
       if (request.method() === 'HEAD') {
@@ -748,7 +763,25 @@ test('team workload pages beyond the API row cap and fails closed beyond its rev
   let rowCount = 101;
   const assignmentRequests: URL[] = [];
   const workOrderRequests: URL[] = [];
-  await page.route(/\/rest\/v1\/organization_members(?:\?.*)?$/, (route) => fulfillJson(route, memberRows));
+  await page.route(/\/rest\/v1\/organization_members(?:\?.*)?$/, (route) => {
+    const url = new URL(route.request().url());
+    const organizationFilter = url.searchParams.get('organization_id');
+    const activeFilter = url.searchParams.get('active');
+    const userFilter = url.searchParams.get('user_id');
+    const cursor = userFilter?.match(/^gt\.(.+)$/)?.[1];
+    let rows = memberRows.filter((member) =>
+      (!organizationFilter?.startsWith('eq.') || member.organization_id === organizationFilter.slice(3))
+      && (!activeFilter?.startsWith('eq.') || String(member.active) === activeFilter.slice(3))
+      && (!userFilter?.startsWith('eq.') || member.user_id === userFilter.slice(3))
+      && (!cursor || member.user_id > cursor),
+    );
+    if ((url.searchParams.get('order') ?? '').split(',').some((column) => column.startsWith('user_id.'))) {
+      rows = rows.sort((left, right) => left.user_id.localeCompare(right.user_id));
+    }
+    const limit = Number(url.searchParams.get('limit') ?? rows.length);
+    const columns = url.searchParams.get('select')?.split(',') ?? ['*'];
+    return fulfillJson(route, rows.slice(0, limit).map((member) => columns.includes('*') ? member : Object.fromEntries(columns.map((column) => [column, member[column as keyof typeof member]]))));
+  });
   await page.route(/\/rest\/v1\/work_order_assignments(?:\?.*)?$/, async (route) => {
     const url = new URL(route.request().url());
     assignmentRequests.push(url);
@@ -790,12 +823,12 @@ test('team workload pages beyond the API row cap and fails closed beyond its rev
   await workloadDisclosure.click();
   const allMemberWorkload = workload.locator('.team-workload-remainder');
   await expect(allMemberWorkload.getByRole('row')).toHaveCount(memberRows.length + 1);
-  const expectedCounts = [0, 51, 25, 13, 7, 5];
+  const expectedCounts = [13, 7, 5, 51, 25, 0];
   for (let index = 0; index < expectedCounts.length; index++) {
     await expect(allMemberWorkload.getByRole('row').nth(index + 1).getByRole('cell').nth(2)).toHaveText(String(expectedCounts[index]));
   }
-  await expect(allMemberWorkload.getByRole('row').nth(4).locator('summary')).toHaveAttribute('aria-label', rowId(300));
-  await expect(allMemberWorkload.getByRole('row').nth(6).locator('summary')).toHaveAttribute('aria-label', rowId(302));
+  await expect(allMemberWorkload.getByRole('row').nth(1).locator('summary')).toHaveAttribute('aria-label', rowId(300));
+  await expect(allMemberWorkload.getByRole('row').nth(3).locator('summary')).toHaveAttribute('aria-label', rowId(302));
   await firstMemberId.focus();
   await expect(firstMemberId).toBeFocused();
   await page.keyboard.press('Enter');
@@ -862,7 +895,7 @@ test('ambiguous workspace creation can be retried with the same payload and requ
   await expect(retry).toBeEnabled();
   await expect(page.getByLabel('Workspace name')).toHaveValue('North plant');
   await retry.click();
-  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Operations at a glance' })).toBeVisible();
 
   const [first, second] = fixture.organizationRequests();
   expect(first).toMatchObject({ name: 'North plant', timezone: 'Asia/Manila', currency: 'PHP' });
