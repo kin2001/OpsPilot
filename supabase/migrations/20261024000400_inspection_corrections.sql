@@ -18,7 +18,7 @@ language plpgsql security definer set search_path='' set lock_timeout='5s' set s
 declare org uuid; actor uuid:=auth.uid(); request uuid; expected integer; role text; replayed jsonb; data jsonb;
  fields jsonb; template public.inspection_templates; revision public.inspection_template_revisions; assignment public.inspection_assignments;
  asset public.assets; submission public.inspection_submissions; attachment public.attachments; item jsonb; result jsonb; results jsonb;
- revision_id uuid; template_id uuid; request_id uuid; episode_id uuid; hold_id uuid; event_id uuid; evidence uuid; evidence_ids uuid[]; previous public.inspection_submissions; prior_episode public.inspection_failure_episodes; remedy public.maintenance_requests;
+ revision_id uuid; template_id uuid; request_id uuid; episode_id uuid; hold_id uuid; event_id uuid; evidence uuid; evidence_ids uuid[]; previous public.inspection_submissions; prior_episode public.inspection_failure_episodes; remedy public.maintenance_requests; safety_hold_created boolean:=false;
 begin
  if actor is null then raise exception using message='UNAUTHENTICATED'; end if;
  perform private.object_fields(ctx,array['organization_id','request_id','expected_version']);
@@ -115,6 +115,7 @@ begin
     if remedy.status in ('draft','submitted','returned') or (remedy.status='converted' and exists(select 1 from public.work_orders w where w.organization_id=org and w.id=remedy.converted_work_order_id and w.status not in ('completed','canceled'))) then
      if (item->>'safety_relevant')::boolean and not exists(select 1 from public.asset_holds h where h.organization_id=org and h.source='inspection' and h.source_id=prior_episode.id and h.resolved_at is null and h.released_at is null) then
       insert into public.asset_holds(organization_id,asset_id,source,source_id,reason,created_by) values(org,asset.id,'inspection',prior_episode.id,'Inspection failure: '||(item->>'label'),actor) returning id into hold_id;
+      safety_hold_created:=true;
       insert into public.audit_logs(organization_id,actor_id,action,entity_id,request_id,changes) values(org,actor,'inspection.hold_renewed',hold_id,request,jsonb_build_object('submission_id',submission.id,'episode_id',prior_episode.id,'corrective_request_id',remedy.id));
      end if;
      continue;
@@ -125,12 +126,13 @@ begin
    insert into public.request_events(organization_id,request_id,actor_id,action,status,reason) values(org,request_id,actor,'inspection_failure','submitted',result->>'remarks');
    if (item->>'safety_relevant')::boolean then
     insert into public.asset_holds(organization_id,asset_id,source,source_id,reason,created_by) values(org,asset.id,'inspection',episode_id,'Inspection failure: '||(item->>'label'),actor) returning id into hold_id;
+    safety_hold_created:=true;
    end if;
    insert into public.inspection_failure_episodes(id,organization_id,assignment_id,submission_id,item_id,corrective_request_id,hold_id,predecessor_id) values(episode_id,org,assignment.id,submission.id,(item->>'id')::uuid,request_id,hold_id,prior_episode.id);
    insert into public.audit_logs(organization_id,actor_id,action,entity_id,request_id,changes) values(org,actor,'inspection.failure_episode',episode_id,request,jsonb_build_object('submission_id',submission.id,'corrective_request_id',request_id,'hold_id',hold_id,'item_id',item->>'id'));
    insert into public.notifications(organization_id,recipient_user_id,event_id,category,source_id) select org,user_id,episode_id,'inspection_failure',assignment.id from public.organization_members where organization_id=org and active and organization_members.role in ('owner','manager','supervisor') and private.auth_user_active(user_id) on conflict do nothing;
   end loop;
-  perform private.refresh_availability(org,asset.id);
+  if safety_hold_created then perform private.refresh_availability(org,asset.id); end if;
   data:=to_jsonb(submission);
  else raise exception using message='VALIDATION';
  end case;

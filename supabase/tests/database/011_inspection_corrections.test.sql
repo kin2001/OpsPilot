@@ -59,6 +59,19 @@ select is((select count(*)::integer from public.asset_holds where resolved_at is
 select is((select count(*)::integer from public.maintenance_requests),2,'Renewal creates no duplicate request');
 select is((select availability from public.assets where id='20000033-0000-4000-8000-000000000001'),'out_of_service','Renewed failure invalidates Operational');
 select is((select jsonb_array_length(public.get_inspection('10000033-0000-4000-8000-000000000001',(result->'data'->>'id')::uuid)->'holds') from assigned),4,'Read includes original and renewed holds');
+-- With every hold explicitly disposed/released, a Pass preserves independent Operational state.
+update public.asset_holds set resolved_at=now(),resolved_by='00000033-0000-4000-8000-000000000001',resolution='Synthetic prior disposition',released_at=now();
+update public.assets set availability='operational';
+select lives_ok($$select pg_temp.correct((select id from public.inspection_submissions where version=6),6,'Verified after release','pass')$$,'Pass after release appends facts');
+select is((select availability from public.assets where id='20000033-0000-4000-8000-000000000001'),'operational','Pass correction preserves Operational');
+do $$ begin perform set_config('request.jwt.claim.sub','00000033-0000-4000-8000-000000000001',true); end $$;
+-- Initial all-Pass submission on a separately assigned checklist changes no availability.
+create temp table pass_assignment as select public.assign_inspection(pg_temp.ctx(),'20000033-0000-4000-8000-000000000001',(select (result->'data'->>'current_revision_id')::uuid from template),'00000033-0000-4000-8000-000000000002') result;
+do $$ begin perform set_config('request.jwt.claim.sub','00000033-0000-4000-8000-000000000002',true); end $$;
+update public.asset_holds set resolved_at=coalesce(resolved_at,now()),resolved_by='00000033-0000-4000-8000-000000000001',resolution='Synthetic disposition',released_at=now();
+update public.assets set availability='operational';
+select lives_ok($$select public.submit_inspection(pg_temp.ctx(),(select (result->'data'->>'id')::uuid from pass_assignment),(select (result->'data'->>'template_revision_id')::uuid from pass_assignment),pg_temp.results('pass'))$$,'Initial all-Pass submission succeeds');
+select is((select availability from public.assets where id='20000033-0000-4000-8000-000000000001'),'operational','Initial all-Pass preserves Operational');
 update public.organization_members set role='inventory' where user_id='00000033-0000-4000-8000-000000000002';
 select throws_ok($$select pg_temp.correct((select (result->'data'->>'id')::uuid from original),1,'Rechecked','fail',request) from correction$$,'P0001','FORBIDDEN','Role revocation checked before receipt replay');
 select ok(not has_function_privilege('anon','public.correct_inspection(jsonb,uuid,uuid,uuid,text,jsonb)','execute'),'Anonymous corrections denied');

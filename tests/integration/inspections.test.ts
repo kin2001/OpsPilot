@@ -152,9 +152,14 @@ it('requires explicit conversion, real repair evidence, independent review, hold
   expect(sql(`select availability from public.assets where id='${asset}';`)).toBe('operational');
   // Exclusion is current unreleased scope, not a lifetime performer ban.
   await command('repairer', 'release_asset', { ctx: ctx(await version()), asset_id: asset, acknowledgment: 'No current remedy scope remains' });
+  const original = (await getInspection(people.inspector.client, org, assignment.id)).submission!;
+  const beforePass = await version();
+  await correctInspection(people.inspector.client, org, { assignment_id: assignment.id, template_revision_id: assignment.template_revision_id, supersedes_id: original.id, correction_reason: 'Guard verified after independent release', results: [{ item_id: item, outcome: 'pass', evidence_ids: [] }] }, randomUUID(), original.version);
+  expect(sql(`select availability from public.assets where id='${asset}';`)).toBe('operational');
+  expect(await version()).toBe(beforePass);
   const priorSubmission = (await getInspection(people.inspector.client, org, assignment.id)).submission!;
   const corrected = await correctInspection(people.inspector.client, org, { assignment_id: assignment.id, template_revision_id: assignment.template_revision_id, supersedes_id: priorSubmission.id, correction_reason: 'New observed failure after release', results: [{ item_id: item, outcome: 'fail', remarks: 'Guard missing again', evidence_ids: [] }] }, randomUUID(), priorSubmission.version);
-  expect(corrected.version).toBe(2);
+  expect(corrected.version).toBe(3);
   const renewed = await getInspection(people.owner.client, org, assignment.id);
   expect(renewed.episodes).toHaveLength(2);
   expect(renewed.holds.find((h) => h.id === episode.hold_id)?.released_at).not.toBeNull();
@@ -308,4 +313,14 @@ it.each([false, true])('renews a safety hold without duplicating an active reque
   await command('owner', 'resolve_asset_hold', { ctx: ctx(await version()), hold_id: renewed.id, disposition: 'withdrawn_with_reason', reason: 'Separate renewed disposition' });
   sql(`update public.organization_members set role='supervisor' where organization_id='${org}' and user_id='${people.repairer.id}';`);
   expect((await people.repairer.client.rpc('release_asset', { ctx: ctx(await version()), asset_id: asset, acknowledgment: 'Former renewed remedy participant' })).error?.message).toBe('FORBIDDEN');
+});
+
+it.each([false, true])('preserves Operational on initial submission without a safety failure (non-safety failure=%s)', async (nonSafetyFailure) => {
+  const { assignment } = await assigned(false, !nonSafetyFailure);
+  await command('reviewer', 'release_asset', { ctx: ctx(await version()), asset_id: asset, acknowledgment: 'Synthetic initial independent release' });
+  const before = await version();
+  await submitInspection(people.inspector.client, org, assignment.id, assignment.template_revision_id, [{ item_id: item, outcome: nonSafetyFailure ? 'fail' : 'pass', remarks: 'Synthetic observation', evidence_ids: [] }], randomUUID());
+  expect(sql(`select availability from public.assets where id='${asset}';`)).toBe('operational');
+  expect(await version()).toBe(before);
+  expect((await getInspection(people.owner.client, org, assignment.id)).holds).toEqual([]);
 });
