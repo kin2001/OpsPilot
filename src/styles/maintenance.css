@@ -1,0 +1,41 @@
+.maintenance-page { display: grid; gap: 1.25rem; min-width: 0; }
+.maintenance-tabs { display: flex; gap: .5rem; border-bottom: 1px solid var(--line); }
+.maintenance-tabs [role="tab"] { min-height: 2.75rem; padding: .5rem 1rem; border: 0; border-bottom: 3px solid transparent; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.maintenance-tabs [role="tab"][aria-selected="true"] { border-bottom-color: var(--action); color: var(--action); font-weight: 700; }
+.maintenance-tabs [role="tab"]:focus-visible, .maintenance-day:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+.maintenance-layout { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(17rem, 1fr); gap: 1rem; align-items: start; }
+.maintenance-calendar, .maintenance-agenda, .maintenance-plan-list { min-width: 0; padding: 1.1rem; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); }
+.maintenance-month { display: flex; justify-content: space-between; align-items: center; gap: .75rem; margin-bottom: .75rem; }
+.maintenance-month h2, .maintenance-agenda h2 { margin: 0; font-size: 1.1rem; }
+.maintenance-grid { display: grid; gap: .3rem; }
+.maintenance-grid-row { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: .3rem; }
+.maintenance-weekday { padding: .45rem .2rem; color: var(--muted); text-align: center; font-size: .8rem; font-weight: 700; }
+.maintenance-day { display: flex; min-width: 0; min-height: 4rem; flex-direction: column; align-items: flex-start; justify-content: space-between; padding: .45rem; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--ink); text-align: left; cursor: pointer; }
+.maintenance-day.is-outside { color: var(--muted); background: var(--sidebar); }
+.maintenance-day[aria-selected="true"] { border-color: var(--action); box-shadow: inset 0 0 0 1px var(--action); }
+.maintenance-day-mark { align-self: flex-end; color: var(--action); font-size: .9rem; line-height: 1; }
+.maintenance-agenda ul, .maintenance-plan-list ul { display: grid; gap: .65rem; padding: 0; list-style: none; }
+.maintenance-agenda li, .maintenance-plan-list li { display: grid; gap: .35rem; padding: .8rem; border: 1px solid var(--line); border-radius: 4px; overflow-wrap: anywhere; }
+.maintenance-agenda li > span, .maintenance-plan-list li p { color: var(--muted); margin: 0; }
+.maintenance-warning { color: #8b3c19 !important; font-weight: 650; }
+.maintenance-empty { color: var(--muted); }
+.maintenance-plan-list li { grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
+.maintenance-plan-list li h2 { margin: 0 0 .25rem; font-size: 1rem; }
+.maintenance-state { padding: .25rem .55rem; border-radius: 4px; background: #eef1f8; text-transform: capitalize; }
+.maintenance-state--active { background: #eef3ff; color: var(--action-dark); }
+.maintenance-plan-list li .maintenance-warning { grid-column: 1 / -1; }
+.maintenance-editor { display: grid; gap: 1rem; padding: 1rem; border: 1px solid var(--line); border-radius: 4px; background: #f4f7ff; }
+.maintenance-asset-search { display: grid; gap: .35rem; font-weight: 650; }
+.maintenance-asset-search input { width: 100%; min-height: 2.75rem; padding: .5rem .7rem; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--ink); font: inherit; }
+.maintenance-editor > fieldset { display: grid; gap: .85rem; min-width: 0; margin: 0; padding: 0; border: 0; }
+.maintenance-editor-heading { display: flex; justify-content: space-between; align-items: start; gap: 1rem; }
+.maintenance-editor-heading h2 { margin: 0; font-size: 1.2rem; }
+.maintenance-pending, .maintenance-preview, .maintenance-backlog { display: grid; gap: .5rem; padding: .8rem; border: 1px solid var(--line); border-radius: 4px; background: #f4f7ff; }
+.maintenance-pending p, .maintenance-preview p, .maintenance-backlog p { margin: 0; }
+.maintenance-preview h3, .maintenance-agenda h3 { margin: .25rem 0 0; font-size: 1rem; }
+.maintenance-preview ul, .maintenance-backlog ul { margin: 0; padding-left: 1.25rem; }
+.maintenance-date-link { justify-self: start; border: 0; padding: 0; background: transparent; color: var(--action-dark); font: inherit; text-decoration: underline; cursor: pointer; }
+.maintenance-date-link:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+.maintenance-agenda > section { margin-top: 1.25rem; }
+@media (max-width: 760px) { .maintenance-layout { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 360px) { .maintenance-calendar, .maintenance-agenda, .maintenance-plan-list { padding: .7rem; } .maintenance-grid-row { gap: .18rem; } .maintenance-day { min-height: 3.2rem; padding: .25rem; font-size: .85rem; } }
