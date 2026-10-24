@@ -239,20 +239,26 @@ isOneToOne: false
                   ]
                 },"inspection_submissions": {
                   Row: {
-                    "assignment_id": string,"id": string,"inspector_id": string,"organization_id": string,"results": NonNullable<Json>,"submitted_at": string,"template_revision_id": string,"version": number
+                    "assignment_id": string,"correction_reason": string | null,"id": string,"inspector_id": string,"organization_id": string,"results": NonNullable<Json>,"submitted_at": string,"supersedes_id": string | null,"template_revision_id": string,"version": number
                   }
                   ComputedFields: never
                   Insert: {
-                    "assignment_id": string,"id"?: string,"inspector_id": string,"organization_id": string,"results": NonNullable<Json>,"submitted_at"?: string,"template_revision_id": string,"version"?: number
+                    "assignment_id": string,"correction_reason"?: string | null,"id"?: string,"inspector_id": string,"organization_id": string,"results": NonNullable<Json>,"submitted_at"?: string,"supersedes_id"?: string | null,"template_revision_id": string,"version"?: number
                   }
                   Update: {
-                    "assignment_id"?: string,"id"?: string,"inspector_id"?: string,"organization_id"?: string,"results"?: NonNullable<Json>,"submitted_at"?: string,"template_revision_id"?: string,"version"?: number
+                    "assignment_id"?: string,"correction_reason"?: string | null,"id"?: string,"inspector_id"?: string,"organization_id"?: string,"results"?: NonNullable<Json>,"submitted_at"?: string,"supersedes_id"?: string | null,"template_revision_id"?: string,"version"?: number
                   }
                   Relationships: [
                     {
+      foreignKeyName: "inspection_submission_predecessor"
+      columns: ["organization_id","assignment_id","supersedes_id"]
+isOneToOne: false
+      referencedRelation: "inspection_submissions"
+      referencedColumns: ["organization_id","assignment_id","id"]
+    },{
       foreignKeyName: "inspection_submissions_organization_id_assignment_id_fkey"
       columns: ["organization_id","assignment_id"]
-isOneToOne: true
+isOneToOne: false
       referencedRelation: "inspection_assignments"
       referencedColumns: ["organization_id","id"]
     },{
@@ -798,6 +804,9 @@ isOneToOne: true
                            },
 "convert_request":
 { Args: { "ctx": Json,"id": string,"work_order_fields": Json }; Returns: Json
+                           },
+"correct_inspection":
+{ Args: { "assignment_id": string,"correction_reason": string,"ctx": Json,"results": Json,"supersedes_id": string,"template_revision_id": string }; Returns: Json
                            },
 "correct_meter_reading":
 { Args: { "ctx": Json,"id": string,"reason": string,"value": number }; Returns: Json

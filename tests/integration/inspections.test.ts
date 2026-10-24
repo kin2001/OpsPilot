@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { beforeEach, expect, it } from 'vitest';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import { publishInspectionTemplate, assignInspection, submitInspection, getInspection, listInspectionAssignments } from '../../src/app/inspection-client';
+import { correctInspection, publishInspectionTemplate, assignInspection, submitInspection, getInspection, listInspectionAssignments } from '../../src/app/inspection-client';
 import { enrollMfa } from './mfa';
 
 const url = process.env.TEST_SUPABASE_URL!; const anon = process.env.TEST_SUPABASE_ANON_KEY!; const service = process.env.TEST_SUPABASE_SERVICE_KEY!;
@@ -152,6 +152,16 @@ it('requires explicit conversion, real repair evidence, independent review, hold
   expect(sql(`select availability from public.assets where id='${asset}';`)).toBe('operational');
   // Exclusion is current unreleased scope, not a lifetime performer ban.
   await command('repairer', 'release_asset', { ctx: ctx(await version()), asset_id: asset, acknowledgment: 'No current remedy scope remains' });
+  const priorSubmission = (await getInspection(people.inspector.client, org, assignment.id)).submission!;
+  const corrected = await correctInspection(people.inspector.client, org, { assignment_id: assignment.id, template_revision_id: assignment.template_revision_id, supersedes_id: priorSubmission.id, correction_reason: 'New observed failure after release', results: [{ item_id: item, outcome: 'fail', remarks: 'Guard missing again', evidence_ids: [] }] }, randomUUID(), priorSubmission.version);
+  expect(corrected.version).toBe(2);
+  const renewed = await getInspection(people.owner.client, org, assignment.id);
+  expect(renewed.episodes).toHaveLength(2);
+  expect(renewed.holds.find((h) => h.id === episode.hold_id)?.released_at).not.toBeNull();
+  expect(renewed.holds.filter((h) => h.released_at === null && h.resolved_at === null)).toHaveLength(1);
+  expect(sql(`select status from public.work_orders where id='${work.id}';`)).toBe('completed');
+  expect(sql(`select availability from public.assets where id='${asset}';`)).toBe('out_of_service');
+
 });
 
 it('delivers inspection notifications once to current eligible recipients and enforces read ownership after revocation', async () => {
@@ -206,4 +216,65 @@ it('delivers inspection notifications once to current eligible recipients and en
   expect(revokedRead.error).toBeNull(); expect(revokedRead.data).toEqual([]);
   expect((await people.inspector.client.rpc('mark_notifications_read', { ctx: ctx(), ids: [inspectorNotification.id] })).error?.message).toBe('FORBIDDEN');
   await expect(getInspection(people.inspector.client, org, assignment.id)).rejects.toThrow('FORBIDDEN');
+});
+
+it('serializes distinct correction identities, preserves immutable facts and separately disposes closed paths', async () => {
+  const { assignment } = await assigned(false);
+  const failed = [{ item_id: item, outcome: 'fail' as const, remarks: 'Missing guard', evidence_ids: [] }];
+  const initial = await submitInspection(people.inspector.client, org, assignment.id, assignment.template_revision_id, failed, randomUUID());
+  const fields = { assignment_id: assignment.id, template_revision_id: assignment.template_revision_id, supersedes_id: initial.id, correction_reason: 'Rechecked in person', results: failed };
+  await expect(correctInspection(people.owner.client, org, fields, randomUUID(), 1)).rejects.toThrow('FORBIDDEN');
+  await expect(correctInspection(people.outsider.client, org, fields, randomUUID(), 1)).rejects.toThrow('FORBIDDEN');
+  await expect(correctInspection(people.inspector.client, org, { ...fields, template_revision_id: randomUUID() }, randomUUID(), 1)).rejects.toThrow('CONFLICT');
+  const attempts = await Promise.allSettled([correctInspection(people.inspector.client, org, fields, randomUUID(), 1), correctInspection(people.inspector.client, org, fields, randomUUID(), 1)]);
+  expect(attempts.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+  expect(attempts.filter((r) => r.status === 'rejected').map((r) => (r as PromiseRejectedResult).reason.message)).toEqual(['CONFLICT']);
+  let detail = await getInspection(people.inspector.client, org, assignment.id);
+  expect(detail.history.map((h) => h.version)).toEqual([1, 2]); expect(detail.episodes).toHaveLength(1);
+  expect(detail.history[0]).toEqual(initial);
+  expect(detail.episode_links.map((l) => l.episode_id)).toEqual([detail.episodes[0].id, detail.episodes[0].id]);
+  let current = detail.submission!;
+  const pass = await correctInspection(people.inspector.client, org, { ...fields, supersedes_id: current.id, results: [{ item_id: item, outcome: 'pass', evidence_ids: [] }] }, randomUUID(), current.version);
+  expect((await getInspection(people.inspector.client, org, assignment.id)).holds[0].resolved_at).toBeNull();
+  current = pass;
+  for (const state of ['rejected', 'withdrawn'] as const) {
+    detail = await getInspection(people.inspector.client, org, assignment.id);
+    const prior = detail.episodes.find((e) => !detail.episodes.some((child) => child.predecessor_id === e.id))!;
+    if (state === 'rejected') await command('owner', 'triage_request', { ctx: ctx(), id: prior.corrective_request_id, decision: state, reason: 'Synthetic terminal rejection' });
+    else await command('inspector', 'withdraw_request', { ctx: ctx(), id: prior.corrective_request_id, reason: 'Synthetic terminal withdrawal' });
+    const request = randomUUID(); const next = { ...fields, supersedes_id: current.id };
+    const outcomes = await Promise.all([correctInspection(people.inspector.client, org, next, request, current.version), correctInspection(people.inspector.client, org, next, request, current.version)]);
+    expect(outcomes[0]).toEqual(outcomes[1]);
+    await expect(correctInspection(people.inspector.client, org, { ...next, correction_reason: 'Changed identity payload' }, request, current.version)).rejects.toThrow('CONFLICT');
+    current = outcomes[0];
+    detail = await getInspection(people.inspector.client, org, assignment.id);
+    expect(detail.episodes.find((e) => e.predecessor_id === prior.id)?.corrective_request_id).not.toBe(prior.corrective_request_id);
+    expect(detail.holds.every((h) => h.resolved_at === null && h.released_at === null)).toBe(true);
+    expect(sql(`select status from public.maintenance_requests where id='${prior.corrective_request_id}';`)).toBe(state);
+  }
+  expect(detail.episodes).toHaveLength(3); expect(detail.holds).toHaveLength(3);
+  const evidence = await upload('inspector', { assignment_id: assignment.id });
+  const finalFields = { ...fields, supersedes_id: current.id, results: [{ ...failed[0], evidence_ids: [evidence.id] }] };
+  const request = randomUUID();
+  const final = await correctInspection(people.inspector.client, org, finalFields, request, current.version);
+  expect(final.inspector_id).toBe(people.inspector.id);
+  sql(`update public.organization_members set active=false where organization_id='${org}' and user_id='${people.inspector.id}';`);
+  await expect(correctInspection(people.inspector.client, org, finalFields, request, current.version)).rejects.toThrow('FORBIDDEN');
+  expect((await people.inspector.client.storage.from('repair-evidence').download(evidence.object_key)).error).not.toBeNull();
+});
+it('reuses Converted active work and creates a fresh episode after canceled work without reopening it', async () => {
+  const { assignment } = await assigned(false);
+  const results = [{ item_id: item, outcome: 'fail' as const, remarks: 'Missing guard', evidence_ids: [] }];
+  let current = await submitInspection(people.inspector.client, org, assignment.id, assignment.template_revision_id, results, randomUUID());
+  const prior = (await getInspection(people.owner.client, org, assignment.id)).episodes[0];
+  const work = await command('owner', 'convert_request', { ctx: ctx(), id: prior.corrective_request_id, work_order_fields: { title: 'Fit guard', priority: 'normal' } });
+  const fields = () => ({ assignment_id: assignment.id, template_revision_id: assignment.template_revision_id, supersedes_id: current.id, correction_reason: 'Guard still missing', results });
+  current = await correctInspection(people.inspector.client, org, fields(), randomUUID(), current.version);
+  expect((await getInspection(people.owner.client, org, assignment.id)).episodes).toHaveLength(1);
+  await command('owner', 'transition_work_order', { ctx: ctx(work.version), id: work.id, target: 'canceled', reason: 'Synthetic cancellation' });
+  current = await correctInspection(people.inspector.client, org, fields(), randomUUID(), current.version);
+  const detail = await getInspection(people.owner.client, org, assignment.id);
+  expect(detail.episodes).toHaveLength(2); expect(detail.episodes.find((e) => e.id !== prior.id)?.predecessor_id).toBe(prior.id);
+  expect(detail.holds.filter((h) => h.resolved_at === null)).toHaveLength(2);
+  expect(sql(`select status from public.work_orders where id='${work.id}';`)).toBe('canceled');
 });
