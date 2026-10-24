@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from '../../src/lib/database.types';
 import { saveAsset } from '../../src/app/commands';
-import { listMaintenancePlans, listMaintenanceRevisions, previewMaintenancePlan, saveMaintenancePlan } from '../../src/app/maintenance-client';
+import { listMaintenancePlans, listMaintenanceRevisions, listMaintenanceAgenda, listMaintenanceBacklog, previewMaintenancePlan, saveMaintenancePlan } from '../../src/app/maintenance-client';
 import type { MaintenanceFields } from '../../src/contracts/maintenance';
 import { enrollMfa } from './mfa';
 
@@ -17,6 +17,15 @@ function sql(statement: string) {
   const result = spawnSync('docker', ['exec', '-i', 'supabase_db_opspilot-t1', 'psql', '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-qAt'], { input: statement, encoding: 'utf8' });
   if (result.status !== 0) throw new Error('Isolated maintenance fixture SQL failed; raw output withheld');
   return result.stdout.trim();
+}
+function concurrentSql(statement: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('docker', ['exec', '-i', 'supabase_db_opspilot-t1', 'psql', '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-qAt'], { timeout: 20000 });
+    let output = ''; child.stdout.on('data', (chunk) => { output += chunk.toString(); });
+    child.stderr.resume(); child.on('error', reject);
+    child.on('close', (code) => code === 0 ? resolve(output.trim()) : reject(new Error('Concurrent isolated maintenance SQL failed; raw output withheld')));
+    child.stdin.end(statement);
+  });
 }
 function snapshot() {
   return sql(`select md5(string_agg(fact::text,'|' order by fact::text)) from (${[
@@ -44,6 +53,83 @@ beforeEach(async () => {
 });
 
 describe('real maintenance command/read boundaries', () => {
+  it('runs under the real native Cron owner while browser/service roles are denied; overlap and retries retain one job', async () => {
+    const plan = await saveMaintenancePlan(people.owner.client, org, fields, randomUUID());
+    expect((await people.owner.client.schema('public').rpc('generate_due_maintenance' as never)).error).not.toBeNull();
+    expect(sql("select has_function_privilege('service_role','private.generate_due_maintenance(timestamptz)','execute');")).toBe('f');
+    console.info('Native Cron authority', sql("select jsonb_build_object('pg_cron_version',e.extversion,'schedule_owner',p.proowner::regrole::text,'grantors',(select jsonb_agg(distinct a.grantor::regrole::text) from aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a),'service_schema_usage',has_schema_privilege('service_role','cron','usage')) from pg_extension e cross join pg_proc p where e.extname='pg_cron' and p.oid='cron.schedule(text,text,text)'::regprocedure;"));
+    const jobId = Number(sql("select jobid from cron.job where jobname='opspilot-maintenance' and username='postgres' and command='select private.generate_due_maintenance();';"));
+    expect(Number.isSafeInteger(jobId) && jobId > 0).toBe(true);
+    try {
+      sql(`select cron.alter_job(${jobId},schedule:='1 seconds',active:=true);`);
+      await expect.poll(() => sql(`select count(*) from public.maintenance_occurrences where plan_id='${plan.id}';`), { timeout: 12000, interval: 250 }).toBe('1');
+    } finally { sql(`select cron.alter_job(${jobId},schedule:='5 * * * *',active:=false);`); }
+    await expect.poll(() => sql(`select count(*) from cron.job_run_details where jobid=${jobId} and status='succeeded';`), { timeout: 5000, interval: 100 }).not.toBe('0');
+    await Promise.all([concurrentSql('select private.generate_due_maintenance();'), concurrentSql('select private.generate_due_maintenance();')]);
+    const agenda = await listMaintenanceAgenda(people.owner.client, org, { from_on: '2024-01-01', to_on: '2024-12-31' });
+    expect(agenda.items).toHaveLength(1); expect(agenda.items[0]).toMatchObject({ scheduled_local_date: '2024-01-31', due_at: '2024-02-01T05:00:00+00:00', work_status: 'scheduled', blocks_operation: false });
+    expect(sql(`select count(*) from public.notifications where source_id='${agenda.items[0].work_order_id}' and category='assignment';`)).toBe('1');
+    await expect(listMaintenanceAgenda(people.outsider.client, org, { from_on: '2024-01-01', to_on: '2024-12-31' })).rejects.toThrow('FORBIDDEN');
+  });
+  it('retains invalid-person backlog, then generates historic content under explicitly replaced current personnel', async () => {
+    const plan = await saveMaintenancePlan(people.owner.client, org, fields, randomUUID());
+    expect((await admin.auth.admin.updateUserById(people.tech.id, { ban_duration: '24h' })).error).toBeNull();
+    sql('select private.generate_due_maintenance();');
+    expect((await listMaintenanceBacklog(people.owner.client, org, plan.id)).generation_blocked).toBe('person_ineligible');
+    expect((await listMaintenanceRevisions(people.owner.client, org, plan.id)).items[0].segment.next_ordinal).toBe(0);
+    const revised = await saveMaintenancePlan(people.owner.client, org, { ...fields, id: plan.id, instructions: 'New content', supervisor_id: people.replacement.id, assignee_ids: [people.replacement.id] }, randomUUID(), plan.version);
+    sql('select private.generate_due_maintenance();');
+    const agenda = await listMaintenanceAgenda(people.owner.client, org, { from_on: '2024-01-01', to_on: '2024-12-31' });
+    expect(agenda.items[0]).toMatchObject({ revision_id: plan.current_revision_id, authorized_by: people.owner.id, supervisor_id: people.replacement.id, assignee_ids: [people.replacement.id] });
+    expect(revised.current_revision_id).not.toBe(plan.current_revision_id);
+    const result = await people.replacement.client.from('work_orders').select('*').eq('id', agenda.items[0].work_order_id).single();
+    expect(result.error).toBeNull(); expect(result.data).toMatchObject({ description: 'Original belt instructions', created_by: null, creation_actor_kind: 'system' });
+    const cursorBefore = (await listMaintenanceRevisions(people.owner.client, org, plan.id)).items[0].segment.next_ordinal;
+    sql(`update public.organization_members set active=false where organization_id='${org}' and user_id='${people.owner.id}'; select private.generate_due_maintenance();`);
+    expect(sql(`select generation_blocked from public.maintenance_plans where id='${plan.id}';`)).toBe('person_ineligible');
+    expect(sql(`select next_ordinal from public.maintenance_segments where revision_id='${plan.current_revision_id}';`)).toBe(String(cursorBefore));
+  });
+  it('serializes overlapping new generation and competing Start/release without an Operational blocking job', async () => {
+    const plan = await saveMaintenancePlan(people.owner.client, org, fields, randomUUID());
+    await Promise.all([concurrentSql('select private.generate_due_maintenance();'), concurrentSql('select private.generate_due_maintenance();')]);
+    expect(sql(`select count(*) from public.maintenance_occurrences where plan_id='${plan.id}';`)).toBe('1');
+    const agenda = await listMaintenanceAgenda(people.owner.client, org, { from_on: '2024-01-01', to_on: '2024-12-31' }); const id = agenda.items[0].work_order_id;
+    sql(`update public.assets set availability='operational' where id='${fields.asset_id}';`);
+    const version = Number(sql(`select version from public.assets where id='${fields.asset_id}';`));
+    const [start, release] = await Promise.all([
+      people.tech.client.rpc('transition_work_order', { ctx: ctx(1), id, target: 'in_progress' }),
+      people.replacement.client.rpc('release_asset', { ctx: ctx(version), asset_id: fields.asset_id, acknowledgment: 'Synthetic competing release' }),
+    ]);
+    expect(start.error).toBeNull(); expect([undefined, 'CONFLICT', 'INVALID_TRANSITION']).toContain(release.error?.message);
+    expect(sql(`select availability from public.assets where id='${fields.asset_id}';`)).toBe('under_maintenance');
+    expect(sql(`select count(*) from public.asset_holds where work_order_id='${id}' and released_at is null;`)).toBe('1');
+    expect(sql(`select blocks_operation from public.work_orders where id='${id}';`)).toBe('t');
+  });
+  it('makes assigned human Start blocking, retains ordinary performer/review gates and separately releases after completion', async () => {
+    const plan = await saveMaintenancePlan(people.owner.client, org, fields, randomUUID()); sql('select private.generate_due_maintenance();');
+    const agenda = await listMaintenanceAgenda(people.owner.client, org, { from_on: '2024-01-01', to_on: '2024-12-31' }); const id = agenda.items[0].work_order_id;
+    sql(`update public.assets set availability='operational' where id='${fields.asset_id}'; update public.organization_settings set evidence_required=false where organization_id='${org}';`);
+    const command = async (client: SupabaseClient<Database>, name: string, payload: Record<string, unknown>, version: number) => {
+      const result = await client.rpc(name as never, { ctx: ctx(version), id, ...payload } as never); expect(result.error).toBeNull(); return result.data as unknown as { data: { version: number } };
+    };
+    const rescheduled = await command(people.owner.client, 'schedule_work_order', { planned_on: '2026-11-01' }, 1);
+    expect(sql(`select availability from public.assets where id='${fields.asset_id}';`)).toBe('operational');
+    expect((await people.owner.client.rpc('update_work_order', { ctx: ctx(rescheduled.data.version), id, allowed_fields: { due_at: null } })).error?.message).toBe('VALIDATION');
+    const started = await command(people.tech.client, 'transition_work_order', { target: 'in_progress' }, rescheduled.data.version);
+    expect(sql(`select blocks_operation::text||':'||status from public.work_orders where id='${id}';`)).toBe('true:in_progress');
+    expect(sql(`select count(*) from public.asset_holds where work_order_id='${id}' and released_at is null;`)).toBe('1');
+    const declared = await command(people.tech.client, 'declare_work_order_performers', { user_ids: [people.tech.id] }, started.data.version);
+    const task = sql(`select id from public.work_order_tasks where work_order_id='${id}';`);
+    const checked = await command(people.tech.client, 'update_work_order', { allowed_fields: { task_id: task, task_completed: true } }, declared.data.version);
+    const submitted = await command(people.tech.client, 'submit_work_order', { acknowledgment: 'Synthetic work performed' }, checked.data.version);
+    expect((await people.tech.client.rpc('review_work_order', { ctx: ctx(submitted.data.version), id, decision: 'approved', reason: 'Self review denied' })).error?.message).toBe('FORBIDDEN');
+    await command(people.replacement.client, 'review_work_order', { decision: 'approved', reason: 'Independent synthetic review' }, submitted.data.version);
+    expect(sql(`select availability from public.assets where id='${fields.asset_id}';`)).toBe('pending_release');
+    const version = Number(sql(`select version from public.assets where id='${fields.asset_id}';`));
+    expect((await people.replacement.client.rpc('release_asset', { ctx: ctx(version), asset_id: fields.asset_id, acknowledgment: 'Separate release' })).error).toBeNull();
+    expect(sql(`select availability from public.assets where id='${fields.asset_id}';`)).toBe('operational');
+    expect(sql(`select count(*) from public.maintenance_occurrences where plan_id='${plan.id}';`)).toBe('1');
+  });
   it('previews, saves and revises without consuming protected dates; retries retain immutable history and receipts', async () => {
     const before = snapshot(); const preview = await previewMaintenancePlan(people.owner.client, org, fields);
     expect(preview.first_new).toEqual({ scheduled_local_date: '2024-01-31', timezone: 'America/New_York', due_at: '2024-02-01T05:00:00+00:00' });

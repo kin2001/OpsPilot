@@ -35,8 +35,11 @@ const requestSchema = z.strictObject({
 const workOrderSchema = z.strictObject({
   id: z.uuid(), organization_id: z.uuid(), number: z.number().int(), asset_id: z.uuid(), source_request_id: z.uuid().nullable(),
   title: z.string(), description: z.string(), category: z.string(), priority: z.string(), due_at: z.string().nullable(),
-  supervisor_id: z.uuid(), status: z.string(), blocks_operation: z.boolean(), created_by: z.uuid(), created_at: z.string(), version: z.number().int(),
-});
+  supervisor_id: z.uuid(), status: z.string(), blocks_operation: z.boolean(), created_by: z.uuid().nullable(), created_at: z.string(), version: z.number().int(),
+  creation_actor_kind: z.enum(['human', 'system']).optional(), pm_occurrence_id: z.uuid().nullable().optional(),
+}).refine((row) => row.creation_actor_kind === 'system'
+  ? row.created_by === null && row.pm_occurrence_id != null
+  : row.created_by !== null && row.pm_occurrence_id == null);
 const createWorkOrderFields = z.strictObject({
   title: z.string().trim().min(1).max(200), description: z.string().trim().min(1).max(4000), category: z.string().trim().min(1).max(100),
   priority: z.enum(['low', 'normal', 'high', 'critical']), critical_reason: z.string().trim().min(1).max(2000).optional(),

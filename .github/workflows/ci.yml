@@ -91,6 +91,10 @@ jobs:
             exit 1
           fi
           test -s .cache/database.types.ts
+          # The native-Cron integration scenario owns activation; other fixtures keep independent clocks.
+          docker exec -i supabase_db_opspilot-t1 psql -U postgres -d postgres -v ON_ERROR_STOP=1 -qAt <<'SQL'
+          select cron.alter_job(jobid,active:=false) from cron.job where jobname='opspilot-maintenance';
+          SQL
       - name: Retain only the synthetic generated schema contract
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

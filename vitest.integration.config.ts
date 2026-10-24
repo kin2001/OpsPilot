@@ -1,2 +1,3 @@
 import { defineConfig } from 'vitest/config';
-export default defineConfig({ test: { include: ['tests/integration/**/*.test.ts'], testTimeout: 30000, hookTimeout: 30000 } });
+// The native Cron scenario temporarily activates a database-wide executor.
+export default defineConfig({ test: { include: ['tests/integration/**/*.test.ts'], fileParallelism: false, testTimeout: 30000, hookTimeout: 30000 } });

@@ -79,6 +79,7 @@ sql(`update public.work_order_assignments set unassigned_at=now() where organiza
 assertOwned();
 execute('npm', ['exec', '--no', '--', 'supabase', 'migration', 'up', '--local', '--network-id', network]);
 assertOwned();
+sql("select cron.alter_job(jobid,active:=false) from cron.job where jobname='opspilot-maintenance';");
 assert.deepEqual((await caller.rpc('save_asset', assetArgs)).data, asset.data);
 const fresh = await caller.rpc('save_asset', { ...assetArgs, ctx: { ...ctx, request_id: randomUUID(), expected_version: 1 }, asset_id: asset.data.data.id, fields: { name: 'Edited after additive migration' } }); assert.equal(fresh.error, null);
 assert.deepEqual(Object.keys(fresh.data.data).sort(), Object.keys(asset.data.data).sort());
@@ -109,6 +110,7 @@ assert.equal(Object.hasOwn(legacyScheduled.data.data, 'planned_on'), false);
 assertOwned();
 execute('npm', ['exec', '--no', '--', 'supabase', 'migration', 'up', '--local', '--network-id', network]);
 assertOwned();
+sql("select cron.alter_job(jobid,active:=false) from cron.job where jobname='opspilot-maintenance';");
 assert.equal(sql(`select planned_on is null from public.work_orders where id='${legacyJob.data.data.id}';`).trim(), 't');
 const schedulingState = () => sql(`select md5(string_agg(fact::text,'|' order by fact::text)) from (${[
   'public.assets', 'public.work_orders', 'public.work_order_events', 'public.work_order_participants', 'public.asset_holds', 'public.notifications', 'public.audit_logs', 'private.command_receipts',
@@ -133,5 +135,13 @@ const revisions = await legacyCaller.rpc('list_maintenance_revisions', { organiz
 assert.equal(revisions.data.items[0].segment.next_ordinal, 0); assert.equal(revisions.data.items[0].revision.author_id, legacyActor);
 assert.deepEqual((await legacyCaller.rpc('transition_work_order', legacyArgs)).data, legacyScheduled.data);
 assert.equal(sql(`select count(*) from public.work_orders where organization_id='${legacyOrg}';`).trim(), '1');
+const generated = JSON.parse(sql("select private.generate_due_maintenance('2026-10-24 12:00Z');"));
+assert(generated.generated >= 1);
+const occurrence = JSON.parse(sql(`select to_jsonb(o) from public.maintenance_occurrences o where plan_id='${plan.data.data.id}';`));
+assert.equal(occurrence.scheduled_local_date, '2024-01-31');
+assert.equal(sql(`select creation_actor_kind||':'||(created_by is null)::text||':'||blocks_operation::text from public.work_orders where id='${occurrence.work_order_id}';`).trim(), 'system:true:false');
+assert.deepEqual((await legacyCaller.rpc('transition_work_order', legacyArgs)).data, legacyScheduled.data);
+assert.deepEqual((await legacyCaller.rpc('save_maintenance_plan', planArgs)).data, plan.data);
+assert.equal(sql(`select count(*) from public.maintenance_occurrences where plan_id='${plan.data.data.id}';`).trim(), '1');
 assertOwned();
 console.log(JSON.stringify({ populated_t1_upgrade: true, retained_receipt_replay: true, frozen_new_response: true, former_assignment_backfill: true, conservative_initial_history: true, genuine_legacy_schedule_replay: true, undated_schedule_denial_atomic: true, populated_plan_upgrade: true }));

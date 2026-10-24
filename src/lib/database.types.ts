@@ -137,14 +137,14 @@ isOneToOne: false
                   ]
                 },"audit_logs": {
                   Row: {
-                    "action": string,"actor_id": string,"changes": NonNullable<Json>,"created_at": string,"entity_id": string,"id": string,"organization_id": string | null,"request_id": string
+                    "action": string,"actor_id": string | null,"actor_kind": string,"changes": NonNullable<Json>,"created_at": string,"entity_id": string,"id": string,"organization_id": string | null,"request_id": string,"system_identity": string | null
                   }
                   ComputedFields: never
                   Insert: {
-                    "action": string,"actor_id": string,"changes": NonNullable<Json>,"created_at"?: string,"entity_id": string,"id"?: string,"organization_id"?: string | null,"request_id": string
+                    "action": string,"actor_id"?: string | null,"actor_kind"?: string,"changes": NonNullable<Json>,"created_at"?: string,"entity_id": string,"id"?: string,"organization_id"?: string | null,"request_id": string,"system_identity"?: string | null
                   }
                   Update: {
-                    "action"?: string,"actor_id"?: string,"changes"?: NonNullable<Json>,"created_at"?: string,"entity_id"?: string,"id"?: string,"organization_id"?: string | null,"request_id"?: string
+                    "action"?: string,"actor_id"?: string | null,"actor_kind"?: string,"changes"?: NonNullable<Json>,"created_at"?: string,"entity_id"?: string,"id"?: string,"organization_id"?: string | null,"request_id"?: string,"system_identity"?: string | null
                   }
                   Relationships: [
                     {
@@ -153,6 +153,32 @@ isOneToOne: false
 isOneToOne: false
       referencedRelation: "organizations"
       referencedColumns: ["id"]
+    }
+                  ]
+                },"maintenance_occurrences": {
+                  Row: {
+                    "assignee_ids": (string)[],"authorized_by": string,"due_at": string,"due_policy": string,"generated_at": string,"id": string,"organization_id": string,"plan_id": string,"revision_id": string,"scheduled_local_date": string,"supervisor_id": string,"timezone": string,"work_order_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "assignee_ids": (string)[],"authorized_by": string,"due_at": string,"due_policy"?: string,"generated_at"?: string,"id"?: string,"organization_id": string,"plan_id": string,"revision_id": string,"scheduled_local_date": string,"supervisor_id": string,"timezone": string,"work_order_id": string
+                  }
+                  Update: {
+                    "assignee_ids"?: (string)[],"authorized_by"?: string,"due_at"?: string,"due_policy"?: string,"generated_at"?: string,"id"?: string,"organization_id"?: string,"plan_id"?: string,"revision_id"?: string,"scheduled_local_date"?: string,"supervisor_id"?: string,"timezone"?: string,"work_order_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "maintenance_occurrences_organization_id_plan_id_revision_i_fkey"
+      columns: ["organization_id","plan_id","revision_id"]
+isOneToOne: false
+      referencedRelation: "maintenance_plan_revisions"
+      referencedColumns: ["organization_id","plan_id","id"]
+    },{
+      foreignKeyName: "maintenance_occurrences_organization_id_work_order_id_fkey"
+      columns: ["organization_id","work_order_id"]
+isOneToOne: true
+      referencedRelation: "work_orders"
+      referencedColumns: ["organization_id","id"]
     }
                   ]
                 },"maintenance_plan_revisions": {
@@ -553,14 +579,14 @@ isOneToOne: false
                   ]
                 },"work_orders": {
                   Row: {
-                    "asset_id": string,"blocks_operation": boolean,"category": string,"completed_at": string | null,"created_at": string,"created_by": string,"description": string,"due_at": string | null,"id": string,"number": number,"opened_at": string | null,"organization_id": string,"planned_on": string | null,"priority": string,"priority_reason": string | null,"repair_revision": number,"source_request_id": string | null,"status": string,"submitted_revision": number | null,"supervisor_id": string,"title": string,"version": number
+                    "asset_id": string,"blocks_operation": boolean,"category": string,"completed_at": string | null,"created_at": string,"created_by": string | null,"creation_actor_kind": string,"description": string,"due_at": string | null,"id": string,"number": number,"opened_at": string | null,"organization_id": string,"planned_on": string | null,"pm_occurrence_id": string | null,"priority": string,"priority_reason": string | null,"repair_revision": number,"source_request_id": string | null,"status": string,"submitted_revision": number | null,"supervisor_id": string,"title": string,"version": number
                   }
                   ComputedFields: never
                   Insert: {
-                    "asset_id": string,"blocks_operation"?: boolean,"category": string,"completed_at"?: string | null,"created_at"?: string,"created_by": string,"description": string,"due_at"?: string | null,"id"?: string,"number": number,"opened_at"?: string | null,"organization_id": string,"planned_on"?: string | null,"priority": string,"priority_reason"?: string | null,"repair_revision"?: number,"source_request_id"?: string | null,"status"?: string,"submitted_revision"?: number | null,"supervisor_id": string,"title": string,"version"?: number
+                    "asset_id": string,"blocks_operation"?: boolean,"category": string,"completed_at"?: string | null,"created_at"?: string,"created_by"?: string | null,"creation_actor_kind"?: string,"description": string,"due_at"?: string | null,"id"?: string,"number": number,"opened_at"?: string | null,"organization_id": string,"planned_on"?: string | null,"pm_occurrence_id"?: string | null,"priority": string,"priority_reason"?: string | null,"repair_revision"?: number,"source_request_id"?: string | null,"status"?: string,"submitted_revision"?: number | null,"supervisor_id": string,"title": string,"version"?: number
                   }
                   Update: {
-                    "asset_id"?: string,"blocks_operation"?: boolean,"category"?: string,"completed_at"?: string | null,"created_at"?: string,"created_by"?: string,"description"?: string,"due_at"?: string | null,"id"?: string,"number"?: number,"opened_at"?: string | null,"organization_id"?: string,"planned_on"?: string | null,"priority"?: string,"priority_reason"?: string | null,"repair_revision"?: number,"source_request_id"?: string | null,"status"?: string,"submitted_revision"?: number | null,"supervisor_id"?: string,"title"?: string,"version"?: number
+                    "asset_id"?: string,"blocks_operation"?: boolean,"category"?: string,"completed_at"?: string | null,"created_at"?: string,"created_by"?: string | null,"creation_actor_kind"?: string,"description"?: string,"due_at"?: string | null,"id"?: string,"number"?: number,"opened_at"?: string | null,"organization_id"?: string,"planned_on"?: string | null,"pm_occurrence_id"?: string | null,"priority"?: string,"priority_reason"?: string | null,"repair_revision"?: number,"source_request_id"?: string | null,"status"?: string,"submitted_revision"?: number | null,"supervisor_id"?: string,"title"?: string,"version"?: number
                   }
                   Relationships: [
                     {
@@ -575,6 +601,12 @@ isOneToOne: false
 isOneToOne: false
       referencedRelation: "organizations"
       referencedColumns: ["id"]
+    },{
+      foreignKeyName: "work_orders_organization_id_pm_occurrence_id_fkey"
+      columns: ["organization_id","pm_occurrence_id"]
+isOneToOne: false
+      referencedRelation: "maintenance_occurrences"
+      referencedColumns: ["organization_id","id"]
     },{
       foreignKeyName: "work_orders_organization_id_source_request_id_fkey"
       columns: ["organization_id","source_request_id"]
@@ -636,6 +668,12 @@ isOneToOne: true
                            },
 "get_team":
 { Args: { "organization_id": string }; Returns: Json
+                           },
+"list_maintenance_agenda":
+{ Args: { "cursor"?: Json,"from_on": string,"organization_id": string,"page_size"?: number,"to_on": string }; Returns: Json
+                           },
+"list_maintenance_backlog":
+{ Args: { "cursor"?: number,"organization_id": string,"page_size"?: number,"plan_id": string }; Returns: Json
                            },
 "list_maintenance_plans":
 { Args: { "cursor"?: string,"organization_id": string,"page_size"?: number }; Returns: Json

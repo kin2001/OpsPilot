@@ -250,8 +250,11 @@ const planFields = { asset_id: asset, title: 'Synthetic recovery plan', instruct
 const planArgs = { ctx: { organization_id: org, request_id: randomUUID() }, fields: planFields };
 const savedPlan = await owner.rpc('save_maintenance_plan', planArgs); assert.equal(savedPlan.error, null);
 const revisedPlan = await owner.rpc('save_maintenance_plan', { ctx: { organization_id: org, request_id: randomUUID(), expected_version: 1 }, fields: { ...planFields, id: savedPlan.data.data.id, instructions: 'Future recovery instructions' } }); assert.equal(revisedPlan.error, null);
+assert(JSON.parse(sql("select private.generate_due_maintenance('2026-10-24 12:00Z');")).generated >= 1);
+const occurrenceBefore = sql(`select to_jsonb(o) from public.maintenance_occurrences o where plan_id='${savedPlan.data.data.id}';`).trim();
+const generationJobBefore = sql(`select to_jsonb(w) from public.work_orders w join public.maintenance_occurrences o on o.organization_id=w.organization_id and o.work_order_id=w.id where o.plan_id='${savedPlan.data.data.id}';`).trim();
 const planHistory = await owner.rpc('list_maintenance_revisions', { organization_id: org, plan_id: savedPlan.data.data.id }); assert.equal(planHistory.error, null);
-assert.equal(planHistory.data.items.length, 2); assert.equal(planHistory.data.items[0].segment.next_ordinal, 0);
+assert.equal(planHistory.data.items.length, 2); assert.equal(planHistory.data.items[0].segment.next_ordinal, 1);
 const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jhGQAAAAASUVORK5CYII=', 'base64');
 const reserved = await owner.rpc('reserve_attachment', { ctx: { organization_id: org, request_id: randomUUID() }, id: job, name: 'restore.png', media_type: 'image/png', size: bytes.length }); assert.equal(reserved.error, null);
 const item = reserved.data.data;
@@ -260,7 +263,7 @@ const uploaded = await fetch(`${url}/functions/v1/attachment-upload?organization
 assert.equal((await revoked.storage.from('repair-evidence').download(item.object_key)).error, null);
 
 // Snapshot bytes, Auth, schema/data, receipts and non-secret source configuration. Nothing is written as a dump/artifact.
-const owners = () => sql("select md5(string_agg(n.nspname||'.'||c.relname||':'||c.relowner::text||':'||coalesce(c.relacl::text,''),'|' order by n.nspname,c.relname)) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname in ('public','auth','storage') and c.relkind in ('r','v','m','S');").trim();
+const owners = () => sql("select md5(string_agg(n.nspname||'.'||c.relname||':'||c.relowner::text||':'||coalesce(c.relacl::text,''),'|' order by n.nspname,c.relname)) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname in ('public','auth','storage','cron') and c.relkind in ('r','v','m','S');").trim();
 const permissions = () => canonicalPermissions(JSON.parse(sql(`
  SET search_path=pg_catalog;
  with objects as (
@@ -278,7 +281,7 @@ const permissions = () => canonicalPermissions(JSON.parse(sql(`
  select coalesce(jsonb_agg(jsonb_build_object('schema',o.schema,'name',o.name,'kind',o.kind,'owner',o.owner,
  'grants',(select coalesce(jsonb_agg(tuple order by tuple),'[]'::jsonb) from (select distinct jsonb_build_array(a.grantor,a.grantee,a.privilege_type,a.is_grantable) tuple from aclexplode(coalesce(o.acl,acldefault(o.default_kind,o.owner))) a) grants)
  ) order by o.schema,o.name,o.kind),'[]'::jsonb)
- from objects o where o.schema in ('public','private','auth','storage');
+ from objects o where o.schema in ('public','private','auth','storage','cron');
  `)));
 const defaultPermissions = () => canonicalPermissions(JSON.parse(sql(`
  select coalesce(jsonb_agg(jsonb_build_object('schema',coalesce(n.nspname,'global'),'name',d.defaclrole::text,'kind',d.defaclobjtype,'owner',d.defaclrole,
@@ -369,6 +372,12 @@ assert.deepEqual((await owner.rpc('list_maintenance_revisions', { organization_i
 assert.equal((await fresh.from('maintenance_plans').select('id').limit(1)).error?.code, '42501');
 assert.equal((await admin.from('maintenance_plans').select('id').limit(1)).error?.code, '42501');
 assert.equal(sql(`select private.maintenance_current_people_eligible('${org}','${savedPlan.data.data.id}');`).trim(), 'f');
+assert.equal(sql(`select to_jsonb(o) from public.maintenance_occurrences o where plan_id='${savedPlan.data.data.id}';`).trim(), occurrenceBefore);
+assert.equal(sql(`select to_jsonb(w) from public.work_orders w join public.maintenance_occurrences o on o.organization_id=w.organization_id and o.work_order_id=w.id where o.plan_id='${savedPlan.data.data.id}';`).trim(), generationJobBefore);
+sql("select private.generate_due_maintenance('2026-10-24 12:00Z');");
+assert.equal(sql(`select count(*) from public.maintenance_occurrences where plan_id='${savedPlan.data.data.id}';`).trim(), '1');
+assert.equal(sql(`select generation_blocked from public.maintenance_plans where id='${savedPlan.data.data.id}';`).trim(), 'person_ineligible');
+assert.equal(sql(`select next_ordinal from public.maintenance_segments where revision_id='${JSON.parse(occurrenceBefore).revision_id}';`).trim(), '1');
 assert.equal((await revoked.rpc('list_maintenance_revisions', { organization_id: org, plan_id: savedPlan.data.data.id })).error?.message, 'FORBIDDEN');
 assert.equal((await owner.from('assets').select('name').eq('id', asset).single()).data.name, fields.name);
 assert.equal((await admin.auth.admin.getUserById(people[0].id)).data.user.email, people[0].email);

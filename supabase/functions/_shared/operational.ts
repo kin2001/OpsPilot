@@ -22,9 +22,12 @@ export const operationalWorkOrder = z.strictObject({
   id: z.uuid(), organization_id: z.uuid(), number: z.int(), asset_id: z.uuid(), source_request_id: z.uuid().nullable(),
   title: z.string(), description: z.string(), category: z.string(), priority: z.enum(['low', 'normal', 'high', 'critical']),
   due_at: z.string().nullable(), planned_on: z.iso.date().nullable().optional(), supervisor_id: z.uuid(), status: z.enum(['draft', 'open', 'scheduled', 'in_progress', 'blocked', 'awaiting_review', 'completed', 'canceled']),
-  blocks_operation: z.boolean(), created_by: z.uuid(), created_at: z.string(), version: z.int().positive(),
+  blocks_operation: z.boolean(), created_by: z.uuid().nullable(), created_at: z.string(), version: z.int().positive(),
+  creation_actor_kind: z.enum(['human', 'system']).optional(), pm_occurrence_id: z.uuid().nullable().optional(),
   repair_revision: z.int().positive(), submitted_revision: z.int().positive().nullable(), opened_at: z.string().nullable(), completed_at: z.string().nullable(), priority_reason: z.string().nullable(),
-});
+}).refine((row) => row.creation_actor_kind === 'system'
+  ? row.created_by === null && row.pm_occurrence_id != null
+  : row.created_by !== null && row.pm_occurrence_id == null);
 export const attachmentRecord = z.strictObject({
   id: z.uuid(), organization_id: z.uuid(), work_order_id: z.uuid().nullable(), asset_id: z.uuid().nullable(), request_id: z.uuid().nullable(), object_key: z.string(), name: z.string(), media_type: imageMetadata.shape.media_type,
   size: z.int().positive(), uploader_id: z.uuid(), status: z.enum(['pending', 'ready', 'rejected']), checksum: z.string().nullable(),
