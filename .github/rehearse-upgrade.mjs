@@ -122,5 +122,16 @@ const replayAfterReopen = await legacyCaller.rpc('transition_work_order', legacy
 assert.deepEqual(replayAfterReopen.data, legacyScheduled.data); assert.equal(schedulingState(), beforeUndated);
 const undated = await legacyCaller.rpc('transition_work_order', { ...legacyArgs, ctx: legacyCtx(reopened.data.version) });
 assert.equal(undated.error?.message, 'VALIDATION'); assert.equal(schedulingState(), beforeUndated);
+// The populated pre-PM upgrade also exposes the bounded plan API without rewriting old work or receipts.
+const planFields = { asset_id: legacyAsset.data.data.id, title: 'Synthetic upgraded plan', instructions: 'Preserved plan instructions', category: 'routine', cadence: 'month', frequency: 1, anchor_on: '2024-01-31', supervisor_id: legacyActor, assignee_ids: [legacyActor], checklist: ['Inspect belt'], status: 'active' };
+const preview = await legacyCaller.rpc('preview_maintenance_plan', { organization_id: legacyOrg, fields: planFields }); assert.equal(preview.error, null);
+assert.equal(preview.data.first_new.scheduled_local_date, '2024-01-31'); assert.equal(schedulingState(), beforeUndated);
+const planArgs = { ctx: legacyCtx(), fields: planFields };
+const plan = await legacyCaller.rpc('save_maintenance_plan', planArgs); assert.equal(plan.error, null);
+assert.deepEqual((await legacyCaller.rpc('save_maintenance_plan', planArgs)).data, plan.data);
+const revisions = await legacyCaller.rpc('list_maintenance_revisions', { organization_id: legacyOrg, plan_id: plan.data.data.id, page_size: 1 }); assert.equal(revisions.error, null);
+assert.equal(revisions.data.items[0].segment.next_ordinal, 0); assert.equal(revisions.data.items[0].revision.author_id, legacyActor);
+assert.deepEqual((await legacyCaller.rpc('transition_work_order', legacyArgs)).data, legacyScheduled.data);
+assert.equal(sql(`select count(*) from public.work_orders where organization_id='${legacyOrg}';`).trim(), '1');
 assertOwned();
-console.log(JSON.stringify({ populated_t1_upgrade: true, retained_receipt_replay: true, frozen_new_response: true, former_assignment_backfill: true, conservative_initial_history: true, genuine_legacy_schedule_replay: true, undated_schedule_denial_atomic: true }));
+console.log(JSON.stringify({ populated_t1_upgrade: true, retained_receipt_replay: true, frozen_new_response: true, former_assignment_backfill: true, conservative_initial_history: true, genuine_legacy_schedule_replay: true, undated_schedule_denial_atomic: true, populated_plan_upgrade: true }));

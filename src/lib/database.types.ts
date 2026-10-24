@@ -511,6 +511,18 @@ isOneToOne: true
             [_ in never]: never
           }
           Functions: {
+"list_maintenance_plans":
+{ Args: { "organization_id": string,"cursor"?: string,"page_size"?: number }; Returns: Json
+                           },
+"list_maintenance_revisions":
+{ Args: { "organization_id": string,"plan_id": string,"cursor"?: number,"page_size"?: number }; Returns: Json
+                           },
+"preview_maintenance_plan":
+{ Args: { "organization_id": string,"fields": Json }; Returns: Json
+                           },
+"save_maintenance_plan":
+{ Args: { "ctx": Json,"fields": Json }; Returns: Json
+                           },
             "accept_organization_invitation":
 { Args: { "request_id": string,"token": string }; Returns: Json
                            },
