@@ -119,11 +119,12 @@ it('racing release and a fresh safety failure cannot leave Operational in either
     }
     const fail = `select set_config('request.jwt.claim.sub','${people.inspector.id}',true); select public.submit_inspection('${JSON.stringify(ctx())}'::jsonb,'${a.id}','${a.template_revision_id}','${JSON.stringify([{ item_id: item, outcome: 'fail', remarks: 'Fresh unsafe condition', evidence_ids: [] }])}'::jsonb);`;
     const release = `select set_config('request.jwt.claim.sub','${people.reviewer.id}',true); select set_config('request.jwt.claims','{"aal":"aal2"}',true); do $guard$ begin perform public.release_asset('${JSON.stringify(ctx(await version()))}'::jsonb,'${asset}','Synthetic release race'); exception when others then if SQLERRM not in ('CONFLICT','INVALID_TRANSITION') then raise; end if; end $guard$;`;
-    const leading = concurrentSql(`begin; select 1 from public.organizations where id='${org}' for update; select pg_advisory_xact_lock(320032); select pg_sleep(2); ${first === 'failure' ? fail : release} commit;`);
+    const leading = concurrentSql(`begin; select 1 from public.organizations where id='${org}' for update; select pg_advisory_xact_lock(320032); select pg_sleep(3); ${first === 'failure' ? fail : release} commit;`);
     // Observe the held advisory marker before issuing the waiter; no timing-only race assertion.
     await expect.poll(() => sql("select exists(select 1 from pg_locks where locktype='advisory' and objid=320032 and granted);"), { timeout: 5000, interval: 30 }).toBe('t');
-    const waiting = concurrentSql(`begin; ${first === 'failure' ? release : fail} commit;`);
-    await expect.poll(() => sql("select exists(select 1 from pg_stat_activity where wait_event_type='Lock' and query like 'begin;%' and query not like '%pg_sleep%');"), { timeout: 5000, interval: 30 }).toBe('t');
+    const waiterName = `por32-${org}-${first}`;
+    const waiting = concurrentSql(`set application_name='${waiterName}'; begin; ${first === 'failure' ? release : fail} commit;`);
+    await expect.poll(() => sql(`select exists(select 1 from pg_stat_activity where application_name='${waiterName}' and wait_event_type='Lock' and cardinality(pg_blocking_pids(pid))>0);`), { timeout: 5000, interval: 30 }).toBe('t');
     await Promise.all([leading, waiting]);
     expect(sql(`select availability from public.assets where id='${asset}';`)).toBe('out_of_service');
   }

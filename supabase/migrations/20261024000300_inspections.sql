@@ -192,6 +192,12 @@ create function public.reserve_inspection_attachment(ctx jsonb,assignment_id uui
 
 -- Keep the existing validation and service-only finalization authority for all legacy parents.
 alter function public.finalize_attachment(uuid,uuid,uuid,text,integer,integer) rename to finalize_attachment_pre_inspections;
+do $$ declare definition text; begin
+ definition:=pg_get_functiondef('public.finalize_attachment_pre_inspections(uuid,uuid,uuid,text,integer,integer)'::regprocedure);
+ if position('checksum=finalize_attachment.checksum,width=finalize_attachment.width,height=finalize_attachment.height' in definition)=0 then raise exception 'Expected legacy attachment parameter qualifiers'; end if;
+ -- Renaming a PL/pgSQL function changes its implicit parameter block label.
+ execute replace(definition,'finalize_attachment.','finalize_attachment_pre_inspections.');
+end $$;
 create function public.finalize_attachment(organization_id uuid,attachment_id uuid,actor_id uuid,checksum text,width integer,height integer) returns jsonb
 language plpgsql security definer set search_path='' set lock_timeout='5s' set statement_timeout='15s' as $$
 #variable_conflict use_variable

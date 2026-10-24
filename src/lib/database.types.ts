@@ -105,14 +105,14 @@ isOneToOne: false
                   ]
                 },"attachments": {
                   Row: {
-                    "asset_id": string | null,"checksum": string | null,"cleanup_completed_at": string | null,"created_at": string,"height": number | null,"id": string,"media_type": string,"name": string,"object_key": string,"organization_id": string,"ready_at": string | null,"request_id": string | null,"size": number,"status": string,"uploader_id": string,"width": number | null,"work_order_id": string | null
+                    "asset_id": string | null,"checksum": string | null,"cleanup_completed_at": string | null,"created_at": string,"height": number | null,"id": string,"inspection_assignment_id": string | null,"media_type": string,"name": string,"object_key": string,"organization_id": string,"ready_at": string | null,"request_id": string | null,"size": number,"status": string,"uploader_id": string,"width": number | null,"work_order_id": string | null
                   }
                   ComputedFields: never
                   Insert: {
-                    "asset_id"?: string | null,"checksum"?: string | null,"cleanup_completed_at"?: string | null,"created_at"?: string,"height"?: number | null,"id"?: string,"media_type": string,"name": string,"object_key": string,"organization_id": string,"ready_at"?: string | null,"request_id"?: string | null,"size": number,"status"?: string,"uploader_id": string,"width"?: number | null,"work_order_id"?: string | null
+                    "asset_id"?: string | null,"checksum"?: string | null,"cleanup_completed_at"?: string | null,"created_at"?: string,"height"?: number | null,"id"?: string,"inspection_assignment_id"?: string | null,"media_type": string,"name": string,"object_key": string,"organization_id": string,"ready_at"?: string | null,"request_id"?: string | null,"size": number,"status"?: string,"uploader_id": string,"width"?: number | null,"work_order_id"?: string | null
                   }
                   Update: {
-                    "asset_id"?: string | null,"checksum"?: string | null,"cleanup_completed_at"?: string | null,"created_at"?: string,"height"?: number | null,"id"?: string,"media_type"?: string,"name"?: string,"object_key"?: string,"organization_id"?: string,"ready_at"?: string | null,"request_id"?: string | null,"size"?: number,"status"?: string,"uploader_id"?: string,"width"?: number | null,"work_order_id"?: string | null
+                    "asset_id"?: string | null,"checksum"?: string | null,"cleanup_completed_at"?: string | null,"created_at"?: string,"height"?: number | null,"id"?: string,"inspection_assignment_id"?: string | null,"media_type"?: string,"name"?: string,"object_key"?: string,"organization_id"?: string,"ready_at"?: string | null,"request_id"?: string | null,"size"?: number,"status"?: string,"uploader_id"?: string,"width"?: number | null,"work_order_id"?: string | null
                   }
                   Relationships: [
                     {
@@ -120,6 +120,12 @@ isOneToOne: false
       columns: ["organization_id","asset_id"]
 isOneToOne: false
       referencedRelation: "assets"
+      referencedColumns: ["organization_id","id"]
+    },{
+      foreignKeyName: "attachments_organization_id_inspection_assignment_id_fkey"
+      columns: ["organization_id","inspection_assignment_id"]
+isOneToOne: false
+      referencedRelation: "inspection_assignments"
       referencedColumns: ["organization_id","id"]
     },{
       foreignKeyName: "attachments_organization_id_request_id_fkey"
@@ -149,6 +155,154 @@ isOneToOne: false
                   Relationships: [
                     {
       foreignKeyName: "audit_logs_organization_id_fkey"
+      columns: ["organization_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
+    }
+                  ]
+                },"inspection_assignments": {
+                  Row: {
+                    "asset_id": string,"assigned_at": string,"assigned_by": string,"due_on": string | null,"id": string,"inspector_id": string,"organization_id": string,"template_revision_id": string,"version": number
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "asset_id": string,"assigned_at"?: string,"assigned_by": string,"due_on"?: string | null,"id"?: string,"inspector_id": string,"organization_id": string,"template_revision_id": string,"version"?: number
+                  }
+                  Update: {
+                    "asset_id"?: string,"assigned_at"?: string,"assigned_by"?: string,"due_on"?: string | null,"id"?: string,"inspector_id"?: string,"organization_id"?: string,"template_revision_id"?: string,"version"?: number
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "inspection_assignments_organization_id_asset_id_fkey"
+      columns: ["organization_id","asset_id"]
+isOneToOne: false
+      referencedRelation: "assets"
+      referencedColumns: ["organization_id","id"]
+    },{
+      foreignKeyName: "inspection_assignments_organization_id_inspector_id_fkey"
+      columns: ["organization_id","inspector_id"]
+isOneToOne: false
+      referencedRelation: "organization_members"
+      referencedColumns: ["organization_id","user_id"]
+    },{
+      foreignKeyName: "inspection_assignments_organization_id_template_revision_i_fkey"
+      columns: ["organization_id","template_revision_id"]
+isOneToOne: false
+      referencedRelation: "inspection_template_revisions"
+      referencedColumns: ["organization_id","id"]
+    }
+                  ]
+                },"inspection_failure_episodes": {
+                  Row: {
+                    "assignment_id": string,"corrective_request_id": string,"created_at": string,"hold_id": string | null,"id": string,"item_id": string,"organization_id": string,"predecessor_id": string | null,"submission_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "assignment_id": string,"corrective_request_id": string,"created_at"?: string,"hold_id"?: string | null,"id"?: string,"item_id": string,"organization_id": string,"predecessor_id"?: string | null,"submission_id": string
+                  }
+                  Update: {
+                    "assignment_id"?: string,"corrective_request_id"?: string,"created_at"?: string,"hold_id"?: string | null,"id"?: string,"item_id"?: string,"organization_id"?: string,"predecessor_id"?: string | null,"submission_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "inspection_failure_episodes_organization_id_assignment_id_fkey"
+      columns: ["organization_id","assignment_id"]
+isOneToOne: false
+      referencedRelation: "inspection_assignments"
+      referencedColumns: ["organization_id","id"]
+    },{
+      foreignKeyName: "inspection_failure_episodes_organization_id_corrective_req_fkey"
+      columns: ["organization_id","corrective_request_id"]
+isOneToOne: true
+      referencedRelation: "maintenance_requests"
+      referencedColumns: ["organization_id","id"]
+    },{
+      foreignKeyName: "inspection_failure_episodes_organization_id_hold_id_fkey"
+      columns: ["organization_id","hold_id"]
+isOneToOne: true
+      referencedRelation: "asset_holds"
+      referencedColumns: ["organization_id","id"]
+    },{
+      foreignKeyName: "inspection_failure_episodes_organization_id_predecessor_id_fkey"
+      columns: ["organization_id","predecessor_id"]
+isOneToOne: false
+      referencedRelation: "inspection_failure_episodes"
+      referencedColumns: ["organization_id","id"]
+    },{
+      foreignKeyName: "inspection_failure_episodes_organization_id_submission_id_fkey"
+      columns: ["organization_id","submission_id"]
+isOneToOne: false
+      referencedRelation: "inspection_submissions"
+      referencedColumns: ["organization_id","id"]
+    }
+                  ]
+                },"inspection_submissions": {
+                  Row: {
+                    "assignment_id": string,"id": string,"inspector_id": string,"organization_id": string,"results": NonNullable<Json>,"submitted_at": string,"template_revision_id": string,"version": number
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "assignment_id": string,"id"?: string,"inspector_id": string,"organization_id": string,"results": NonNullable<Json>,"submitted_at"?: string,"template_revision_id": string,"version"?: number
+                  }
+                  Update: {
+                    "assignment_id"?: string,"id"?: string,"inspector_id"?: string,"organization_id"?: string,"results"?: NonNullable<Json>,"submitted_at"?: string,"template_revision_id"?: string,"version"?: number
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "inspection_submissions_organization_id_assignment_id_fkey"
+      columns: ["organization_id","assignment_id"]
+isOneToOne: true
+      referencedRelation: "inspection_assignments"
+      referencedColumns: ["organization_id","id"]
+    },{
+      foreignKeyName: "inspection_submissions_organization_id_template_revision_i_fkey"
+      columns: ["organization_id","template_revision_id"]
+isOneToOne: false
+      referencedRelation: "inspection_template_revisions"
+      referencedColumns: ["organization_id","id"]
+    }
+                  ]
+                },"inspection_template_revisions": {
+                  Row: {
+                    "id": string,"items": NonNullable<Json>,"organization_id": string,"published_at": string,"published_by": string,"revision": number,"template_id": string,"title": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "id"?: string,"items": NonNullable<Json>,"organization_id": string,"published_at"?: string,"published_by": string,"revision": number,"template_id": string,"title": string
+                  }
+                  Update: {
+                    "id"?: string,"items"?: NonNullable<Json>,"organization_id"?: string,"published_at"?: string,"published_by"?: string,"revision"?: number,"template_id"?: string,"title"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "inspection_template_revisions_organization_id_template_id_fkey"
+      columns: ["organization_id","template_id"]
+isOneToOne: false
+      referencedRelation: "inspection_templates"
+      referencedColumns: ["organization_id","id"]
+    }
+                  ]
+                },"inspection_templates": {
+                  Row: {
+                    "created_at": string,"created_by": string,"current_revision_id": string,"id": string,"organization_id": string,"title": string,"version": number
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "created_at"?: string,"created_by": string,"current_revision_id": string,"id"?: string,"organization_id": string,"title": string,"version"?: number
+                  }
+                  Update: {
+                    "created_at"?: string,"created_by"?: string,"current_revision_id"?: string,"id"?: string,"organization_id"?: string,"title"?: string,"version"?: number
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "inspection_templates_organization_id_current_revision_id_fkey"
+      columns: ["organization_id","current_revision_id"]
+isOneToOne: false
+      referencedRelation: "inspection_template_revisions"
+      referencedColumns: ["organization_id","id"]
+    },{
+      foreignKeyName: "inspection_templates_organization_id_fkey"
       columns: ["organization_id"]
 isOneToOne: false
       referencedRelation: "organizations"
@@ -621,19 +775,14 @@ isOneToOne: true
             [_ in never]: never
           }
           Functions: {
-            "publish_inspection_template": { Args: { "ctx": Json,"fields": Json }; Returns: Json },
-            "assign_inspection": { Args: { "ctx": Json,"asset_id": string,"template_revision_id": string,"inspector_id": string,"due_on"?: string }; Returns: Json },
-            "submit_inspection": { Args: { "ctx": Json,"assignment_id": string,"template_revision_id": string,"results": Json }; Returns: Json },
-            "reserve_inspection_attachment": { Args: { "ctx": Json,"assignment_id": string,"name": string,"media_type": string,"size": number }; Returns: Json },
-            "list_inspection_templates": { Args: { "organization_id": string,"cursor"?: string,"page_size"?: number }; Returns: Json },
-            "list_inspection_revisions": { Args: { "organization_id": string,"template_id": string,"cursor"?: number,"page_size"?: number }; Returns: Json },
-            "list_inspection_assignments": { Args: { "organization_id": string,"cursor"?: string,"page_size"?: number }; Returns: Json },
-            "get_inspection": { Args: { "organization_id": string,"assignment_id": string }; Returns: Json },
             "accept_organization_invitation":
 { Args: { "request_id": string,"token": string }; Returns: Json
                            },
 "add_work_order_task":
 { Args: { "ctx": Json,"id": string,"label": string,"required"?: boolean }; Returns: Json
+                           },
+"assign_inspection":
+{ Args: { "asset_id": string,"ctx": Json,"due_on"?: string,"inspector_id": string,"template_revision_id": string }; Returns: Json
                            },
 "assign_work_order":
 { Args: { "ctx": Json,"id": string,"user_ids": (string)[] }; Returns: Json
@@ -668,14 +817,29 @@ isOneToOne: true
 "finalize_attachment":
 { Args: { "actor_id": string,"attachment_id": string,"checksum": string,"height": number,"organization_id": string,"width": number }; Returns: Json
                            },
+"finalize_attachment_pre_inspections":
+{ Args: { "actor_id": string,"attachment_id": string,"checksum": string,"height": number,"organization_id": string,"width": number }; Returns: Json
+                           },
 "get_asset_history":
 { Args: { "asset_id": string,"cursor"?: Json,"organization_id": string }; Returns: Json
                            },
 "get_dashboard":
 { Args: { "organization_id": string,"range": Json }; Returns: Json
                            },
+"get_inspection":
+{ Args: { "assignment_id": string,"organization_id": string }; Returns: Json
+                           },
 "get_team":
 { Args: { "organization_id": string }; Returns: Json
+                           },
+"list_inspection_assignments":
+{ Args: { "cursor"?: string,"organization_id": string,"page_size"?: number }; Returns: Json
+                           },
+"list_inspection_revisions":
+{ Args: { "cursor"?: number,"organization_id": string,"page_size"?: number,"template_id": string }; Returns: Json
+                           },
+"list_inspection_templates":
+{ Args: { "cursor"?: string,"organization_id": string,"page_size"?: number }; Returns: Json
                            },
 "list_maintenance_agenda":
 { Args: { "cursor"?: Json,"from_on": string,"organization_id": string,"page_size"?: number,"to_on": string }; Returns: Json
@@ -700,6 +864,9 @@ isOneToOne: true
 "preview_maintenance_plan":
 { Args: { "fields": Json,"organization_id": string }; Returns: Json
                            },
+"publish_inspection_template":
+{ Args: { "ctx": Json,"fields": Json }; Returns: Json
+                           },
 "record_meter_reading":
 { Args: { "asset_id": string,"ctx": Json,"kind": string,"observed_at": string,"value": number }; Returns: Json
                            },
@@ -708,6 +875,9 @@ isOneToOne: true
                            },
 "reserve_attachment":
 { Args: { "ctx": Json,"id": string,"media_type": string,"name": string,"size": number }; Returns: Json
+                           },
+"reserve_inspection_attachment":
+{ Args: { "assignment_id": string,"ctx": Json,"media_type": string,"name": string,"size": number }; Returns: Json
                            },
 "reserve_record_attachment":
 { Args: { "ctx": Json,"media_type": string,"name": string,"parent_id": string,"parent_type": string,"size": number }; Returns: Json
@@ -741,6 +911,9 @@ isOneToOne: true
                            },
 "set_organization_member":
 { Args: { "active": boolean,"ctx": Json,"role": string,"user_id": string }; Returns: Json
+                           },
+"submit_inspection":
+{ Args: { "assignment_id": string,"ctx": Json,"results": Json,"template_revision_id": string }; Returns: Json
                            },
 "submit_request":
 { Args: { "ctx": Json,"id": string }; Returns: Json
