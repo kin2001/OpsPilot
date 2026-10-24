@@ -281,6 +281,9 @@ const recoveryLocation = await owner.rpc('save_stock_location', { ctx: { organiz
 const stockArgs = { ctx: { organization_id: org, request_id: randomUUID() }, fields: { part_id: recoveryPart.data.data.id, location_id: recoveryLocation.data.data.id, quantity: '0.100', unit: 'kg' } };
 const stockReceived = await owner.rpc('receive_stock', stockArgs); assert.equal(stockReceived.error, null);
 assert.equal((await owner.rpc('receive_stock', { ctx: { organization_id: org, request_id: randomUUID() }, fields: { ...stockArgs.fields, quantity: '0.200' } })).error, null);
+const stockArchiveArgs = { ctx: { organization_id: org, request_id: randomUUID(), expected_version: 1 }, fields: { id: recoveryPart.data.data.id, code: 'REC35', name: 'Synthetic recovery stock', unit: 'kg', reorder_threshold: '0.100', archived: true } };
+const archivedStock = await owner.rpc('save_part', stockArchiveArgs); assert.equal(archivedStock.error, null); assert(archivedStock.data.data.archived_at);
+const catalogBefore = await owner.rpc('list_inventory_parts', { organization_id: org }); assert.equal(catalogBefore.error, null);
 const stockBefore = await owner.rpc('list_inventory_balances', { organization_id: org }); assert.equal(stockBefore.error, null);
 const ledgerBefore = await owner.rpc('list_inventory_movements', { organization_id: org }); assert.equal(ledgerBefore.error, null);
 assert.equal(stockBefore.data.items[0].on_hand, '0.300'); assert.equal(stockBefore.data.items[0].available, '0.300');
@@ -395,6 +398,9 @@ assert.deepEqual((await owner.rpc('save_maintenance_plan', planArgs)).data, save
 assert.deepEqual((await owner.rpc('submit_inspection', inspectionArgs)).data, inspectionSubmitted.data);
 assert.deepEqual((await owner.rpc('correct_inspection', correctionArgs)).data, correctedInspection.data);
 assert.deepEqual((await owner.rpc('receive_stock', stockArgs)).data, stockReceived.data);
+assert.deepEqual((await owner.rpc('save_part', stockArchiveArgs)).data, archivedStock.data);
+assert.deepEqual((await owner.rpc('list_inventory_parts', { organization_id: org })).data, catalogBefore.data);
+assert.equal((await owner.rpc('receive_stock', { ...stockArgs, ctx: { organization_id: org, request_id: randomUUID() } })).error?.message, 'INVALID_TRANSITION');
 assert.deepEqual((await owner.rpc('list_inventory_balances', { organization_id: org })).data, stockBefore.data);
 assert.deepEqual((await owner.rpc('list_inventory_movements', { organization_id: org })).data, ledgerBefore.data);
 assert.equal((await owner.rpc('receive_stock', { ...stockArgs, fields: { ...stockArgs.fields, quantity: '0.101' } })).error?.message, 'CONFLICT');

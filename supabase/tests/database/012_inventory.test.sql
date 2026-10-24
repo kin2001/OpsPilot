@@ -67,6 +67,22 @@ select is(jsonb_array_length(public.list_inventory_movements('10000035-0000-4000
 select ok(public.list_inventory_movements('10000035-0000-4000-8000-000000000001',null,1)->>'next_cursor' is not null,'More movement rows have a cursor');
 select throws_ok($$select public.list_inventory_parts('10000035-0000-4000-8000-000000000001',null,101)$$,'P0001','VALIDATION','Oversize page denied');
 select throws_ok($$select public.list_inventory_movements('10000035-0000-4000-8000-000000000001',null,null)$$,'P0001','VALIDATION','Null page denied');
+create temp table archived as select public.save_part(pg_temp.ctx(2),jsonb_build_object('id',(select result#>>'{data,id}' from part),'code','KG','name','Lubricant','unit','kg','reorder_threshold',null,'archived',true)) result;
+select throws_ok($$select public.save_part(pg_temp.ctx(3),jsonb_build_object('id',(select result#>>'{data,id}' from part),'code','KG','name','Lubricant','unit','kg','reorder_threshold',null,'archived','true'))$$,'P0001','VALIDATION','Archive intent must be a JSON boolean');
+select ok((select result#>>'{data,archived_at}' from archived) is not null,'Archival records a server timestamp');
+select is(public.list_inventory_parts('10000035-0000-4000-8000-000000000001')->'items'->0->>'archived_at',(select result#>>'{data,archived_at}' from archived),'Archived catalog state remains readable');
+create temp table archive_before as select (select count(*) from private.command_receipts where organization_id='10000035-0000-4000-8000-000000000001') receipts,(select count(*) from public.inventory_movements where organization_id='10000035-0000-4000-8000-000000000001') movements,(select on_hand from public.inventory_balances where organization_id='10000035-0000-4000-8000-000000000001') on_hand;
+select throws_ok($$select public.receive_stock(pg_temp.ctx(),pg_temp.fields())$$,'P0001','INVALID_TRANSITION','Archived part denies fresh receipt');
+select is((select count(*) from private.command_receipts where organization_id='10000035-0000-4000-8000-000000000001'),(select receipts from archive_before),'Rejected archived receipt writes no durable receipt');
+select is((select count(*) from public.inventory_movements where organization_id='10000035-0000-4000-8000-000000000001'),(select movements from archive_before),'Rejected archived receipt retains all movement history');
+select is((select on_hand from public.inventory_balances where organization_id='10000035-0000-4000-8000-000000000001'),(select on_hand from archive_before),'Rejected archived receipt leaves stock unchanged');
+select is((select public.receive_stock(ctx,fields) from received),(select result from received),'Archived part preserves authorized original receipt replay');
+select throws_ok($$select public.save_part(pg_temp.ctx(2),jsonb_build_object('id',(select result#>>'{data,id}' from part),'code','KG','name','Lubricant','unit','kg','reorder_threshold',null,'archived',false))$$,'P0001','CONFLICT','Stale archive update denied');
+select throws_ok($$select public.save_part(pg_temp.ctx(3),jsonb_build_object('id',(select result#>>'{data,id}' from part),'code','KG','name','Lubricant','unit','litre','reorder_threshold',null,'archived',true))$$,'P0001','INVALID_TRANSITION','Archival cannot bypass fixed units');
+select lives_ok($$select public.adjust_stock(pg_temp.ctx(),pg_temp.fields('"0.200"')||jsonb_build_object('direction','out','reason','Compensate retired stock receipt','correction_of',(select id from public.inventory_movements where organization_id='10000035-0000-4000-8000-000000000001' and quantity=0.200 and kind='receipt')))$$,'Authorized linked compensation remains possible after archival');
+select is((select count(*) from public.inventory_movements where organization_id='10000035-0000-4000-8000-000000000001'),4::bigint,'Archived compensation appends history');
+select is(public.save_part(pg_temp.ctx(3),jsonb_build_object('id',(select result#>>'{data,id}' from part),'code','KG','name','Lubricant','unit','kg','reorder_threshold',null,'archived',true))#>>'{data,archived_at}',(select result#>>'{data,archived_at}' from archived),'Repeated archive preserves original timestamp');
+select is(public.save_part(pg_temp.ctx(4),jsonb_build_object('id',(select result#>>'{data,id}' from part),'code','KG','name','Lubricant','unit','kg','reorder_threshold',null,'archived',false))#>>'{data,archived_at}',null,'Explicit authorized reactivation clears archive timestamp');
 do $$ begin perform set_config('request.jwt.claim.sub','00000035-0000-4000-8000-000000000002',true); end $$;
 select lives_ok($$select public.receive_stock(pg_temp.ctx(),pg_temp.fields())$$,'Inventory role posts stock');
 select lives_ok($$select public.list_inventory_movements('10000035-0000-4000-8000-000000000001')$$,'Inventory role reads ledger');
@@ -83,6 +99,7 @@ select throws_ok($$select public.receive_stock(ctx,fields) from quota_receipt$$,
 do $$ begin perform set_config('request.jwt.claim.sub','00000035-0000-4000-8000-000000000003',true); end $$;
 select lives_ok($$select public.list_inventory_parts('10000035-0000-4000-8000-000000000001')$$,'Manager reads catalog');
 select throws_ok($$select public.receive_stock(pg_temp.ctx(),pg_temp.fields())$$,'P0001','FORBIDDEN','Manager cannot post stock');
+select throws_ok($$select public.save_part(pg_temp.ctx(5),jsonb_build_object('id',(select result#>>'{data,id}' from part),'code','KG','name','Lubricant','unit','kg','reorder_threshold',null,'archived',true))$$,'P0001','FORBIDDEN','Manager cannot archive catalog');
 do $$ begin perform set_config('request.jwt.claim.sub','00000035-0000-4000-8000-000000000004',true); end $$;
 select lives_ok($$select public.list_inventory_balances('10000035-0000-4000-8000-000000000001')$$,'Supervisor reads balances');
 select throws_ok($$select public.adjust_stock(pg_temp.ctx(),pg_temp.fields()||'{"direction":"out","reason":"Count"}')$$,'P0001','FORBIDDEN','Supervisor cannot adjust stock');
@@ -91,6 +108,7 @@ select throws_ok($$select public.list_inventory_parts('10000035-0000-4000-8000-0
 do $$ begin perform set_config('request.jwt.claim.sub','00000035-0000-4000-8000-000000000006',true); end $$;
 select throws_ok($$select public.list_inventory_movements('10000035-0000-4000-8000-000000000001')$$,'P0001','FORBIDDEN','Other-tenant owner denied ledger');
 select throws_ok($$select public.receive_stock(pg_temp.ctx(),pg_temp.fields())$$,'P0001','FORBIDDEN','Other-tenant owner denied write');
+select throws_ok($$select public.save_part(pg_temp.ctx(5),jsonb_build_object('id',(select result#>>'{data,id}' from part),'code','KG','name','Lubricant','unit','kg','reorder_threshold',null,'archived',true))$$,'P0001','FORBIDDEN','Other-tenant owner cannot archive catalog');
 do $$ begin perform set_config('request.jwt.claim.sub','00000035-0000-4000-8000-000000000001',true); end $$;
 update public.organization_members set active=false where organization_id='10000035-0000-4000-8000-000000000001' and user_id='00000035-0000-4000-8000-000000000001';
 select throws_ok($$select public.receive_stock(ctx,fields) from received$$,'P0001','FORBIDDEN','Revoked membership cannot replay old receipt');

@@ -51,8 +51,16 @@ it('sends linked adjustment lineage explicitly and preserves decimal spelling', 
 });
 it('includes optimistic version only on catalog updates', async () => {
   const input = { id, code: 'KG', name: 'Lubricant', unit: 'kg', reorder_threshold: '0.100' };
-  const f = fixture({ data: { ...input, organization_id: org, created_by: id, created_at: movement.created_at, version: 2 }, version: 2, request_id: requestId });
+  const f = fixture({ data: { ...input, organization_id: org, archived_at: null, created_by: id, created_at: movement.created_at, version: 2 }, version: 2, request_id: requestId });
   expect((await savePart(f.client, org, input, requestId, 1)).version).toBe(2);
   expect(f.sent[0].body).toEqual({ ctx: { organization_id: org, request_id: requestId, expected_version: 1 }, fields: input });
   expect(f.sent[0].url).toMatch(/\/rpc\/save_part$/);
+});
+it('sends archival intent through the optimistic catalog contract and reads archived history', async () => {
+  const input = { id, code: 'KG', name: 'Lubricant', unit: 'kg', reorder_threshold: null, archived: true };
+  const row = { id, code: input.code, name: input.name, unit: input.unit, reorder_threshold: null, organization_id: org, created_by: id, created_at: movement.created_at, archived_at: '2026-10-24T01:00:00Z', version: 2 };
+  const f = fixture({ data: row, version: 2, request_id: requestId });
+  expect((await savePart(f.client, org, input, requestId, 1)).archived_at).toBe(row.archived_at);
+  expect(f.sent[0].body).toEqual({ ctx: { organization_id: org, request_id: requestId, expected_version: 1 }, fields: input });
+  expect((await listInventoryParts(fixture({ items: [row], next_cursor: null }).client, org)).items).toEqual([row]);
 });

@@ -2,7 +2,7 @@
 create table public.parts (
  id uuid primary key default gen_random_uuid(), organization_id uuid not null references public.organizations(id),
  code text not null check(length(code) between 1 and 80), name text not null check(length(name) between 1 and 200),
- unit text not null check(length(unit) between 1 and 40), reorder_threshold numeric(14,3) check(reorder_threshold>=0),
+ unit text not null check(length(unit) between 1 and 40), reorder_threshold numeric(14,3) check(reorder_threshold>=0), archived_at timestamptz,
  created_by uuid not null references auth.users(id), created_at timestamptz not null default now(), version integer not null default 1 check(version>0),
  unique(organization_id,id), unique(organization_id,code)
 );
@@ -82,23 +82,25 @@ begin
  perform private.rate_check(org,actor,action);
  case action
  when 'save_part','save_stock_location' then
-  if action='save_part' then perform private.object_fields(fields,array['id','code','name','unit','reorder_threshold']);
+  if action='save_part' then perform private.object_fields(fields,array['id','code','name','unit','reorder_threshold','archived']);
   else perform private.object_fields(fields,array['id','code','name']); end if;
   target:=(fields->>'id')::uuid;
   if fields?'id' and (target is null or jsonb_typeof(fields->'id')<>'string') then raise exception using message='VALIDATION'; end if;
   code:=private.inventory_text(fields->'code',80);name:=private.inventory_text(fields->'name',200);
   if (target is null and expected is not null) or (target is not null and expected is null) then raise exception using message='VALIDATION'; end if;
   if action='save_part' then
+   if fields?'archived' and jsonb_typeof(fields->'archived') is distinct from 'boolean' then raise exception using message='VALIDATION'; end if;
    unit:=private.inventory_text(fields->'unit',40);
    if not fields?'reorder_threshold' then raise exception using message='VALIDATION'; end if;
    if fields->'reorder_threshold'<>'null'::jsonb then threshold:=private.stock_decimal(fields->'reorder_threshold',false); end if;
    if target is null then
-    insert into public.parts(organization_id,code,name,unit,reorder_threshold,created_by) values(org,code,name,unit,threshold,actor) returning * into part;
+    insert into public.parts(organization_id,code,name,unit,reorder_threshold,archived_at,created_by) values(org,code,name,unit,threshold,case when coalesce((fields->>'archived')::boolean,false) then now() end,actor) returning * into part;
    else
     select * into part from public.parts where organization_id=org and id=target for update;
     if part.id is null then raise exception using message='NOT_FOUND'; end if;
     if part.version<>expected then raise exception using message='CONFLICT'; end if;
-    update public.parts set code=inventory_values.code,name=inventory_values.name,unit=inventory_values.unit,reorder_threshold=threshold,version=version+1 where id=target returning * into part;
+    update public.parts set code=inventory_values.code,name=inventory_values.name,unit=inventory_values.unit,reorder_threshold=threshold,
+     archived_at=case when fields?'archived' then case when (fields->>'archived')::boolean then coalesce(archived_at,now()) else null end else archived_at end,version=version+1 where id=target returning * into part;
    end if;
    data:=to_jsonb(part)||jsonb_build_object('reorder_threshold',part.reorder_threshold::text);
   else
@@ -128,6 +130,7 @@ begin
   select * into part from public.parts where organization_id=org and id=(fields->>'part_id')::uuid for update;
   select * into location from public.stock_locations where organization_id=org and id=(fields->>'location_id')::uuid;
   if part.id is null or location.id is null then raise exception using message='NOT_FOUND'; end if;
+  if action='receive_stock' and part.archived_at is not null then raise exception using message='INVALID_TRANSITION'; end if;
   if unit<>part.unit then raise exception using message='VALIDATION'; end if;
   if correction is not null then
    select * into original from public.inventory_movements where organization_id=org and id=correction;

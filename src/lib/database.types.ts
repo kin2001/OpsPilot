@@ -599,14 +599,14 @@ isOneToOne: true
                   ]
                 },"parts": {
                   Row: {
-                    "code": string,"created_at": string,"created_by": string,"id": string,"name": string,"organization_id": string,"reorder_threshold": number | null,"unit": string,"version": number
+                    "archived_at": string | null,"code": string,"created_at": string,"created_by": string,"id": string,"name": string,"organization_id": string,"reorder_threshold": number | null,"unit": string,"version": number
                   }
                   ComputedFields: never
                   Insert: {
-                    "code": string,"created_at"?: string,"created_by": string,"id"?: string,"name": string,"organization_id": string,"reorder_threshold"?: number | null,"unit": string,"version"?: number
+                    "archived_at"?: string | null,"code": string,"created_at"?: string,"created_by": string,"id"?: string,"name": string,"organization_id": string,"reorder_threshold"?: number | null,"unit": string,"version"?: number
                   }
                   Update: {
-                    "code"?: string,"created_at"?: string,"created_by"?: string,"id"?: string,"name"?: string,"organization_id"?: string,"reorder_threshold"?: number | null,"unit"?: string,"version"?: number
+                    "archived_at"?: string | null,"code"?: string,"created_at"?: string,"created_by"?: string,"id"?: string,"name"?: string,"organization_id"?: string,"reorder_threshold"?: number | null,"unit"?: string,"version"?: number
                   }
                   Relationships: [
                     {

@@ -117,3 +117,26 @@ it('keeps unit history fixed, enforces stale versions, and pages movements witho
   expect((await balance()).on_hand).toBe('99999999999.999');
   expect(reconciles()).toBe('t');
 });
+it('archives catalog with history, blocks fresh stock atomically, and preserves replay and authorized compensation', async () => {
+  const request = randomUUID(); const receipt = await receiveStock(people.owner.client, org, fields(), request);
+  const catalog = { id: part, code: 'KG', name: 'Retired synthetic lubricant', unit: 'kg', reorder_threshold: null, archived: true };
+  const archived = await savePart(people.inventory.client, org, catalog, randomUUID(), 1);
+  expect(archived.archived_at).not.toBeNull();
+  expect((await listInventoryParts(people.inventory.client, org)).items[0].archived_at).toBe(archived.archived_at);
+  const before = sql(`select jsonb_build_object('receipts',(select count(*) from private.command_receipts where organization_id='${org}'),'movements',(select count(*) from public.inventory_movements where organization_id='${org}'),'on_hand',(select on_hand::text from public.inventory_balances where organization_id='${org}'));`);
+  await expect(receiveStock(people.inventory.client, org, fields(), randomUUID())).rejects.toThrow('INVALID_TRANSITION');
+  expect(sql(`select jsonb_build_object('receipts',(select count(*) from private.command_receipts where organization_id='${org}'),'movements',(select count(*) from public.inventory_movements where organization_id='${org}'),'on_hand',(select on_hand::text from public.inventory_balances where organization_id='${org}'));`)).toBe(before);
+  expect(await receiveStock(people.owner.client, org, fields(), request)).toEqual(receipt);
+  await expect(savePart(people.owner.client, org, { ...catalog, archived: false }, randomUUID(), 1)).rejects.toThrow('CONFLICT');
+  for (const person of ['manager', 'outsider']) await expect(savePart(people[person].client, org, catalog, randomUUID(), 2)).rejects.toThrow('FORBIDDEN');
+  const compensation = { ...fields(), direction: 'out' as const, reason: 'Reverse retired stock receipt', correction_of: receipt.id };
+  await expect(adjustStock(people.inventory.client, org, compensation, randomUUID())).rejects.toThrow('FORBIDDEN');
+  const corrected = await adjustStock(people.owner.client, org, compensation, randomUUID());
+  expect((await listInventoryMovements(people.owner.client, org)).items.map((row) => row.id).sort()).toEqual([receipt.id, corrected.id].sort());
+  expect((await balance()).on_hand).toBe('0.000'); expect(reconciles()).toBe('t');
+  const preserved = await savePart(people.inventory.client, org, catalog, randomUUID(), 2);
+  expect(preserved.archived_at).toBe(archived.archived_at);
+  expect((await savePart(people.inventory.client, org, { ...catalog, archived: false }, randomUUID(), 3)).archived_at).toBeNull();
+  await receiveStock(people.inventory.client, org, fields('0.001'), randomUUID());
+  expect((await balance()).on_hand).toBe('0.001'); expect(reconciles()).toBe('t');
+});

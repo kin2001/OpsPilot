@@ -178,6 +178,7 @@ assert.equal(correctionRead.data.history[0].supersedes_id, null); assert.equal(c
 // Inventory is additive to the populated pre-inventory tenant; old inspection receipts remain unchanged.
 assert.equal((await correctionCaller.rpc('list_inventory_parts', { organization_id: correctionOrg.data.data.id })).data.items.length, 0);
 const stockPart = await correctionCaller.rpc('save_part', { ctx: correctionCtx(), fields: { code: 'UP35', name: 'Upgraded stock', unit: 'kg', reorder_threshold: '0.001' } }); assert.equal(stockPart.error, null);
+assert.equal(stockPart.data.data.archived_at, null);
 const stockLocation = await correctionCaller.rpc('save_stock_location', { ctx: correctionCtx(), fields: { code: 'UP35', name: 'Upgraded shelf' } }); assert.equal(stockLocation.error, null);
 const stockArgs = { ctx: correctionCtx(), fields: { part_id: stockPart.data.data.id, location_id: stockLocation.data.data.id, quantity: '0.001', unit: 'kg' } };
 const stockReceipt = await correctionCaller.rpc('receive_stock', stockArgs); assert.equal(stockReceipt.error, null);
