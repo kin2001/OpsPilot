@@ -13,6 +13,7 @@ import { AssetPage, RequestPage, TeamPage } from './features';
 import { DashboardPage, NotificationsPage, OperationsTeamPage, OrganizationSettingsPage } from './operations';
 import { OperationalWorkOrderPage } from './work-orders';
 import { MaintenancePage } from './maintenance';
+import { InspectionsPage } from './inspections';
 import { AppButton, BrandLogo, ErrorNotice, Field, LoadingNotice, PageHeader, SuccessNotice } from './ui';
 import type { CapturedAuthRedirect } from './auth/capture-url';
 import { acceptInvitation } from './commands';
@@ -156,6 +157,7 @@ function WorkspaceGlyph({ name }: { name: string }) {
     security: <><path d="M12 3 19 6v5.2c0 4.6-2.8 7.7-7 9.8-4.2-2.1-7-5.2-7-9.8V6z" /><path d="m9 12 2 2 4-4" /></>,
     search: <><circle cx="10.8" cy="10.8" r="6.4" /><path d="m15.5 15.5 4.3 4.3" /></>,
     calendar: <><rect x="3.5" y="5" width="17" height="15.5" rx="1.5" /><path d="M7.5 3v4M16.5 3v4M3.5 9h17" /></>,
+    inspection: <><path d="M12 3 19 6v5.2c0 4.6-2.8 7.7-7 9.8-4.2-2.1-7-5.2-7-9.8V6z" /><path d="m9 12 2 2 4-4" /></>,
   };
   return <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" {...shared}>{paths[name] ?? paths.dashboard}</svg>;
 }
@@ -224,7 +226,7 @@ function WorkspaceShell({ memberships, selected, onSwitch }: { memberships: Orga
   const [menuOpen, setMenuOpen] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => setMenuOpen(false), [location.pathname]);
-  const pageNames: Record<string, string> = { '/': 'Dashboard', '/requests': 'Requests', '/work-orders': 'Work orders', '/assets': 'Assets', '/maintenance': 'Maintenance', '/team': 'Team', '/notifications': 'Notifications', '/settings': 'Settings', '/settings/security': 'Security' };
+  const pageNames: Record<string, string> = { '/': 'Dashboard', '/requests': 'Requests', '/work-orders': 'Work orders', '/assets': 'Assets', '/maintenance': 'Maintenance', '/inspections': 'Inspections', '/team': 'Team', '/notifications': 'Notifications', '/settings': 'Settings', '/settings/security': 'Security' };
   const pageName = pageNames[location.pathname] ?? 'Dashboard';
   const today = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: selected.organization.timezone }).format(new Date());
   const duplicateNames = new Set(memberships.filter((membership, index) => memberships.some((other, otherIndex) => otherIndex !== index && other.organization.name === membership.organization.name)).map((membership) => membership.organization.id));
@@ -233,6 +235,7 @@ function WorkspaceShell({ memberships, selected, onSwitch }: { memberships: Orga
     { to: '/requests', label: 'Requests', glyph: 'requests' },
     { to: '/work-orders', label: 'Work orders', glyph: 'work' },
     { to: '/maintenance', label: 'Maintenance', glyph: 'calendar' },
+    { to: '/inspections', label: 'Inspections', glyph: 'inspection' },
     { to: '/assets', label: 'Assets', glyph: 'assets' },
     ...(['owner', 'manager', 'supervisor'].includes(selected.role) ? [{ to: '/team', label: 'Team', glyph: 'team' }] : []),
     { to: '/notifications', label: 'Notifications', glyph: 'notifications' },
@@ -251,6 +254,7 @@ function WorkspaceShell({ memberships, selected, onSwitch }: { memberships: Orga
       <Route path="/requests" element={<RequestPage />} />
       <Route path="/work-orders" element={<OperationalWorkOrderPage />} />
       <Route path="/maintenance" element={<MaintenancePage key={`${user?.id ?? ''}:${selected.organization.id}:${selected.role}`} />} />
+      <Route path="/inspections" element={<InspectionsPage key={`${user?.id ?? ''}:${selected.organization.id}:${selected.role}`} />} />
       <Route path="/team" element={selected.role === 'owner' ? <PrivilegedArea label="managing workspace membership"><TeamPage /></PrivilegedArea> : ['manager', 'supervisor'].includes(selected.role) ? <OperationsTeamPage /> : <AccessDeniedPage />} />
       <Route path="/notifications" element={<NotificationsPage />} />
       <Route path="/settings" element={selected.role === 'owner' ? <PrivilegedArea label="changing workspace settings"><OrganizationSettingsPage /></PrivilegedArea> : <AccessDeniedPage />} />
