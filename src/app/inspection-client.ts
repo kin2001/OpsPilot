@@ -4,7 +4,7 @@ import type { Database, Json } from '../lib/database.types';
 import { domainError } from '../lib/domain-errors';
 import { commandResult, contextFor } from './commands';
 import { attachmentRecord, imageMetadata } from '../contracts/operational';
-import { inspectionTemplateFields, inspectionResults, inspectionTemplate, inspectionAssignment, inspectionSubmission, inspectionTemplatePage, inspectionRevisionPage, inspectionAssignmentPage, inspectionDetail, type InspectionTemplateFields, type InspectionResults } from '../contracts/inspections';
+import { inspectionTemplateFields, inspectionResults, inspectionCorrection, type InspectionCorrection, inspectionTemplate, inspectionAssignment, inspectionSubmission, inspectionTemplatePage, inspectionRevisionPage, inspectionAssignmentPage, inspectionDetail, type InspectionTemplateFields, type InspectionResults } from '../contracts/inspections';
 
 type Response = { data: Json | null; error: { message: string } | null };
 async function command<T extends z.ZodType>(response: PromiseLike<Response>, schema: T, requestId: string) {
@@ -31,6 +31,9 @@ export function assignInspection(client: SupabaseClient<Database>, organizationI
 }
 export function submitInspection(client: SupabaseClient<Database>, organizationId: string, assignmentId: string, templateRevisionId: string, results: InspectionResults, requestId: string) {
   return command(client.rpc('submit_inspection', { ctx: contextFor(organizationId, requestId), assignment_id: z.uuid().parse(assignmentId), template_revision_id: z.uuid().parse(templateRevisionId), results: inspectionResults.parse(results) }), inspectionSubmission, requestId);
+}
+export function correctInspection(client: SupabaseClient<Database>, organizationId: string, fields: InspectionCorrection, requestId: string, expectedVersion: number) {
+  return command(client.rpc('correct_inspection', { ctx: contextFor(organizationId, requestId, z.int().min(1).max(99).parse(expectedVersion)), ...inspectionCorrection.parse(fields) }), inspectionSubmission, requestId);
 }
 export function reserveInspectionAttachment(client: SupabaseClient<Database>, organizationId: string, assignmentId: string, metadata: z.input<typeof imageMetadata>, requestId: string) {
   return command(client.rpc('reserve_inspection_attachment', { ctx: contextFor(organizationId, requestId), assignment_id: z.uuid().parse(assignmentId), ...imageMetadata.parse(metadata) }), attachmentRecord, requestId);

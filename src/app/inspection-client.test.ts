@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from '../lib/database.types';
-import { publishInspectionTemplate, submitInspection, listInspectionAssignments, listInspectionTemplates, listInspectionRevisions, getInspection } from './inspection-client';
+import { publishInspectionTemplate, submitInspection, correctInspection, listInspectionAssignments, listInspectionTemplates, listInspectionRevisions, getInspection } from './inspection-client';
 const id = '00000032-0000-4000-8000-000000000001';
 const org = '10000032-0000-4000-8000-000000000001';
 const requestId = '30000032-0000-4000-8000-000000000001';
@@ -40,4 +40,15 @@ it('uses separate bounded reads and rejects malformed detail', async () => {
   await listInspectionRevisions(f.client, org, id);
   expect(f.sent.map((r) => r.body)).toEqual([{ organization_id: org, cursor: id, page_size: 1 }, { organization_id: org, page_size: 25 }, { organization_id: org, template_id: id, page_size: 25 }]);
   await expect(getInspection(f.client, org, id)).rejects.toThrow('DEPENDENCY_UNAVAILABLE');
+});
+
+it('sends explicit correction lineage/version and validates before transport', async () => {
+  const fields = { assignment_id: id, template_revision_id: id, supersedes_id: id, correction_reason: 'Rechecked', results };
+  const submission = { id, organization_id: org, assignment_id: id, template_revision_id: id, inspector_id: id, submitted_at: '2026-10-24T00:00:00Z', results, version: 2, supersedes_id: id, correction_reason: 'Rechecked' };
+  const f = fixture({ data: submission, version: 2, request_id: requestId });
+  expect(await correctInspection(f.client, org, fields, requestId, 1)).toEqual(submission);
+  expect(f.sent[0]).toEqual({ url: 'http://127.0.0.1:54321/rest/v1/rpc/correct_inspection', body: { ctx: { organization_id: org, request_id: requestId, expected_version: 1 }, ...fields } });
+  expect(() => correctInspection(f.client, org, { ...fields, correction_reason: '' }, requestId, 1)).toThrow();
+  expect(() => correctInspection(f.client, org, fields, requestId, 0)).toThrow();
+  expect(f.sent).toHaveLength(1);
 });

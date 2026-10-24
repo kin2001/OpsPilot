@@ -267,8 +267,14 @@ const inspectionTemplate = await owner.rpc('publish_inspection_template', { ctx:
 const inspectionAssignment = await owner.rpc('assign_inspection', { ctx: { organization_id: org, request_id: randomUUID() }, asset_id: asset, template_revision_id: inspectionTemplate.data.data.current_revision_id, inspector_id: people[0].id }); assert.equal(inspectionAssignment.error, null);
 const inspectionArgs = { ctx: { organization_id: org, request_id: randomUUID() }, assignment_id: inspectionAssignment.data.data.id, template_revision_id: inspectionAssignment.data.data.template_revision_id, results: [{ item_id: inspectionItem, outcome: 'fail', remarks: 'Synthetic recovery guard failure', evidence_ids: [] }] };
 const inspectionSubmitted = await owner.rpc('submit_inspection', inspectionArgs); assert.equal(inspectionSubmitted.error, null);
+const originalInspection = await owner.rpc('get_inspection', { organization_id: org, assignment_id: inspectionAssignment.data.data.id }); assert.equal(originalInspection.error, null);
+assert.equal((await owner.rpc('triage_request', { ctx: { organization_id: org, request_id: randomUUID() }, id: originalInspection.data.episodes[0].corrective_request_id, decision: 'rejected', reason: 'Synthetic closed remedy' })).error, null);
+const correctionArgs = { ctx: { organization_id: org, request_id: randomUUID(), expected_version: 1 }, assignment_id: inspectionAssignment.data.data.id, template_revision_id: inspectionAssignment.data.data.template_revision_id, supersedes_id: inspectionSubmitted.data.data.id, correction_reason: 'Still unsafe after closed remedy', results: inspectionArgs.results };
+const correctedInspection = await owner.rpc('correct_inspection', correctionArgs); assert.equal(correctedInspection.error, null);
 const inspectionBefore = await owner.rpc('get_inspection', { organization_id: org, assignment_id: inspectionAssignment.data.data.id }); assert.equal(inspectionBefore.error, null);
-assert.equal(inspectionBefore.data.episodes.length, 1);
+assert.equal(inspectionBefore.data.episodes.length, 2);
+assert.equal(inspectionBefore.data.history.length, 2);
+assert.equal(inspectionBefore.data.holds.filter((h) => h.resolved_at === null && h.released_at === null).length, 2);
 
 // Snapshot bytes, Auth, schema/data, receipts and non-secret source configuration. Nothing is written as a dump/artifact.
 const owners = () => sql("select md5(string_agg(n.nspname||'.'||c.relname||':'||c.relowner::text||':'||coalesce(c.relacl::text,''),'|' order by n.nspname,c.relname)) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname in ('public','auth','storage','cron') and c.relkind in ('r','v','m','S');").trim();
@@ -377,6 +383,7 @@ assert.equal(createHash('sha256').update(Buffer.from(await currentDownload.data.
 assert.deepEqual((await owner.rpc('save_asset', args)).data, committed.data);
 assert.deepEqual((await owner.rpc('save_maintenance_plan', planArgs)).data, savedPlan.data);
 assert.deepEqual((await owner.rpc('submit_inspection', inspectionArgs)).data, inspectionSubmitted.data);
+assert.deepEqual((await owner.rpc('correct_inspection', correctionArgs)).data, correctedInspection.data);
 assert.deepEqual((await owner.rpc('get_inspection', { organization_id: org, assignment_id: inspectionAssignment.data.data.id })).data, inspectionBefore.data);
 assert.equal(sql(`select count(*) from public.inspection_failure_episodes e join public.asset_holds h on h.organization_id=e.organization_id and h.id=e.hold_id join public.maintenance_requests r on r.organization_id=e.organization_id and r.id=e.corrective_request_id where e.assignment_id='${inspectionAssignment.data.data.id}' and h.source_id=e.id and h.released_at is null and r.status='submitted';`).trim(), '1');
 assert.deepEqual((await owner.rpc('list_maintenance_revisions', { organization_id: org, plan_id: savedPlan.data.data.id })).data, planHistory.data);
