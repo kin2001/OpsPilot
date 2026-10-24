@@ -175,5 +175,16 @@ const correction = await correctionCaller.rpc('correct_inspection', { ctx: corre
 const correctionRead = await correctionCaller.rpc('get_inspection', { organization_id: correctionOrg.data.data.id, assignment_id: correctionAssignment.data.data.id }); assert.equal(correctionRead.error, null);
 assert.equal(correctionRead.data.history.length, 2); assert.equal(correctionRead.data.episodes.length, 1); assert.equal(correctionRead.data.episode_links.length, 2);
 assert.equal(correctionRead.data.history[0].supersedes_id, null); assert.equal(correctionRead.data.submission.supersedes_id, oldSubmission.data.data.id);
+// Inventory is additive to the populated pre-inventory tenant; old inspection receipts remain unchanged.
+assert.equal((await correctionCaller.rpc('list_inventory_parts', { organization_id: correctionOrg.data.data.id })).data.items.length, 0);
+const stockPart = await correctionCaller.rpc('save_part', { ctx: correctionCtx(), fields: { code: 'UP35', name: 'Upgraded stock', unit: 'kg', reorder_threshold: '0.001' } }); assert.equal(stockPart.error, null);
+assert.equal(stockPart.data.data.archived_at, null);
+const stockLocation = await correctionCaller.rpc('save_stock_location', { ctx: correctionCtx(), fields: { code: 'UP35', name: 'Upgraded shelf' } }); assert.equal(stockLocation.error, null);
+const stockArgs = { ctx: correctionCtx(), fields: { part_id: stockPart.data.data.id, location_id: stockLocation.data.data.id, quantity: '0.001', unit: 'kg' } };
+const stockReceipt = await correctionCaller.rpc('receive_stock', stockArgs); assert.equal(stockReceipt.error, null);
+assert.deepEqual((await correctionCaller.rpc('receive_stock', stockArgs)).data, stockReceipt.data);
+const upgradedBalances = await correctionCaller.rpc('list_inventory_balances', { organization_id: correctionOrg.data.data.id }); assert.equal(upgradedBalances.error, null);
+assert.equal(upgradedBalances.data.items[0].on_hand, '0.001'); assert.equal(upgradedBalances.data.items[0].available, '0.001');
+assert.deepEqual((await correctionCaller.rpc('submit_inspection', oldSubmissionArgs)).data, oldSubmission.data);
 assertOwned();
-console.log(JSON.stringify({ populated_t1_upgrade: true, retained_receipt_replay: true, frozen_new_response: true, former_assignment_backfill: true, conservative_initial_history: true, genuine_legacy_schedule_replay: true, undated_schedule_denial_atomic: true, populated_plan_upgrade: true }));
+console.log(JSON.stringify({ populated_t1_upgrade: true, retained_receipt_replay: true, frozen_new_response: true, former_assignment_backfill: true, conservative_initial_history: true, genuine_legacy_schedule_replay: true, undated_schedule_denial_atomic: true, populated_plan_upgrade: true, additive_inventory_exact_receipts: true }));
