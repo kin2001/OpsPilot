@@ -315,7 +315,7 @@ const restoreIdentity = JSON.parse(sql("select json_build_object('expected_ident
 assertRestoreAuthority(restoreInventory, restoreNetwork, network, restoreIdentity);
 // Suppress only the restore operator's extra public API defaults; the dump restores the original future-grant policy.
 sql(`BEGIN;
-ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin IN SCHEMA public REVOKE ALL ON TABLES FROM anon, authenticated;
+ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin IN SCHEMA public REVOKE ALL ON TABLES FROM anon, authenticated, service_role;
 ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin IN SCHEMA public REVOKE ALL ON FUNCTIONS FROM anon, authenticated, service_role;
 ${dump}
 COMMIT;`, 'supabase_admin');
@@ -366,6 +366,8 @@ assert.equal(createHash('sha256').update(Buffer.from(await currentDownload.data.
 assert.deepEqual((await owner.rpc('save_asset', args)).data, committed.data);
 assert.deepEqual((await owner.rpc('save_maintenance_plan', planArgs)).data, savedPlan.data);
 assert.deepEqual((await owner.rpc('list_maintenance_revisions', { organization_id: org, plan_id: savedPlan.data.data.id })).data, planHistory.data);
+assert.equal((await fresh.from('maintenance_plans').select('id').limit(1)).error?.code, '42501');
+assert.equal((await admin.from('maintenance_plans').select('id').limit(1)).error?.code, '42501');
 assert.equal(sql(`select private.maintenance_current_people_eligible('${org}','${savedPlan.data.data.id}');`).trim(), 'f');
 assert.equal((await revoked.rpc('list_maintenance_revisions', { organization_id: org, plan_id: savedPlan.data.data.id })).error?.message, 'FORBIDDEN');
 assert.equal((await owner.from('assets').select('name').eq('id', asset).single()).data.name, fields.name);
