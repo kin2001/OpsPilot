@@ -153,3 +153,57 @@ it('requires explicit conversion, real repair evidence, independent review, hold
   // Exclusion is current unreleased scope, not a lifetime performer ban.
   await command('repairer', 'release_asset', { ctx: ctx(await version()), asset_id: asset, acknowledgment: 'No current remedy scope remains' });
 });
+
+it('delivers inspection notifications once to current eligible recipients and enforces read ownership after revocation', async () => {
+  const inactive = randomUUID(); const banned = randomUUID(); const otherOrg = randomUUID();
+  for (const id of [inactive, banned]) {
+    expect((await admin.auth.admin.createUser({ id, email: `inspection32-recipient-${id}@example.test`, email_confirm: true })).error).toBeNull();
+  }
+  expect((await admin.auth.admin.updateUserById(banned, { ban_duration: '24h' })).error).toBeNull();
+  sql(`insert into public.organization_members(organization_id,user_id,role,active) values('${org}','${inactive}','manager',false),('${org}','${banned}','manager',true);
+   update public.organization_members set role='inventory' where organization_id='${org}' and user_id='${people.repairer.id}';
+   insert into public.organizations(id,name,timezone,currency,created_by) values('${otherOrg}','Other notification tenant','UTC','PHP','${people.outsider.id}');
+   insert into public.organization_members(organization_id,user_id,role) values('${otherOrg}','${people.outsider.id}','owner');`);
+  const template = await publishInspectionTemplate(people.owner.client, org, { title: 'Recipient inspection', items: [{ id: item, label: 'Guard fitted', required: true, safety_relevant: true, evidence_required: false }] }, randomUUID());
+  const fields = { asset_id: asset, template_revision_id: template.current_revision_id, inspector_id: people.inspector.id };
+  const assignmentRequest = randomUUID();
+  const assignments = await Promise.all([assignInspection(people.owner.client, org, fields, assignmentRequest), assignInspection(people.owner.client, org, fields, assignmentRequest)]);
+  expect(assignments[0]).toEqual(assignments[1]);
+  const assignment = assignments[0];
+  expect(await assignInspection(people.owner.client, org, fields, assignmentRequest)).toEqual(assignment);
+  const facts = () => JSON.parse(sql(`select coalesce(jsonb_agg(jsonb_build_object('organization_id',organization_id,'recipient_user_id',recipient_user_id,'event_id',event_id,'category',category,'source_id',source_id) order by category,recipient_user_id),'[]') from public.notifications where source_id='${assignment.id}';`));
+  const assignmentFact = { organization_id: org, recipient_user_id: people.inspector.id, event_id: assignment.id, category: 'inspection_assignment', source_id: assignment.id };
+  expect(facts()).toEqual([assignmentFact]);
+  const results = [{ item_id: item, outcome: 'fail' as const, remarks: 'Guard missing', evidence_ids: [] }]; const request = randomUUID();
+  const submitted = await Promise.all([submitInspection(people.inspector.client, org, assignment.id, assignment.template_revision_id, results, request), submitInspection(people.inspector.client, org, assignment.id, assignment.template_revision_id, results, request)]);
+  expect(submitted[0]).toEqual(submitted[1]);
+  expect(await submitInspection(people.inspector.client, org, assignment.id, assignment.template_revision_id, results, request)).toEqual(submitted[0]);
+  const episodes = (await getInspection(people.owner.client, org, assignment.id)).episodes; expect(episodes).toHaveLength(1);
+  const failureFacts = [people.owner.id, people.reviewer.id].sort().map((recipient_user_id) => ({ organization_id: org, recipient_user_id, event_id: episodes[0].id, category: 'inspection_failure', source_id: assignment.id }));
+  // Exact whole-source facts also exclude unrelated, inactive, wrong-role and banned recipients in either tenant.
+  expect(facts()).toEqual([assignmentFact, ...failureFacts]);
+  const notifications = JSON.parse(sql(`select jsonb_agg(jsonb_build_object('id',id,'recipient_user_id',recipient_user_id)) from public.notifications where source_id='${assignment.id}';`)) as { id: string; recipient_user_id: string }[];
+  const ids = notifications.map((n) => n.id);
+  for (const name of ['owner', 'reviewer', 'inspector', 'repairer', 'outsider']) {
+    const response = await people[name].client.from('notifications').select('id,recipient_user_id,organization_id').eq('source_id', assignment.id);
+    expect(response.error).toBeNull();
+    expect(response.data).toEqual(notifications.filter((n) => n.recipient_user_id === people[name].id).map((n) => ({ ...n, organization_id: org })));
+  }
+  const ownerNotification = notifications.find((n) => n.recipient_user_id === people.owner.id)!;
+  const inspectorNotification = notifications.find((n) => n.recipient_user_id === people.inspector.id)!;
+  const readRecipients = () => JSON.parse(sql(`select coalesce(jsonb_agg(recipient_user_id order by recipient_user_id),'[]') from public.notifications where source_id='${assignment.id}' and read_at is not null;`));
+  await command('owner', 'mark_notifications_read', { ctx: ctx(), ids: ids.filter((id) => id !== ownerNotification.id) });
+  expect(readRecipients()).toEqual([]);
+  await command('owner', 'mark_notifications_read', { ctx: ctx(), ids });
+  expect(readRecipients()).toEqual([people.owner.id]);
+  await command('inspector', 'mark_notifications_read', { ctx: ctx(), ids });
+  expect(readRecipients()).toEqual([people.owner.id, people.inspector.id].sort());
+  await command('reviewer', 'mark_notifications_read', { ctx: ctx(), ids });
+  expect(readRecipients()).toEqual([people.owner.id, people.inspector.id, people.reviewer.id].sort());
+  expect((await people.outsider.client.rpc('mark_notifications_read', { ctx: ctx(), ids })).error?.message).toBe('FORBIDDEN');
+  sql(`update public.organization_members set active=false where organization_id='${org}' and user_id='${people.inspector.id}';`);
+  const revokedRead = await people.inspector.client.from('notifications').select('id').eq('id', inspectorNotification.id);
+  expect(revokedRead.error).toBeNull(); expect(revokedRead.data).toEqual([]);
+  expect((await people.inspector.client.rpc('mark_notifications_read', { ctx: ctx(), ids: [inspectorNotification.id] })).error?.message).toBe('FORBIDDEN');
+  await expect(getInspection(people.inspector.client, org, assignment.id)).rejects.toThrow('FORBIDDEN');
+});
