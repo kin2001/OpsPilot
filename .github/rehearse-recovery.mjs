@@ -276,6 +276,16 @@ assert.equal(inspectionBefore.data.episodes.length, 2);
 assert.equal(inspectionBefore.data.history.length, 2);
 assert.equal(inspectionBefore.data.holds.filter((h) => h.resolved_at === null && h.released_at === null).length, 2);
 
+const recoveryPart = await owner.rpc('save_part', { ctx: { organization_id: org, request_id: randomUUID() }, fields: { code: 'REC35', name: 'Synthetic recovery stock', unit: 'kg', reorder_threshold: '0.100' } }); assert.equal(recoveryPart.error, null);
+const recoveryLocation = await owner.rpc('save_stock_location', { ctx: { organization_id: org, request_id: randomUUID() }, fields: { code: 'REC35', name: 'Synthetic recovery shelf' } }); assert.equal(recoveryLocation.error, null);
+const stockArgs = { ctx: { organization_id: org, request_id: randomUUID() }, fields: { part_id: recoveryPart.data.data.id, location_id: recoveryLocation.data.data.id, quantity: '0.100', unit: 'kg' } };
+const stockReceived = await owner.rpc('receive_stock', stockArgs); assert.equal(stockReceived.error, null);
+assert.equal((await owner.rpc('receive_stock', { ctx: { organization_id: org, request_id: randomUUID() }, fields: { ...stockArgs.fields, quantity: '0.200' } })).error, null);
+const stockBefore = await owner.rpc('list_inventory_balances', { organization_id: org }); assert.equal(stockBefore.error, null);
+const ledgerBefore = await owner.rpc('list_inventory_movements', { organization_id: org }); assert.equal(ledgerBefore.error, null);
+assert.equal(stockBefore.data.items[0].on_hand, '0.300'); assert.equal(stockBefore.data.items[0].available, '0.300');
+assert.equal(ledgerBefore.data.items.length, 2);
+
 // Snapshot bytes, Auth, schema/data, receipts and non-secret source configuration. Nothing is written as a dump/artifact.
 const owners = () => sql("select md5(string_agg(n.nspname||'.'||c.relname||':'||c.relowner::text||':'||coalesce(c.relacl::text,''),'|' order by n.nspname,c.relname)) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname in ('public','auth','storage','cron') and c.relkind in ('r','v','m','S');").trim();
 const permissions = () => canonicalPermissions(JSON.parse(sql(`
@@ -384,6 +394,12 @@ assert.deepEqual((await owner.rpc('save_asset', args)).data, committed.data);
 assert.deepEqual((await owner.rpc('save_maintenance_plan', planArgs)).data, savedPlan.data);
 assert.deepEqual((await owner.rpc('submit_inspection', inspectionArgs)).data, inspectionSubmitted.data);
 assert.deepEqual((await owner.rpc('correct_inspection', correctionArgs)).data, correctedInspection.data);
+assert.deepEqual((await owner.rpc('receive_stock', stockArgs)).data, stockReceived.data);
+assert.deepEqual((await owner.rpc('list_inventory_balances', { organization_id: org })).data, stockBefore.data);
+assert.deepEqual((await owner.rpc('list_inventory_movements', { organization_id: org })).data, ledgerBefore.data);
+assert.equal((await owner.rpc('receive_stock', { ...stockArgs, fields: { ...stockArgs.fields, quantity: '0.101' } })).error?.message, 'CONFLICT');
+assert.equal((await fresh.from('inventory_movements').select('id').limit(1)).error?.code, '42501');
+assert.equal((await admin.from('inventory_balances').select('id').limit(1)).error?.code, '42501');
 assert.deepEqual((await owner.rpc('get_inspection', { organization_id: org, assignment_id: inspectionAssignment.data.data.id })).data, inspectionBefore.data);
 assert.equal(sql(`select count(*) from public.inspection_failure_episodes e join public.asset_holds h on h.organization_id=e.organization_id and h.id=e.hold_id join public.maintenance_requests r on r.organization_id=e.organization_id and r.id=e.corrective_request_id where e.assignment_id='${inspectionAssignment.data.data.id}' and h.source_id=e.id and h.released_at is null and r.status='submitted';`).trim(), '1');
 assert.deepEqual((await owner.rpc('list_maintenance_revisions', { organization_id: org, plan_id: savedPlan.data.data.id })).data, planHistory.data);

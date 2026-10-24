@@ -315,6 +315,58 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
+                },"inventory_balances": {
+                  Row: {
+                    "available": number | null,"id": string,"location_id": string,"on_hand": number,"organization_id": string,"part_id": string,"reserved": number
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "available"?: never,"id"?: string,"location_id": string,"on_hand"?: number,"organization_id": string,"part_id": string,"reserved"?: number
+                  }
+                  Update: {
+                    "available"?: never,"id"?: string,"location_id"?: string,"on_hand"?: number,"organization_id"?: string,"part_id"?: string,"reserved"?: number
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "inventory_balances_organization_id_location_id_fkey"
+      columns: ["organization_id","location_id"]
+isOneToOne: false
+      referencedRelation: "stock_locations"
+      referencedColumns: ["organization_id","id"]
+    },{
+      foreignKeyName: "inventory_balances_organization_id_part_id_fkey"
+      columns: ["organization_id","part_id"]
+isOneToOne: false
+      referencedRelation: "parts"
+      referencedColumns: ["organization_id","id"]
+    }
+                  ]
+                },"inventory_movements": {
+                  Row: {
+                    "actor_id": string,"correction_of": string | null,"created_at": string,"direction": string,"id": string,"kind": string,"location_id": string,"organization_id": string,"part_id": string,"quantity": number,"reason": string | null,"request_id": string,"source": string | null,"unit": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "actor_id": string,"correction_of"?: string | null,"created_at"?: string,"direction": string,"id"?: string,"kind": string,"location_id": string,"organization_id": string,"part_id": string,"quantity": number,"reason"?: string | null,"request_id": string,"source"?: string | null,"unit": string
+                  }
+                  Update: {
+                    "actor_id"?: string,"correction_of"?: string | null,"created_at"?: string,"direction"?: string,"id"?: string,"kind"?: string,"location_id"?: string,"organization_id"?: string,"part_id"?: string,"quantity"?: number,"reason"?: string | null,"request_id"?: string,"source"?: string | null,"unit"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "inventory_movements_organization_id_correction_of_fkey"
+      columns: ["organization_id","correction_of"]
+isOneToOne: true
+      referencedRelation: "inventory_movements"
+      referencedColumns: ["organization_id","id"]
+    },{
+      foreignKeyName: "inventory_movements_organization_id_part_id_location_id_fkey"
+      columns: ["organization_id","part_id","location_id"]
+isOneToOne: false
+      referencedRelation: "inventory_balances"
+      referencedColumns: ["organization_id","part_id","location_id"]
+    }
+                  ]
                 },"maintenance_occurrences": {
                   Row: {
                     "assignee_ids": (string)[],"authorized_by": string,"due_at": string,"due_policy": string,"generated_at": string,"id": string,"organization_id": string,"plan_id": string,"revision_id": string,"scheduled_local_date": string,"supervisor_id": string,"timezone": string,"work_order_id": string
@@ -545,6 +597,26 @@ isOneToOne: true
                   Relationships: [
                     
                   ]
+                },"parts": {
+                  Row: {
+                    "code": string,"created_at": string,"created_by": string,"id": string,"name": string,"organization_id": string,"reorder_threshold": number | null,"unit": string,"version": number
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "code": string,"created_at"?: string,"created_by": string,"id"?: string,"name": string,"organization_id": string,"reorder_threshold"?: number | null,"unit": string,"version"?: number
+                  }
+                  Update: {
+                    "code"?: string,"created_at"?: string,"created_by"?: string,"id"?: string,"name"?: string,"organization_id"?: string,"reorder_threshold"?: number | null,"unit"?: string,"version"?: number
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "parts_organization_id_fkey"
+      columns: ["organization_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
+    }
+                  ]
                 },"request_events": {
                   Row: {
                     "action": string,"actor_id": string,"created_at": string,"id": string,"organization_id": string,"reason": string | null,"request_id": string,"status": string
@@ -579,6 +651,26 @@ isOneToOne: false
                   Relationships: [
                     {
       foreignKeyName: "sites_organization_id_fkey"
+      columns: ["organization_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
+    }
+                  ]
+                },"stock_locations": {
+                  Row: {
+                    "code": string,"created_at": string,"created_by": string,"id": string,"name": string,"organization_id": string,"version": number
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "code": string,"created_at"?: string,"created_by": string,"id"?: string,"name": string,"organization_id": string,"version"?: number
+                  }
+                  Update: {
+                    "code"?: string,"created_at"?: string,"created_by"?: string,"id"?: string,"name"?: string,"organization_id"?: string,"version"?: number
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "stock_locations_organization_id_fkey"
       columns: ["organization_id"]
 isOneToOne: false
       referencedRelation: "organizations"
@@ -787,6 +879,9 @@ isOneToOne: true
 "add_work_order_task":
 { Args: { "ctx": Json,"id": string,"label": string,"required"?: boolean }; Returns: Json
                            },
+"adjust_stock":
+{ Args: { "ctx": Json,"fields": Json }; Returns: Json
+                           },
 "assign_inspection":
 { Args: { "asset_id": string,"ctx": Json,"due_on"?: string,"inspector_id": string,"template_revision_id": string }; Returns: Json
                            },
@@ -850,6 +945,15 @@ isOneToOne: true
 "list_inspection_templates":
 { Args: { "cursor"?: string,"organization_id": string,"page_size"?: number }; Returns: Json
                            },
+"list_inventory_balances":
+{ Args: { "cursor"?: string,"location_id"?: string,"organization_id": string,"page_size"?: number,"part_id"?: string }; Returns: Json
+                           },
+"list_inventory_movements":
+{ Args: { "cursor"?: string,"location_id"?: string,"organization_id": string,"page_size"?: number,"part_id"?: string }; Returns: Json
+                           },
+"list_inventory_parts":
+{ Args: { "cursor"?: string,"organization_id": string,"page_size"?: number }; Returns: Json
+                           },
 "list_maintenance_agenda":
 { Args: { "cursor"?: Json,"from_on": string,"organization_id": string,"page_size"?: number,"to_on": string }; Returns: Json
                            },
@@ -861,6 +965,9 @@ isOneToOne: true
                            },
 "list_maintenance_revisions":
 { Args: { "cursor"?: number,"organization_id": string,"page_size"?: number,"plan_id": string }; Returns: Json
+                           },
+"list_stock_locations":
+{ Args: { "cursor"?: string,"organization_id": string,"page_size"?: number }; Returns: Json
                            },
 "lookup_request_asset":
 { Args: { "asset_code"?: string,"asset_id"?: string,"organization_id": string }; Returns: {
@@ -874,6 +981,9 @@ isOneToOne: true
 { Args: { "fields": Json,"organization_id": string }; Returns: Json
                            },
 "publish_inspection_template":
+{ Args: { "ctx": Json,"fields": Json }; Returns: Json
+                           },
+"receive_stock":
 { Args: { "ctx": Json,"fields": Json }; Returns: Json
                            },
 "record_meter_reading":
@@ -909,8 +1019,14 @@ isOneToOne: true
 "save_organization_settings":
 { Args: { "ctx": Json,"fields": Json }; Returns: Json
                            },
+"save_part":
+{ Args: { "ctx": Json,"fields": Json }; Returns: Json
+                           },
 "save_request":
 { Args: { "asset_id": string,"category": string,"ctx": Json,"description": string,"id": string }; Returns: Json
+                           },
+"save_stock_location":
+{ Args: { "ctx": Json,"fields": Json }; Returns: Json
                            },
 "schedule_work_order":
 { Args: { "ctx": Json,"id": string,"planned_on": string,"reason"?: string }; Returns: Json
