@@ -367,6 +367,32 @@ isOneToOne: false
       referencedColumns: ["organization_id","part_id","location_id"]
     }
                   ]
+                },"job_stock_movements": {
+                  Row: {
+                    "movement_id": string,"organization_id": string,"request_id": string,"reservation_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "movement_id": string,"organization_id": string,"request_id": string,"reservation_id": string
+                  }
+                  Update: {
+                    "movement_id"?: string,"organization_id"?: string,"request_id"?: string,"reservation_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "job_stock_movements_organization_id_movement_id_fkey"
+      columns: ["organization_id","movement_id"]
+isOneToOne: true
+      referencedRelation: "inventory_movements"
+      referencedColumns: ["organization_id","id"]
+    },{
+      foreignKeyName: "job_stock_movements_organization_id_reservation_id_fkey"
+      columns: ["organization_id","reservation_id"]
+isOneToOne: false
+      referencedRelation: "stock_reservations"
+      referencedColumns: ["organization_id","id"]
+    }
+                  ]
                 },"maintenance_occurrences": {
                   Row: {
                     "assignee_ids": (string)[],"authorized_by": string,"due_at": string,"due_policy": string,"generated_at": string,"id": string,"organization_id": string,"plan_id": string,"revision_id": string,"scheduled_local_date": string,"supervisor_id": string,"timezone": string,"work_order_id": string
@@ -677,6 +703,32 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
+                },"stock_reservations": {
+                  Row: {
+                    "id": string,"issued": number,"location_id": string,"organization_id": string,"part_id": string,"quantity": number,"released": number,"returned": number,"work_order_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "id"?: string,"issued"?: number,"location_id": string,"organization_id": string,"part_id": string,"quantity": number,"released"?: number,"returned"?: number,"work_order_id": string
+                  }
+                  Update: {
+                    "id"?: string,"issued"?: number,"location_id"?: string,"organization_id"?: string,"part_id"?: string,"quantity"?: number,"released"?: number,"returned"?: number,"work_order_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "stock_reservations_organization_id_part_id_location_id_fkey"
+      columns: ["organization_id","part_id","location_id"]
+isOneToOne: false
+      referencedRelation: "inventory_balances"
+      referencedColumns: ["organization_id","part_id","location_id"]
+    },{
+      foreignKeyName: "stock_reservations_organization_id_work_order_id_part_id_fkey"
+      columns: ["organization_id","work_order_id","part_id"]
+isOneToOne: false
+      referencedRelation: "work_order_parts"
+      referencedColumns: ["organization_id","work_order_id","part_id"]
+    }
+                  ]
                 },"work_order_assignments": {
                   Row: {
                     "assigned_at": string,"id": string,"organization_id": string,"unassigned_at": string | null,"user_id": string,"work_order_id": string
@@ -737,6 +789,32 @@ isOneToOne: false
                   Relationships: [
                     {
       foreignKeyName: "work_order_participants_organization_id_work_order_id_fkey"
+      columns: ["organization_id","work_order_id"]
+isOneToOne: false
+      referencedRelation: "work_orders"
+      referencedColumns: ["organization_id","id"]
+    }
+                  ]
+                },"work_order_parts": {
+                  Row: {
+                    "organization_id": string,"part_id": string,"requested": number,"work_order_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "organization_id": string,"part_id": string,"requested": number,"work_order_id": string
+                  }
+                  Update: {
+                    "organization_id"?: string,"part_id"?: string,"requested"?: number,"work_order_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "work_order_parts_organization_id_part_id_fkey"
+      columns: ["organization_id","part_id"]
+isOneToOne: false
+      referencedRelation: "parts"
+      referencedColumns: ["organization_id","id"]
+    },{
+      foreignKeyName: "work_order_parts_organization_id_work_order_id_fkey"
       columns: ["organization_id","work_order_id"]
 isOneToOne: false
       referencedRelation: "work_orders"
@@ -933,8 +1011,14 @@ isOneToOne: true
 "get_inspection":
 { Args: { "assignment_id": string,"organization_id": string }; Returns: Json
                            },
+"get_job_parts":
+{ Args: { "organization_id": string,"work_order_id": string }; Returns: Json
+                           },
 "get_team":
 { Args: { "organization_id": string }; Returns: Json
+                           },
+"issue_reserved_stock":
+{ Args: { "ctx": Json,"fields": Json }; Returns: Json
                            },
 "list_inspection_assignments":
 { Args: { "cursor"?: string,"organization_id": string,"page_size"?: number }; Returns: Json
@@ -992,17 +1076,29 @@ isOneToOne: true
 "release_asset":
 { Args: { "acknowledgment": string,"asset_id": string,"ctx": Json }; Returns: Json
                            },
+"release_reservation":
+{ Args: { "ctx": Json,"fields": Json }; Returns: Json
+                           },
+"request_parts":
+{ Args: { "ctx": Json,"fields": Json }; Returns: Json
+                           },
 "reserve_attachment":
 { Args: { "ctx": Json,"id": string,"media_type": string,"name": string,"size": number }; Returns: Json
                            },
 "reserve_inspection_attachment":
 { Args: { "assignment_id": string,"ctx": Json,"media_type": string,"name": string,"size": number }; Returns: Json
                            },
+"reserve_parts":
+{ Args: { "ctx": Json,"fields": Json }; Returns: Json
+                           },
 "reserve_record_attachment":
 { Args: { "ctx": Json,"media_type": string,"name": string,"parent_id": string,"parent_type": string,"size": number }; Returns: Json
                            },
 "resolve_asset_hold":
 { Args: { "ctx": Json,"disposition": string,"hold_id": string,"reason": string }; Returns: Json
+                           },
+"return_stock":
+{ Args: { "ctx": Json,"fields": Json }; Returns: Json
                            },
 "review_work_order":
 { Args: { "ctx": Json,"decision": string,"id": string,"reason": string }; Returns: Json

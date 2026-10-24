@@ -281,13 +281,25 @@ const recoveryLocation = await owner.rpc('save_stock_location', { ctx: { organiz
 const stockArgs = { ctx: { organization_id: org, request_id: randomUUID() }, fields: { part_id: recoveryPart.data.data.id, location_id: recoveryLocation.data.data.id, quantity: '0.100', unit: 'kg' } };
 const stockReceived = await owner.rpc('receive_stock', stockArgs); assert.equal(stockReceived.error, null);
 assert.equal((await owner.rpc('receive_stock', { ctx: { organization_id: org, request_id: randomUUID() }, fields: { ...stockArgs.fields, quantity: '0.200' } })).error, null);
+const jobPartsCtx = (version) => ({ organization_id: org, request_id: randomUUID(), expected_version: version });
+const jobPartsInitial = await revoked.rpc('get_job_parts', { organization_id: org, work_order_id: job }); assert.equal(jobPartsInitial.error, null);
+const jobPartsRequest = { ctx: jobPartsCtx(jobPartsInitial.data.version), fields: { work_order_id: job, lines: [{ part_id: recoveryPart.data.data.id, quantity: '0.200', unit: 'kg' }] } };
+const requestedParts = await revoked.rpc('request_parts', jobPartsRequest); assert.equal(requestedParts.error, null);
+const jobPartsReserve = { ctx: jobPartsCtx(requestedParts.data.version), fields: { work_order_id: job, lines: [{ ...jobPartsRequest.fields.lines[0], location_id: recoveryLocation.data.data.id }] } };
+const reservedParts = await owner.rpc('reserve_parts', jobPartsReserve); assert.equal(reservedParts.error, null);
+const jobPartsIssue = { ctx: jobPartsCtx(reservedParts.data.version), fields: { work_order_id: job, lines: [{ reservation_id: reservedParts.data.data.reservations[0].id, quantity: '0.050', unit: 'kg' }] } };
+const issuedParts = await owner.rpc('issue_reserved_stock', jobPartsIssue); assert.equal(issuedParts.error, null);
+const jobPartsReturn = { ctx: jobPartsCtx(issuedParts.data.version), fields: { work_order_id: job, lines: [{ ...jobPartsIssue.fields.lines[0], quantity: '0.010' }] } };
+const returnedParts = await owner.rpc('return_stock', jobPartsReturn); assert.equal(returnedParts.error, null);
+const jobPartsBefore = await owner.rpc('get_job_parts', { organization_id: org, work_order_id: job }); assert.equal(jobPartsBefore.error, null);
+assert.equal(jobPartsBefore.data.reconciliation_state, 'consistent');
 const stockArchiveArgs = { ctx: { organization_id: org, request_id: randomUUID(), expected_version: 1 }, fields: { id: recoveryPart.data.data.id, code: 'REC35', name: 'Synthetic recovery stock', unit: 'kg', reorder_threshold: '0.100', archived: true } };
 const archivedStock = await owner.rpc('save_part', stockArchiveArgs); assert.equal(archivedStock.error, null); assert(archivedStock.data.data.archived_at);
 const catalogBefore = await owner.rpc('list_inventory_parts', { organization_id: org }); assert.equal(catalogBefore.error, null);
 const stockBefore = await owner.rpc('list_inventory_balances', { organization_id: org }); assert.equal(stockBefore.error, null);
 const ledgerBefore = await owner.rpc('list_inventory_movements', { organization_id: org }); assert.equal(ledgerBefore.error, null);
-assert.equal(stockBefore.data.items[0].on_hand, '0.300'); assert.equal(stockBefore.data.items[0].available, '0.300');
-assert.equal(ledgerBefore.data.items.length, 2);
+assert.equal(stockBefore.data.items[0].on_hand, '0.260'); assert.equal(stockBefore.data.items[0].reserved, '0.150'); assert.equal(stockBefore.data.items[0].available, '0.110');
+assert.equal(ledgerBefore.data.items.length, 4);
 
 // Snapshot bytes, Auth, schema/data, receipts and non-secret source configuration. Nothing is written as a dump/artifact.
 const owners = () => sql("select md5(string_agg(n.nspname||'.'||c.relname||':'||c.relowner::text||':'||coalesce(c.relacl::text,''),'|' order by n.nspname,c.relname)) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname in ('public','auth','storage','cron') and c.relkind in ('r','v','m','S');").trim();
@@ -403,6 +415,12 @@ assert.deepEqual((await owner.rpc('list_inventory_parts', { organization_id: org
 assert.equal((await owner.rpc('receive_stock', { ...stockArgs, ctx: { organization_id: org, request_id: randomUUID() } })).error?.message, 'INVALID_TRANSITION');
 assert.deepEqual((await owner.rpc('list_inventory_balances', { organization_id: org })).data, stockBefore.data);
 assert.deepEqual((await owner.rpc('list_inventory_movements', { organization_id: org })).data, ledgerBefore.data);
+assert.deepEqual((await owner.rpc('get_job_parts', { organization_id: org, work_order_id: job })).data, jobPartsBefore.data);
+assert.deepEqual((await owner.rpc('issue_reserved_stock', jobPartsIssue)).data, issuedParts.data);
+assert.deepEqual((await owner.rpc('return_stock', jobPartsReturn)).data, returnedParts.data);
+assert.equal((await revoked.rpc('request_parts', jobPartsRequest)).error?.message, 'FORBIDDEN');
+assert.equal(sql(`select count(*) from public.job_stock_movements where organization_id='${org}';`).trim(), '2');
+assert.equal((await fresh.from('stock_reservations').select('id').limit(1)).error?.code, '42501');
 assert.equal((await owner.rpc('receive_stock', { ...stockArgs, fields: { ...stockArgs.fields, quantity: '0.101' } })).error?.message, 'CONFLICT');
 assert.equal((await fresh.from('inventory_movements').select('id').limit(1)).error?.code, '42501');
 assert.equal((await admin.from('inventory_balances').select('id').limit(1)).error?.code, '42501');
