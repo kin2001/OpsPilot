@@ -91,6 +91,7 @@ async function seedServicePage(page: import('@playwright/test').Page, session: S
 test('inspection counts describe the loaded page and keep unverified outcomes out of status totals', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await prepareWorkspacePage(page);
+  const longItemLabel = 'GuardCheck'.repeat(45);
   const assignments = assignmentIds.map(assignment);
   await page.route(`${origin}/rest/v1/rpc/**`, async (route) => {
     if (route.request().method() === 'OPTIONS') return route.fallback();
@@ -106,7 +107,7 @@ test('inspection counts describe the loaded page and keep unverified outcomes ou
         assignment: row,
         revision: {
           id: revisionId, organization_id: fixtureOrganizationIds.alpha, template_id: templateId, revision: 1,
-          title: 'Daily safety check', items: [{ id: itemId, label: 'Check the guard', required: true, safety_relevant: true, evidence_required: false }],
+          title: 'Daily safety check', items: [{ id: itemId, label: longItemLabel, required: true, safety_relevant: true, evidence_required: false }],
           published_by: fixtureUserId, published_at: '2026-10-23T00:00:00.000Z',
         },
         submission: saved, episodes: [], history: saved ? [saved] : [], episode_links: [], holds: [],
@@ -125,16 +126,216 @@ test('inspection counts describe the loaded page and keep unverified outcomes ou
   await expect(counts.getByRole('group', { name: 'In progress: 1' })).toBeVisible();
   await expect(page.getByText(/1 outcome could not be verified/i)).toBeVisible();
   await page.screenshot({ path: 'test-results/por34-inspections.png', fullPage: true });
-  await page.setViewportSize({ width: 390, height: 844 });
-  const pageWidth = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth }));
-  expect(pageWidth.content).toBeLessThanOrEqual(pageWidth.viewport);
+  await page.getByRole('button', { name: /Assignment 40000000/ }).nth(2).click();
+  await expect(page.getByRole('heading', { name: longItemLabel })).toBeVisible();
+  for (const width of [320, 375, 768, 1440]) {
+    await page.setViewportSize({ width, height: 844 });
+    if (width === 320) await page.screenshot({ path: 'test-results/por34-inspections-long-label-320.png', fullPage: true });
+    const pageWidth = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth }));
+    expect(pageWidth.content, `checklist content overflows at ${width}px`).toBeLessThanOrEqual(pageWidth.viewport);
+  }
+});
+
+test('uncertain template saves keep the exact retry identity and lock the new-template action', async ({ page }) => {
+  await prepareWorkspacePage(page);
+  const template = {
+    id: templateId, organization_id: fixtureOrganizationIds.alpha, title: 'Pinned guard checklist', current_revision_id: revisionId,
+    created_by: fixtureUserId, created_at: '2026-10-24T00:00:00.000Z', version: 1,
+  };
+  const templateBodies: Record<string, unknown>[] = [];
+  let templatePublished = false;
+  await page.route(`${origin}/rest/v1/rpc/**`, async (route) => {
+    if (route.request().method() === 'OPTIONS') return route.fallback();
+    const name = new URL(route.request().url()).pathname.split('/').at(-1);
+    if (name === 'list_inspection_assignments') return respond(route, 200, { items: [], next_cursor: null });
+    if (name === 'list_inspection_templates') return respond(route, 200, { items: templatePublished ? [template] : [], next_cursor: null });
+    if (name === 'publish_inspection_template') {
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      templateBodies.push(body);
+      if (templateBodies.length === 1) return respond(route, 503, { message: 'Service unavailable' });
+      templatePublished = true;
+      const requestId = (body.ctx as { request_id: string }).request_id;
+      return respond(route, 200, { data: template, version: 1, request_id: requestId });
+    }
+    return route.fallback();
+  });
+
+  await page.goto('/inspections');
+  await page.getByRole('tab', { name: 'Templates' }).click();
+  await page.getByRole('button', { name: 'New template' }).click();
+  const templateForm = page.locator('section.inspection-form-panel').filter({ has: page.getByRole('heading', { name: 'New checklist template' }) });
+  await templateForm.getByLabel('Template name').fill('Pinned guard checklist');
+  await templateForm.getByLabel('Item 1').fill('Check the guard');
+  await templateForm.getByRole('button', { name: 'Publish template' }).click();
+  await expect(templateForm.getByRole('button', { name: 'Retry exact template save' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'New template' })).toBeDisabled();
+  await expect(templateForm.getByLabel('Template name')).toBeDisabled();
+  await page.getByRole('tab', { name: 'Inspections' }).click();
+  await expect(page.getByRole('button', { name: 'Create template' })).toBeDisabled();
+  await templateForm.getByRole('button', { name: 'Retry exact template save' }).click();
+  await expect(templateForm).toHaveCount(0);
+  expect(templateBodies).toHaveLength(2);
+  expect(templateBodies[1]).toEqual(templateBodies[0]);
+});
+
+test('uncertain assignment saves keep the exact retry identity and lock the new-inspection action', async ({ page }) => {
+  await prepareWorkspacePage(page);
+  const revision = {
+    id: revisionId, organization_id: fixtureOrganizationIds.alpha, template_id: templateId, revision: 1,
+    title: 'Published safety checklist', items: [{ id: itemId, label: 'Check the guard', required: true, safety_relevant: true, evidence_required: false }],
+    published_by: fixtureUserId, published_at: '2026-10-24T00:00:00.000Z',
+  };
+  const template = {
+    id: templateId, organization_id: fixtureOrganizationIds.alpha, title: revision.title, current_revision_id: revisionId,
+    created_by: fixtureUserId, created_at: '2026-10-24T00:00:00.000Z', version: 1,
+  };
+  const savedAssignment = {
+    ...assignment('40000000-0000-4000-8000-000000000014'), template_revision_id: revisionId,
+    assigned_at: '2026-10-24T00:30:00.000Z', due_on: null,
+  };
+  const assignmentBodies: Record<string, unknown>[] = [];
+  let assignmentSaved = false;
+  await page.route(`${origin}/rest/v1/rpc/**`, async (route) => {
+    if (route.request().method() === 'OPTIONS') return route.fallback();
+    const name = new URL(route.request().url()).pathname.split('/').at(-1);
+    if (name === 'list_inspection_assignments') return respond(route, 200, { items: assignmentSaved ? [savedAssignment] : [], next_cursor: null });
+    if (name === 'list_inspection_templates') return respond(route, 200, { items: [template], next_cursor: null });
+    if (name === 'list_inspection_revisions') return respond(route, 200, { items: [revision], next_cursor: null });
+    if (name === 'get_team') return respond(route, 200, [{ user_id: fixtureUserId, role: 'owner', active: true, version: 1 }]);
+    if (name === 'get_inspection') return respond(route, 200, { assignment: savedAssignment, revision, submission: null, episodes: [], history: [], episode_links: [], holds: [] });
+    if (name === 'assign_inspection') {
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      assignmentBodies.push(body);
+      if (assignmentBodies.length === 1) return respond(route, 503, { message: 'Service unavailable' });
+      assignmentSaved = true;
+      const requestId = (body.ctx as { request_id: string }).request_id;
+      return respond(route, 200, { data: savedAssignment, version: 1, request_id: requestId });
+    }
+    return route.fallback();
+  });
+
+  await page.goto('/inspections');
+  await page.getByRole('button', { name: 'New inspection' }).click();
+  const assignmentForm = page.locator('section.inspection-form-panel').filter({ has: page.getByRole('heading', { name: 'New inspection' }) });
+  await assignmentForm.getByLabel('Asset', { exact: true }).selectOption('c2daf4c7-e68c-4783-87c6-26b009a1169d');
+  await assignmentForm.getByLabel('Pinned checklist revision').selectOption(revisionId);
+  await assignmentForm.getByLabel('Inspector').selectOption(fixtureUserId);
+  await assignmentForm.getByRole('button', { name: 'Assign inspection' }).click();
+  await expect(assignmentForm.getByRole('button', { name: 'Retry exact assignment' }).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: 'New inspection' })).toBeDisabled();
+  await expect(assignmentForm.getByLabel('Asset', { exact: true })).toBeDisabled();
+  await assignmentForm.getByRole('button', { name: 'Retry exact assignment' }).first().click();
+  await expect(assignmentForm).toHaveCount(0);
+  expect(assignmentBodies).toHaveLength(2);
+  expect(assignmentBodies[1]).toEqual(assignmentBodies[0]);
+});
+
+test('a selected private image remains retryable after closing and reopening an inspection', async ({ page }) => {
+  await prepareWorkspacePage(page);
+  const id = assignmentIds[2]!;
+  const evidenceIds = ['40000000-0000-4000-8000-000000000026', '40000000-0000-4000-8000-000000000029'];
+  const original = submission(id, 'fail');
+  let latest: FixtureSubmission = original;
+  const revision = {
+    id: revisionId, organization_id: fixtureOrganizationIds.alpha, template_id: templateId, revision: 1,
+    title: 'Daily safety check', items: [{ id: itemId, label: 'Check the guard', required: true, safety_relevant: true, evidence_required: true }],
+    published_by: fixtureUserId, published_at: '2026-10-23T00:00:00.000Z',
+  };
+  const details = () => ({
+    assignment: assignment(id), revision, submission: latest, episodes: [], history: latest === original ? [original] : [original, latest], episode_links: [], holds: [],
+  });
+  const evidence = (status: 'pending' | 'ready', attachmentId = evidenceIds[0]!) => ({
+    id: attachmentId, organization_id: fixtureOrganizationIds.alpha, inspection_assignment_id: id, work_order_id: null, asset_id: null, request_id: null,
+    object_key: `${fixtureOrganizationIds.alpha}/${id}/${attachmentId}`, name: 'guard-recheck.png', media_type: 'image/png', size: 68,
+    uploader_id: fixtureUserId, status, checksum: null, width: 1, height: 1, created_at: '2026-10-24T01:30:00.000Z',
+    ready_at: status === 'ready' ? '2026-10-24T01:31:00.000Z' : null, cleanup_completed_at: null,
+  });
+  const reserveBodies: Record<string, unknown>[] = [];
+  const uploadAttachmentIds: string[] = [];
+  const correctionBodies: Record<string, unknown>[] = [];
+  let uploadAttempts = 0;
+  const validPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jhGQAAAAASUVORK5CYII=', 'base64');
+  await page.route(`${origin}/rest/v1/attachments**`, async (route) => respond(route, 200, []));
+  await page.route(`${origin}/functions/v1/attachment-upload**`, async (route) => {
+    if (route.request().method() === 'OPTIONS') return respond(route, 200, {});
+    if (route.request().method() === 'GET') return route.fulfill({ status: 200, contentType: 'image/png', body: validPng });
+    if (route.request().method() === 'PUT') {
+      uploadAttempts++;
+      uploadAttachmentIds.push(new URL(route.request().url()).searchParams.get('attachment_id') ?? '');
+      if (uploadAttempts === 1) return respond(route, 403, { code: 'FORBIDDEN' });
+      if (uploadAttempts === 2) return respond(route, 503, { code: 'DEPENDENCY_UNAVAILABLE' });
+      return respond(route, 200, evidence('ready', new URL(route.request().url()).searchParams.get('attachment_id') ?? evidenceIds[1]!));
+    }
+    return route.fallback();
+  });
+  await page.route(`${origin}/rest/v1/rpc/**`, async (route) => {
+    if (route.request().method() === 'OPTIONS') return route.fallback();
+    const name = new URL(route.request().url()).pathname.split('/').at(-1);
+    if (name === 'list_inspection_assignments') return respond(route, 200, { items: [assignment(id)], next_cursor: null });
+    if (name === 'list_inspection_templates') return respond(route, 200, { items: [], next_cursor: null });
+    if (name === 'get_inspection') return respond(route, 200, details());
+    if (name === 'reserve_inspection_attachment') {
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      reserveBodies.push(body);
+      const requestId = (body.ctx as { request_id: string }).request_id;
+      return respond(route, 200, { data: evidence('pending', evidenceIds[reserveBodies.length - 1]!), version: 1, request_id: requestId });
+    }
+    if (name === 'correct_inspection') {
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      correctionBodies.push(body);
+      const ctx = body.ctx as { request_id: string };
+      const payload = body.results as FixtureSubmission['results'];
+      latest = {
+        id: '40000000-0000-4000-8000-000000000027', organization_id: fixtureOrganizationIds.alpha, assignment_id: id,
+        template_revision_id: revisionId, inspector_id: fixtureUserId, submitted_at: '2026-10-24T02:00:00.000Z',
+        results: payload, version: 2, supersedes_id: original.id, correction_reason: body.correction_reason as string,
+      };
+      return respond(route, 200, { data: latest, version: 2, request_id: ctx.request_id });
+    }
+    return route.fallback();
+  });
+
+  await page.goto('/inspections');
+  await page.getByRole('button', { name: /Assignment 40000000/ }).first().click();
+  let detail = page.getByRole('region', { name: 'Selected inspection detail' });
+  await detail.getByRole('button', { name: 'Record a correction' }).click();
+  await detail.locator('input[type="file"]').setInputFiles({ name: 'guard-recheck.png', mimeType: 'image/png', buffer: validPng });
+  await detail.getByRole('button', { name: 'Close details' }).click();
+
+  await page.getByRole('button', { name: /Assignment 40000000/ }).first().click();
+  detail = page.getByRole('region', { name: 'Selected inspection detail' });
+  await detail.getByRole('button', { name: 'Record a correction' }).click();
+  await expect(detail.getByRole('button', { name: 'Upload private evidence' })).toBeVisible();
+  await detail.getByRole('button', { name: 'Remove selected file' }).click();
+  await expect(detail.getByRole('button', { name: 'Upload private evidence' })).toHaveCount(0);
+  await detail.locator('input[type="file"]').setInputFiles({ name: 'guard-recheck.png', mimeType: 'image/png', buffer: validPng });
+  await detail.getByLabel('Outcome').selectOption('pass');
+  await detail.getByRole('button', { name: 'Upload private evidence' }).click();
+  await expect(detail.getByText('You do not have permission for this action.')).toBeVisible();
+  await expect(detail.getByRole('button', { name: 'Retry same evidence upload' })).toHaveCount(0);
+  await expect(detail.locator('input[type="file"]')).toBeEnabled();
+  await detail.locator('input[type="file"]').setInputFiles({ name: 'guard-recheck.png', mimeType: 'image/png', buffer: validPng });
+  await detail.getByRole('button', { name: 'Upload private evidence' }).click();
+  await expect(detail.getByRole('button', { name: 'Retry same evidence upload' })).toBeVisible();
+  await expect(detail.getByRole('button', { name: 'Save correction' })).toBeDisabled();
+  await detail.getByRole('button', { name: 'Retry same evidence upload' }).click();
+  await expect(detail.getByText('Private evidence uploaded and ready.')).toBeVisible();
+  await detail.getByLabel('Correction reason').fill('Rechecked the guard and attached the replacement inspection evidence.');
+  await detail.getByRole('button', { name: 'Save correction' }).click();
+  await expect(detail.getByText('Latest saved results · version 2')).toBeVisible();
+  expect(reserveBodies).toHaveLength(2);
+  expect((reserveBodies[0]!.ctx as { request_id: string }).request_id).not.toBe((reserveBodies[1]!.ctx as { request_id: string }).request_id);
+  expect(uploadAttachmentIds).toEqual([...evidenceIds.slice(0, 2), evidenceIds[1]]);
+  expect(correctionBodies).toHaveLength(1);
 });
 
 test('pinned checklist validates N/A reasons and retries one exact correction with linked history', async ({ page }) => {
   await prepareWorkspacePage(page);
   const id = assignmentIds[1]!;
   const evidenceId = '40000000-0000-4000-8000-000000000024';
+  const historicalEvidenceId = '40000000-0000-4000-8000-000000000028';
   const original: FixtureSubmission = submission(id, 'fail');
+  original.results[0] = { ...original.results[0]!, reason: 'The original inspection identified a loose guard.', remarks: 'Original failure remarks before repair.', evidence_ids: [historicalEvidenceId] };
   let latest = original;
   const episode = {
     id: '40000000-0000-4000-8000-000000000020', organization_id: fixtureOrganizationIds.alpha, assignment_id: id,
@@ -158,14 +359,19 @@ test('pinned checklist validates N/A reasons and retries one exact correction wi
   });
   const correctionBodies: Record<string, unknown>[] = [];
   let saveCount = 0;
-  const evidence = (status: 'pending' | 'ready') => ({
-    id: evidenceId, organization_id: fixtureOrganizationIds.alpha, inspection_assignment_id: id, work_order_id: null, asset_id: null, request_id: null,
-    object_key: `${fixtureOrganizationIds.alpha}/${id}/${evidenceId}`, name: 'guard.png', media_type: 'image/png', size: 68,
+  const evidence = (status: 'pending' | 'ready', attachmentId = evidenceId, name = 'guard.png') => ({
+    id: attachmentId, organization_id: fixtureOrganizationIds.alpha, inspection_assignment_id: id, work_order_id: null, asset_id: null, request_id: null,
+    object_key: `${fixtureOrganizationIds.alpha}/${id}/${attachmentId}`, name, media_type: 'image/png', size: 68,
     uploader_id: fixtureUserId, status, checksum: null, width: 1, height: 1, created_at: '2026-10-24T01:30:00.000Z',
     ready_at: status === 'ready' ? '2026-10-24T01:31:00.000Z' : null, cleanup_completed_at: null,
   });
-  await page.route(`${origin}/rest/v1/attachments**`, async (route) => respond(route, 200, []));
-  await page.route(`${origin}/functions/v1/attachment-upload**`, async (route) => respond(route, 200, evidence('ready')));
+  const validPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jhGQAAAAASUVORK5CYII=', 'base64');
+  await page.route(`${origin}/rest/v1/attachments**`, async (route) => respond(route, 200, [evidence('ready', historicalEvidenceId, 'original-guard.png')]));
+  await page.route(`${origin}/functions/v1/attachment-upload**`, async (route) => {
+    if (route.request().method() === 'OPTIONS') return respond(route, 200, {});
+    if (route.request().method() === 'GET') return route.fulfill({ status: 200, contentType: 'image/png', body: validPng });
+    return respond(route, 200, evidence('ready'));
+  });
   await page.route(`${origin}/rest/v1/rpc/**`, async (route) => {
     if (route.request().method() === 'OPTIONS') return route.fallback();
     const name = new URL(route.request().url()).pathname.split('/').at(-1);
@@ -198,8 +404,10 @@ test('pinned checklist validates N/A reasons and retries one exact correction wi
   await expect(detail.getByText('Pinned revision 1')).toBeVisible();
   await expect(detail.getByRole('link', { name: 'Open corrective request' })).toHaveAttribute('href', /requests\?request=/);
   await expect(detail.getByText('Unresolved hold', { exact: true })).toBeVisible();
+  await detail.getByRole('img', { name: 'original-guard.png' }).waitFor({ state: 'visible' });
   await detail.getByRole('button', { name: 'Record a correction' }).click();
   await detail.getByLabel('Outcome').selectOption('not_applicable');
+  await detail.getByLabel('Why this item does not apply').fill('');
   await detail.getByRole('button', { name: 'Save correction' }).click();
   await expect(page.getByText(/explain why this item does not apply/i)).toBeVisible();
   expect(correctionBodies).toHaveLength(0);
@@ -219,6 +427,14 @@ test('pinned checklist validates N/A reasons and retries one exact correction wi
   await expect(detail.getByText('Latest saved results · version 2')).toBeVisible();
   await expect(detail.getByText('Not applicable', { exact: true })).toBeVisible();
   await expect(detail.getByText('Correction reason: Corrected the checklist result after checking the model plate.')).toBeVisible();
+  const history = detail.getByRole('region', { name: 'Correction and hold history' });
+  const previous = history.locator('details[aria-label="Historical results for submission version 1"]');
+  await previous.locator('summary').click();
+  await expect(previous.getByText('Failed', { exact: true })).toBeVisible();
+  await expect(previous).toContainText('Original failure remarks before repair.');
+  await expect(previous).toContainText('The original inspection identified a loose guard.');
+  await expect(previous).toContainText(`Submitted by inspector ${fixtureUserId}`);
+  await expect(previous.getByRole('img', { name: 'original-guard.png' })).toBeVisible();
   expect(correctionBodies).toHaveLength(2);
   expect(correctionBodies[1]).toEqual(correctionBodies[0]);
   expect(saveCount).toBe(2);
@@ -302,8 +518,10 @@ test('loopback P2 inspection failure converts to a repaired request and correcti
   test.skip(!serviceConfig, 'This integrated journey runs only against job-owned loopback Supabase, Storage and Auth services.');
   test.setTimeout(240_000);
   const config = serviceConfig!;
-  const admin = createClient(config.url, config.service, { auth: { persistSession: false, autoRefreshToken: false } });
   const owner = await createServicePerson('por34-owner');
+  const ownerReader = createClient(config.url, config.anon, { auth: { persistSession: false, autoRefreshToken: false } });
+  const ownerSession = await ownerReader.auth.setSession(owner.session);
+  if (ownerSession.error) throw new Error('Synthetic owner session could not be installed for authorized readbacks.');
   const inspector = await createServicePerson('por34-inspector');
   const repairer = await createServicePerson('por34-repairer');
   const reviewer = await createServicePerson('por34-reviewer');
@@ -334,7 +552,7 @@ test('loopback P2 inspection failure converts to a repaired request and correcti
   const publishResponse = ownerPage.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/rest/v1/rpc/publish_inspection_template');
   await templateForm.getByRole('button', { name: 'Publish template' }).click();
   expect((await publishResponse).ok()).toBe(true);
-  const templateRecord = await admin.from('inspection_templates').select('id,current_revision_id').eq('organization_id', organizationId).eq('title', checklistTitle).single();
+  const templateRecord = await ownerReader.from('inspection_templates').select('id,current_revision_id').eq('organization_id', organizationId).eq('title', checklistTitle).single();
   if (templateRecord.error) throw new Error('Synthetic checklist could not be read back.');
   await ownerPage.getByRole('tab', { name: 'Inspections' }).click();
   await ownerPage.getByRole('button', { name: 'New inspection' }).click();
@@ -345,7 +563,7 @@ test('loopback P2 inspection failure converts to a repaired request and correcti
   const assignResponse = ownerPage.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/rest/v1/rpc/assign_inspection');
   await assignmentForm.getByRole('button', { name: 'Assign inspection' }).click();
   expect((await assignResponse).ok()).toBe(true);
-  const assignmentRecord = await admin.from('inspection_assignments').select('id,template_revision_id').eq('organization_id', organizationId).eq('asset_id', assetId).single();
+  const assignmentRecord = await ownerReader.from('inspection_assignments').select('id,template_revision_id').eq('organization_id', organizationId).eq('asset_id', assetId).single();
   if (assignmentRecord.error) throw new Error('Synthetic inspection assignment could not be read back.');
   const assignmentId = assignmentRecord.data.id;
   expect(assignmentRecord.data.template_revision_id).toBe(templateRecord.data.current_revision_id);
@@ -364,7 +582,7 @@ test('loopback P2 inspection failure converts to a repaired request and correcti
   const initialRequestHref = await inspectorDetail.getByRole('link', { name: 'Open corrective request' }).getAttribute('href');
   expect(initialRequestHref).toMatch(/^\/requests\?request=/);
   const initialRequestId = new URL(initialRequestHref!, appOrigin).searchParams.get('request')!;
-  const initialEpisode = await admin.from('inspection_failure_episodes').select('id,hold_id,corrective_request_id').eq('organization_id', organizationId).eq('assignment_id', assignmentId).single();
+  const initialEpisode = await ownerReader.from('inspection_failure_episodes').select('id,hold_id,corrective_request_id').eq('organization_id', organizationId).eq('assignment_id', assignmentId).single();
   if (initialEpisode.error) throw new Error('Initial inspection failure episode could not be read back.');
   expect(initialEpisode.data.corrective_request_id).toBe(initialRequestId);
   expect(initialEpisode.data.hold_id).toBeTruthy();
@@ -410,7 +628,7 @@ test('loopback P2 inspection failure converts to a repaired request and correcti
   await reviewerWorkOrder.getByLabel('Review reason').fill('Inspected the repair record and verified the guard evidence.');
   await reviewerWorkOrder.getByRole('button', { name: 'Approve repair' }).click();
   await expect(reviewerWorkOrder.getByText('completed', { exact: true })).toBeVisible();
-  const participants = await admin.from('work_order_participants').select('user_id').eq('organization_id', organizationId).eq('work_order_id', workOrderId);
+  const participants = await ownerReader.from('work_order_participants').select('user_id').eq('organization_id', organizationId).eq('work_order_id', workOrderId);
   if (participants.error) throw new Error('Repair participants could not be verified.');
   expect(participants.data.map((participant) => participant.user_id)).toEqual(expect.arrayContaining([owner.id, repairer.id]));
   expect(participants.data.map((participant) => participant.user_id)).not.toContain(reviewer.id);
@@ -431,7 +649,7 @@ test('loopback P2 inspection failure converts to a repaired request and correcti
   await reviewerOperations.getByLabel('Release acknowledgment').fill('Reviewed the current asset condition and recorded inspection repair approval.');
   await reviewerOperations.getByRole('button', { name: 'Record asset release' }).click();
   await expect(reviewerAsset.getByText('operational', { exact: true }).first()).toBeVisible();
-  const recordedRelease = await admin.from('asset_releases').select('actor_id,acknowledgment').eq('organization_id', organizationId).eq('asset_id', assetId).single();
+  const recordedRelease = await ownerReader.from('asset_releases').select('actor_id,acknowledgment').eq('organization_id', organizationId).eq('asset_id', assetId).single();
   if (recordedRelease.error) throw new Error('Separate asset release could not be verified.');
   expect(recordedRelease.data).toMatchObject({ actor_id: reviewer.id, acknowledgment: 'Reviewed the current asset condition and recorded inspection repair approval.' });
 
@@ -451,13 +669,13 @@ test('loopback P2 inspection failure converts to a repaired request and correcti
   expect(new Set(hrefs).size).toBe(2);
   await expect(history.getByText('Released hold', { exact: true })).toBeVisible();
   await expect(history.getByText('Unresolved hold', { exact: true })).toBeVisible();
-  const finalDetail = await admin.from('inspection_failure_episodes').select('id,corrective_request_id,predecessor_id,hold_id').eq('organization_id', organizationId).eq('assignment_id', assignmentId).order('created_at');
+  const finalDetail = await ownerReader.from('inspection_failure_episodes').select('id,corrective_request_id,predecessor_id,hold_id').eq('organization_id', organizationId).eq('assignment_id', assignmentId).order('created_at');
   if (finalDetail.error) throw new Error('Fresh inspection failure episode could not be verified.');
   expect(finalDetail.data).toHaveLength(2);
   expect(finalDetail.data[1]?.predecessor_id).toBe(finalDetail.data[0]?.id);
   expect(finalDetail.data[1]?.corrective_request_id).not.toBe(finalDetail.data[0]?.corrective_request_id);
   expect(finalDetail.data[1]?.hold_id).not.toBe(finalDetail.data[0]?.hold_id);
-  const closedRepair = await admin.from('work_orders').select('status').eq('organization_id', organizationId).eq('id', workOrderId).single();
+  const closedRepair = await ownerReader.from('work_orders').select('status').eq('organization_id', organizationId).eq('id', workOrderId).single();
   if (closedRepair.error) throw new Error('Closed repair status could not be verified.');
   expect(closedRepair.data.status).toBe('completed');
   await Promise.all([ownerPage.close(), inspectorPage.close(), repairerPage.close(), reviewerPage.close()]);

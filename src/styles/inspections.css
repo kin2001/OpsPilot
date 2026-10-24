@@ -65,15 +65,16 @@
 .inspection-submitted { margin: 4px 0 18px; padding: 15px; border: 1px solid var(--line); border-radius: 4px; background: #fbfbfa; }
 .inspection-submitted h3, .inspection-history h3 { margin: 0 0 7px; font-size: 1rem; }
 .inspection-submitted > p { margin: 0 0 12px; color: var(--muted); font-size: .82rem; }
-.inspection-submitted > ul, .inspection-private-images { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
-.inspection-submitted > ul > li { padding-top: 10px; border-top: 1px solid var(--line); }
-.inspection-submitted > ul > li > div { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
-.inspection-submitted > ul > li p { margin: 6px 0 0; color: var(--muted); font-size: .83rem; }
+.inspection-submission-results > p { margin: 0 0 12px; color: var(--muted); font-size: .82rem; overflow-wrap: anywhere; }
+.inspection-submission-results > ul, .inspection-private-images { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.inspection-submission-results > ul > li { padding-top: 10px; border-top: 1px solid var(--line); }
+.inspection-submission-results > ul > li > div { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.inspection-submission-results > ul > li p { margin: 6px 0 0; color: var(--muted); font-size: .83rem; overflow-wrap: anywhere; }
 .inspection-checklist { display: grid; gap: 16px; }
 .inspection-checklist > fieldset { display: grid; gap: 12px; min-width: 0; margin: 0; padding: 12px 0 0; border: 0; }
 .inspection-checklist-item { display: grid; gap: 12px; min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 4px; background: #fff; }
-.inspection-item-heading { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 8px; }
-.inspection-item-heading h3 { margin: 0; font-size: .98rem; line-height: 1.35; }
+.inspection-item-heading { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 8px; min-width: 0; }
+.inspection-item-heading h3 { min-width: 0; max-width: 100%; margin: 0; font-size: .98rem; line-height: 1.35; overflow-wrap: anywhere; }
 .inspection-item-tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .inspection-item-tags span { padding: 4px 7px; border: 1px solid var(--line); border-radius: 3px; color: var(--muted); font-size: .68rem; font-weight: 650; }
 .inspection-evidence-upload { display: grid; gap: 8px; }
@@ -88,6 +89,9 @@
 .inspection-history-list > li, .inspection-episodes li { padding: 0 0 8px; color: var(--muted); font-size: .82rem; line-height: 1.5; }
 .inspection-history-list > li > div { display: flex; flex-wrap: wrap; gap: 10px; color: var(--ink); }
 .inspection-history-list p { margin: 5px 0; }
+.inspection-history-results { margin-top: 8px; }
+.inspection-history-results summary { width: fit-content; cursor: pointer; color: var(--action); font-weight: 650; }
+.inspection-history-results .inspection-submission-results { margin-top: 9px; padding: 12px; border: 1px solid var(--line); border-radius: 4px; background: #fbfbfa; }
 .inspection-episodes h4 { margin: 0 0 8px; font-size: .88rem; }
 .inspection-hold { color: var(--danger); font-weight: 700; }
 .inspection-hold--released { color: var(--success); }

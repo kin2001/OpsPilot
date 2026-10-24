@@ -25,6 +25,7 @@ type TemplateIntent = { requestId: string; fields: InspectionTemplateFields; exp
 type SaveIntent = { requestId: string; assignmentId: string; revisionId: string; results: InspectionResults; supersedesId?: string; expectedVersion?: number; correctionReason?: string };
 type ResultDraft = { outcome: '' | 'pass' | 'fail' | 'not_applicable'; reason: string; remarks: string; evidenceIds: string[] };
 type EvidenceIntent = { requestId: string; file: File; attachment: z.output<typeof attachmentRecord> | null };
+type PendingEvidence = { key: string; intent: EvidenceIntent };
 
 function emptyTemplate(): InspectionTemplateFields {
   return { title: '', items: [{ id: crypto.randomUUID(), label: '', required: true, safety_relevant: false, evidence_required: false }] };
@@ -68,42 +69,57 @@ async function currentInspectionRevision(client: ReturnType<typeof useWorkspace>
   throw new Error('DEPENDENCY_UNAVAILABLE');
 }
 
-function EvidenceUpload({ client, organizationId, assignmentId, disabled, onReady, onPendingChange }: {
-  client: ReturnType<typeof useWorkspace>['client']; organizationId: string; assignmentId: string; disabled: boolean;
-  onReady: (attachment: z.output<typeof attachmentRecord>) => void; onPendingChange: (pending: boolean) => void;
+function EvidenceUpload({ client, organizationId, assignmentId, itemId, intent, pendingElsewhere, disabled, onIntentChange, onReady, onBusyChange }: {
+  client: ReturnType<typeof useWorkspace>['client']; organizationId: string; assignmentId: string; itemId: string; intent: EvidenceIntent | null; pendingElsewhere: boolean; disabled: boolean;
+  onIntentChange: (intent: EvidenceIntent | null) => void; onReady: (attachment: z.output<typeof attachmentRecord>) => void; onBusyChange: (busy: boolean) => void;
 }) {
-  const intent = useRef<EvidenceIntent | null>(null);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const selectedFile = intent?.file ?? null;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const chooseFile = (file?: File) => {
-    if (!file || intent.current || disabled) return;
+    if (!file || intent || pendingElsewhere || disabled) return;
     try {
       imageMetadataFor(file);
-      intent.current = { requestId: crypto.randomUUID(), file, attachment: null };
-      setSelectedFile(file); setError(''); setSuccess(''); onPendingChange(true);
-    } catch (cause) { setError(failureMessage(cause)); }
+      onIntentChange({ requestId: crypto.randomUUID(), file, attachment: null });
+      setError(''); setSuccess('');
+    } catch (cause) {
+      setError(failureMessage(cause));
+      if (inputRef.current) inputRef.current.value = '';
+    }
   };
   const upload = async () => {
-    const current = intent.current;
+    let current = intent;
     if (!current) return;
-    setBusy(true); setError(''); setSuccess('');
+    setBusy(true); onBusyChange(true); setError(''); setSuccess('');
     try {
-      if (!current.attachment) current.attachment = await reserveInspectionAttachment(client, organizationId, assignmentId, imageMetadataFor(current.file), current.requestId);
-      const attachment = await uploadPrivateImage(client, organizationId, current.attachment.id, current.file);
-      intent.current = null; setSelectedFile(null); onPendingChange(false); onReady(attachment); setSuccess('Private evidence uploaded and ready.');
+      let reservedAttachment = current.attachment;
+      if (!reservedAttachment) {
+        reservedAttachment = await reserveInspectionAttachment(client, organizationId, assignmentId, imageMetadataFor(current.file), current.requestId);
+        current = { ...current, attachment: reservedAttachment };
+        onIntentChange(current);
+      }
+      const attachment = await uploadPrivateImage(client, organizationId, reservedAttachment.id, current.file);
+      onIntentChange(null); onReady(attachment); setSuccess('Private evidence uploaded and ready.');
     } catch (cause) {
       const code = failureCode(cause);
       setError(`${failureMessage(cause)}${code === 'DEPENDENCY_UNAVAILABLE' || code === 'RATE_LIMITED' ? ' Retry keeps the same request and attachment.' : ''}`);
-      if (!current.attachment && code !== 'DEPENDENCY_UNAVAILABLE' && code !== 'RATE_LIMITED') {
-        intent.current = null; setSelectedFile(null); onPendingChange(false);
+      if (code !== 'DEPENDENCY_UNAVAILABLE' && code !== 'RATE_LIMITED') {
+        onIntentChange(null);
+        if (inputRef.current) inputRef.current.value = '';
       }
-    } finally { setBusy(false); }
+    } finally { setBusy(false); onBusyChange(false); }
+  };
+  const removeSelection = () => {
+    if (!intent || intent.attachment || busy) return;
+    onIntentChange(null); setError(''); setSuccess('');
+    if (inputRef.current) inputRef.current.value = '';
   };
   return <div className="inspection-evidence-upload">
-    <label className="field" htmlFor={`inspection-file-${assignmentId}`}><span>Private evidence</span><input id={`inspection-file-${assignmentId}`} type="file" accept="image/jpeg,image/png,image/webp" disabled={disabled || busy || Boolean(intent.current)} onChange={(event) => chooseFile(event.currentTarget.files?.[0])} /><span className="field-hint">JPEG, PNG or WebP, up to 5 MB. Evidence is stored privately and checked with your current workspace access.</span></label>
-    {selectedFile && <div className="inspection-evidence-pending"><strong>{selectedFile.name}</strong><AppButton type="button" variant="secondary" disabled={disabled || busy} onClick={() => void upload()}>{busy ? 'Uploading…' : intent.current?.attachment ? 'Retry same evidence upload' : 'Upload private evidence'}</AppButton></div>}
+    <label className="field" htmlFor={`inspection-file-${assignmentId}-${itemId}`}><span>Private evidence</span><input ref={inputRef} id={`inspection-file-${assignmentId}-${itemId}`} type="file" accept="image/jpeg,image/png,image/webp" disabled={disabled || busy || Boolean(intent) || pendingElsewhere} onChange={(event) => chooseFile(event.currentTarget.files?.[0])} /><span className="field-hint">JPEG, PNG or WebP, up to 5 MB. Evidence is stored privately and checked with your current workspace access.</span></label>
+    {pendingElsewhere && <p className="field-hint" role="status">Finish the selected evidence upload on its inspection before choosing another image.</p>}
+    {selectedFile && <div className="inspection-evidence-pending"><strong>{selectedFile.name}</strong><AppButton type="button" variant="secondary" disabled={disabled || busy} onClick={() => void upload()}>{busy ? 'Uploading…' : intent?.attachment ? 'Retry same evidence upload' : 'Upload private evidence'}</AppButton>{intent && !intent.attachment && <AppButton type="button" variant="quiet" disabled={busy} onClick={removeSelection}>Remove selected file</AppButton>}</div>}
     {error && <ErrorNotice>{error}</ErrorNotice>}{success && <SuccessNotice>{success}</SuccessNotice>}
   </div>;
 }
@@ -139,7 +155,8 @@ export function InspectionsPage() {
   const [saveBusy, setSaveBusy] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [saveConflict, setSaveConflict] = useState(false);
-  const [pendingUploads, setPendingUploads] = useState<Record<string, boolean>>({});
+  const [pendingEvidence, setPendingEvidence] = useState<PendingEvidence | null>(null);
+  const [uploadBusy, setUploadBusy] = useState(false);
 
   const assignmentCursor = cursorStack.at(-1);
   const assignments = useQuery({
@@ -171,6 +188,9 @@ export function InspectionsPage() {
   const activeDetail = selectedDetailQuery ?? selectedDetail;
   const selected = activeDetail?.data;
   const maySubmitChecklist = selected?.assignment.inspector_id === user.id;
+  const selectedEvidencePrefix = selected ? `${selected.assignment.id}:` : '';
+  const evidencePendingForSelected = Boolean(selectedEvidencePrefix && pendingEvidence?.key.startsWith(selectedEvidencePrefix));
+  const evidencePendingElsewhere = Boolean(pendingEvidence && !pendingEvidence.key.startsWith(selectedEvidencePrefix));
   const attachments = useQuery({
     queryKey: ['inspection-attachments', user.id, organization.id, role, selectedId], enabled: Boolean(selectedId && activeDetail?.data),
     queryFn: async ({ signal }) => {
@@ -222,14 +242,17 @@ export function InspectionsPage() {
   }, [selected?.assignment.id, selected?.submission?.id, selected?.revision.id]);
 
   const openNewAssignment = () => {
+    if (assignmentIntentRef.current || assignmentBusy) return;
     setShowAssignmentForm(true); setAssignmentFields({ asset_id: '', template_revision_id: '', inspector_id: '', due_on: '' });
     setAssignmentError(''); setAssignmentIntent(null); assignmentIntentRef.current = null;
   };
   const openNewTemplate = () => {
+    if (templateIntentRef.current || templateBusy) return;
     setView('templates'); setShowTemplateForm(true); setTemplateEditor({}); setTemplateFields(emptyTemplate());
     setTemplateError(''); setTemplateConflict(false); setTemplateIntent(null); templateIntentRef.current = null;
   };
   const openTemplateRevision = (template: Template) => {
+    if (templateIntentRef.current || templateBusy) return;
     const revision = revisionByTemplate.get(template.id);
     if (!revision) return;
     setShowTemplateForm(true); setTemplateEditor({ id: template.id, expectedVersion: template.version });
@@ -289,6 +312,10 @@ export function InspectionsPage() {
   const setItemDraft = (itemId: string, next: Partial<ResultDraft>) => setDraft((current) => ({
     ...current, [itemId]: { ...(current[itemId] ?? { outcome: '', reason: '', remarks: '', evidenceIds: [] }), ...next },
   }));
+  const setEvidenceIntent = (key: string, intent: EvidenceIntent | null) => setPendingEvidence((current) => {
+    if (intent) return { key, intent };
+    return current?.key === key ? null : current;
+  });
   const handleChecklistSave = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!selected || !selectedId || saveIntentRef.current) return;
@@ -343,10 +370,10 @@ export function InspectionsPage() {
   const pageLabel = assignmentsPending ? 'Loading inspections…' : assignments.isError ? 'Inspections unavailable' : `${assignmentRows.length} inspections on this page`;
   const formLocked = Boolean(assignmentIntent) || assignmentBusy;
   const checklistLocked = Boolean(saveIntent) || saveBusy;
-  const checklistBlocked = checklistLocked || Object.values(pendingUploads).some(Boolean);
+  const checklistBlocked = checklistLocked || evidencePendingForSelected;
 
   return <section className="inspections-page">
-    <PageHeader eyebrow="Operational checks" title="Inspections" description={`Versioned checklists and inspection history for ${organization.name}.`} action={isCoordinator && <AppButton onClick={openNewAssignment}>New inspection</AppButton>} />
+    <PageHeader eyebrow="Operational checks" title="Inspections" description={`Versioned checklists and inspection history for ${organization.name}.`} action={isCoordinator && <AppButton disabled={formLocked || uploadBusy} onClick={openNewAssignment}>New inspection</AppButton>} />
     <p className="inspection-scope-note">Counts and outcome summary describe the currently loaded assignment page only. Use the page controls to move through the bounded record list.</p>
     <section className="inspection-counts" aria-label="Inspection counts">
       <div className="inspection-count" role="group" aria-label={`Inspections on this page: ${assignmentsPending || assignments.isError ? '—' : assignmentRows.length}`}><strong>{assignmentsPending || assignments.isError ? '—' : assignmentRows.length}</strong><span>Inspections on this page</span></div>
@@ -368,7 +395,7 @@ export function InspectionsPage() {
             const outcomeKey = query?.isError ? 'unverified' : query?.isPending ? 'checking' : outcome.toLowerCase().replaceAll(' ', '-');
             const asset = assetById.get(assignment.asset_id);
             return <tr key={assignment.id} data-selected={selectedId === assignment.id}>
-              <td data-label="Assignment"><button type="button" className="inspection-row-select" aria-pressed={selectedId === assignment.id} disabled={Boolean(saveIntent) || saveBusy} onClick={() => setSelectedId(assignment.id)}>Assignment {assignment.id.slice(0, 8)}</button></td>
+              <td data-label="Assignment"><button type="button" className="inspection-row-select" aria-pressed={selectedId === assignment.id} disabled={Boolean(saveIntent) || saveBusy || uploadBusy} onClick={() => setSelectedId(assignment.id)}>Assignment {assignment.id.slice(0, 8)}</button></td>
               <td data-label="Template">{detail?.revision.title ?? 'Pinned checklist'}</td><td data-label="Asset">{asset ? `${asset.code} · ${asset.name}` : `Asset ${assignment.asset_id.slice(0, 8)}`}</td>
               <td data-label="Inspector">{assignment.inspector_id === user.id ? 'You' : `Member · ${assignment.inspector_id.slice(0, 8)}`}</td><td data-label="Due">{displayDate(assignment.due_on)}</td>
               <td data-label="Outcome"><span className={`inspection-status inspection-status--${outcomeKey}`}>{outcome}</span>{query?.isError && <button className="inspection-inline-link" type="button" onClick={() => void query.refetch()}>Retry outcome</button>}</td>
@@ -383,12 +410,12 @@ export function InspectionsPage() {
             const revision = revisionByTemplate.get(template.id); const query = templateRevisions[templateRows.indexOf(template)];
             return <li key={template.id}><div><strong>{template.title}</strong><span>{query?.isError ? 'Revision unavailable' : revision ? `Revision ${revision.revision}` : 'Loading revision…'}</span></div><span>{revision ? `${revision.items.length} items` : '—'}</span></li>;
           })}</ul> : <p className="inspection-empty">No checklist templates are available.</p>}
-          {isCoordinator && <AppButton type="button" variant="secondary" onClick={openNewTemplate}>Create template</AppButton>}
+          {isCoordinator && <AppButton type="button" variant="secondary" disabled={Boolean(templateIntent) || templateBusy} onClick={openNewTemplate}>Create template</AppButton>}
         </section>
         <OutcomeSummary total={assignmentRows.length} passed={passedCount} failed={failedCount} inProgress={inProgressCount} pending={!outcomesKnown} />
       </aside>
     </div> : <section id="inspection-template-panel" role="tabpanel" aria-labelledby="inspection-template-tab" className="inspection-panel inspection-template-panel">
-      <div className="inspection-panel-heading"><div><h2>Templates</h2><p>Published revisions stay pinned to existing assignments.</p></div>{isCoordinator && <AppButton onClick={openNewTemplate}>New template</AppButton>}</div>
+      <div className="inspection-panel-heading"><div><h2>Templates</h2><p>Published revisions stay pinned to existing assignments.</p></div>{isCoordinator && <AppButton disabled={Boolean(templateIntent) || templateBusy} onClick={openNewTemplate}>New template</AppButton>}</div>
       {templates.isPending ? <LoadingNotice label="Loading authorized templates…" /> : templates.isError ? <div><ErrorNotice>Templates are unavailable.</ErrorNotice><AppButton variant="secondary" onClick={() => void templates.refetch()}>Retry templates</AppButton></div> : templateRows.length ? <ul className="inspection-template-list inspection-template-list--full">{templateRows.map((template, index) => {
         const query = templateRevisions[index]; const revision = query?.data;
         return <li key={template.id}><div><strong>{template.title}</strong><span>{query?.isError ? 'Current revision unavailable' : revision ? `Revision ${revision.revision} · published ${displayInstant(revision.published_at, organization.timezone)}` : 'Loading current revision…'}</span></div><span>{revision ? `${revision.items.length} items` : '—'}</span>{isCoordinator && <AppButton type="button" variant="secondary" disabled={!revision || Boolean(templateIntent)} onClick={() => openTemplateRevision(template)}>Revise</AppButton>}</li>;
@@ -431,8 +458,8 @@ export function InspectionsPage() {
 
     {selectedId && <section className="inspection-panel inspection-detail-panel" aria-label="Selected inspection detail">
       {activeDetail?.isPending ? <LoadingNotice label="Loading authorized inspection history…" /> : activeDetail?.isError || !selected ? <div><ErrorNotice>This inspection or its history is unavailable with your current workspace access.</ErrorNotice><AppButton type="button" variant="secondary" onClick={() => void activeDetail?.refetch()}>Retry inspection detail</AppButton></div> : <>
-        <div className="inspection-panel-heading"><div><p className="inspection-overline">Assignment {selected.assignment.id.slice(0, 8)} · pinned revision {selected.revision.revision}</p><h2>{selected.revision.title}</h2><p>{assetById.get(selected.assignment.asset_id)?.name ?? `Asset ${selected.assignment.asset_id.slice(0, 8)}`} · due {displayDate(selected.assignment.due_on)}</p></div><AppButton type="button" variant="quiet" disabled={Boolean(saveIntent) || saveBusy} onClick={() => setSelectedId(null)}>Close details</AppButton></div>
-        {selected.submission && !correcting && <ResultList detail={selected} attachments={attachments.data ?? []} client={client} organizationId={organization.id} userId={user.id} timeZone={organization.timezone} />}
+        <div className="inspection-panel-heading"><div><p className="inspection-overline">Assignment {selected.assignment.id.slice(0, 8)} · pinned revision {selected.revision.revision}</p><h2>{selected.revision.title}</h2><p>{assetById.get(selected.assignment.asset_id)?.name ?? `Asset ${selected.assignment.asset_id.slice(0, 8)}`} · due {displayDate(selected.assignment.due_on)}</p></div><AppButton type="button" variant="quiet" disabled={Boolean(saveIntent) || saveBusy || uploadBusy} onClick={() => setSelectedId(null)}>Close details</AppButton></div>
+        {selected.submission && !correcting && <ResultList detail={selected} attachments={attachments.data ?? []} evidenceState={attachments.isError ? 'failed' : attachments.isPending ? 'loading' : 'loaded'} client={client} organizationId={organization.id} userId={user.id} timeZone={organization.timezone} />}
         {(correcting || !selected.submission) && maySubmitChecklist ? <form className="inspection-checklist" onSubmit={handleChecklistSave}>
           <fieldset disabled={checklistLocked}>
             <legend>{correcting ? 'Correct the latest inspection' : 'Pinned checklist'}</legend>
@@ -441,6 +468,7 @@ export function InspectionsPage() {
               const result = draft[item.id] ?? { outcome: '', reason: '', remarks: '', evidenceIds: [] };
               const invalid = item.required && !result.outcome || result.outcome === 'not_applicable' && !result.reason.trim() || result.outcome !== '' && result.outcome !== 'pass' && !result.remarks.trim() || Boolean(item.evidence_required && result.outcome && !result.evidenceIds.length);
               const evidence = (attachments.data ?? []).filter((attachment) => result.evidenceIds.includes(attachment.id));
+              const evidenceKey = `${selected.assignment.id}:${item.id}`;
               return <article className="inspection-checklist-item" key={item.id}>
                 <div className="inspection-item-heading"><h3>{item.label}</h3><div className="inspection-item-tags">{item.required && <span>Required</span>}{item.safety_relevant && <span>Safety relevant</span>}{item.evidence_required && <span>Evidence required</span>}</div></div>
                 <SelectField id={`inspection-outcome-${item.id}`} label="Outcome" required={item.required} value={result.outcome} error={invalid && item.required && !result.outcome ? 'Choose an outcome.' : undefined} onChange={(event) => setItemDraft(item.id, { outcome: event.target.value as ResultDraft['outcome'] })}><option value="">Choose an outcome</option><option value="pass">Pass</option><option value="fail">Fail</option><option value="not_applicable">Not applicable</option></SelectField>
@@ -448,20 +476,23 @@ export function InspectionsPage() {
                 <TextAreaField id={`inspection-remarks-${item.id}`} label={result.outcome === 'fail' ? 'Failure remarks' : 'Remarks'} required={result.outcome !== '' && result.outcome !== 'pass'} maxLength={4000} value={result.remarks} error={result.outcome !== '' && result.outcome !== 'pass' && !result.remarks.trim() ? 'Add remarks for this result.' : undefined} onChange={(event) => setItemDraft(item.id, { remarks: event.target.value })} />
                 {evidence.length > 0 && <ul className="inspection-private-images">{evidence.map((attachment) => <li key={attachment.id}><PrivateImage client={client} organizationId={organization.id} userId={user.id} attachment={attachment} /></li>)}</ul>}
                 {attachments.isError && <ErrorNotice>Private evidence could not be listed for this assignment.</ErrorNotice>}
-                <EvidenceUpload client={client} organizationId={organization.id} assignmentId={selected.assignment.id} disabled={checklistLocked} onReady={(attachment) => {
-                  setItemDraft(item.id, { evidenceIds: [...new Set([...result.evidenceIds, attachment.id])] });
-                  cache.setQueryData<z.output<typeof attachmentRows>>(['inspection-attachments', user.id, organization.id, role, selected.assignment.id], (current) => current ? [...current.filter((row) => row.id !== attachment.id), attachment].slice(-10) : [attachment]);
-                }} onPendingChange={(pending) => setPendingUploads((current) => ({ ...current, [item.id]: pending }))} />
+                <EvidenceUpload client={client} organizationId={organization.id} assignmentId={selected.assignment.id} itemId={item.id} intent={pendingEvidence?.key === evidenceKey ? pendingEvidence.intent : null} pendingElsewhere={evidencePendingElsewhere} disabled={checklistLocked} onIntentChange={(intent) => setEvidenceIntent(evidenceKey, intent)} onBusyChange={setUploadBusy} onReady={(attachment) => {
+                    setDraft((current) => {
+                      const currentResult = current[item.id] ?? { outcome: '', reason: '', remarks: '', evidenceIds: [] };
+                      return { ...current, [item.id]: { ...currentResult, evidenceIds: [...new Set([...currentResult.evidenceIds, attachment.id])] } };
+                    });
+                    cache.setQueryData<z.output<typeof attachmentRows>>(['inspection-attachments', user.id, organization.id, role, selected.assignment.id], (current) => current ? [...current.filter((row) => row.id !== attachment.id), attachment].slice(-10) : [attachment]);
+                  }} />
               </article>;
             })}
           </fieldset>
           {saveError && <ErrorNotice>{saveError}</ErrorNotice>}
           {saveConflict && <div className="inspection-pending" role="alert"><p>This inspection changed after your draft was loaded. Reloading discards the local draft; the saved history remains intact.</p><AppButton type="button" variant="secondary" onClick={() => void reloadAfterConflict()}>Discard draft and reload inspection</AppButton></div>}
-          {saveIntent && <div className="inspection-pending" role="alert"><p>The save result is uncertain. The checklist and request identity are locked for retry.</p><AppButton type="button" disabled={saveBusy || Object.values(pendingUploads).some(Boolean)} onClick={() => void runChecklistSave()}>{saveBusy ? 'Retrying exact save…' : 'Retry exact checklist save'}</AppButton></div>}
-          {Object.values(pendingUploads).some(Boolean) && <p className="field-hint" role="status">Finish or retry private evidence uploads before saving this inspection.</p>}
+          {saveIntent && <div className="inspection-pending" role="alert"><p>The save result is uncertain. The checklist and request identity are locked for retry.</p><AppButton type="button" disabled={saveBusy || evidencePendingForSelected} onClick={() => void runChecklistSave()}>{saveBusy ? 'Retrying exact save…' : 'Retry exact checklist save'}</AppButton></div>}
+          {evidencePendingForSelected && <p className="field-hint" role="status">Finish or retry private evidence uploads before saving this inspection.</p>}
           <AppButton type="submit" disabled={checklistBlocked || attachments.isError}>{saveBusy ? 'Saving…' : correcting ? 'Save correction' : 'Submit inspection'}</AppButton>
         </form> : selected.submission ? <div className="inspection-correction-action">{maySubmitChecklist ? <AppButton type="button" variant="secondary" onClick={() => { setDraft(newDraft(selected.revision, selected.submission ?? undefined)); setCorrecting(true); setCorrectionReason(''); setSaveError(''); }}>Record a correction</AppButton> : <p role="status">Only the assigned inspector can submit or correct this checklist.</p>}<p>Corrections preserve submitted results and may create a new corrective request and hold when a failure returns after its prior remedy closes.</p></div> : <p className="field-hint" role="status">Only the assigned inspector can submit this checklist.</p>}
-        <InspectionHistory detail={selected} timeZone={organization.timezone} />
+        <InspectionHistory detail={selected} attachments={attachments.data ?? []} evidenceState={attachments.isError ? 'failed' : attachments.isPending ? 'loading' : 'loaded'} client={client} organizationId={organization.id} userId={user.id} timeZone={organization.timezone} />
       </>}
     </section>}
   </section>;
@@ -478,26 +509,37 @@ function OutcomeSummary({ total, passed, failed, inProgress, pending }: { total:
   </section>;
 }
 
-function ResultList({ detail, attachments, client, organizationId, userId, timeZone }: {
-  detail: InspectionDetail; attachments: z.output<typeof attachmentRecord>[]; client: ReturnType<typeof useWorkspace>['client']; organizationId: string; userId: string; timeZone: string;
-}) {
+type EvidenceReadState = 'loading' | 'failed' | 'loaded';
+type SubmissionResultsProps = {
+  detail: InspectionDetail; submission: NonNullable<InspectionDetail['submission']>; attachments: z.output<typeof attachmentRecord>[];
+  evidenceState: EvidenceReadState; client: ReturnType<typeof useWorkspace>['client']; organizationId: string; userId: string; timeZone: string;
+};
+
+function ResultList({ detail, attachments, evidenceState, client, organizationId, userId, timeZone }: Omit<SubmissionResultsProps, 'submission'>) {
   const submission = detail.submission;
   if (!submission) return null;
-  return <section className="inspection-submitted" aria-label="Latest saved results"><h3>Latest saved results · version {submission.version}</h3><p>Submitted {displayInstant(submission.submitted_at, timeZone)}{submission.correction_reason ? ` · Correction: ${submission.correction_reason}` : ''}</p><ul>{submission.results.map((result) => {
-    const item = detail.revision.items.find((candidate) => candidate.id === result.item_id);
-    const images = attachments.filter((attachment) => result.evidence_ids.includes(attachment.id));
-    return <li key={result.item_id}><div><strong>{item?.label ?? `Checklist item ${result.item_id.slice(0, 8)}`}</strong><span className={`inspection-status inspection-status--${result.outcome === 'not_applicable' ? 'not-applicable' : result.outcome}`}>{result.outcome === 'not_applicable' ? 'Not applicable' : result.outcome === 'pass' ? 'Passed' : 'Failed'}</span></div>{result.reason && <p>Reason: {result.reason}</p>}{result.remarks && <p>Remarks: {result.remarks}</p>}{images.length > 0 && <ul className="inspection-private-images">{images.map((attachment) => <li key={attachment.id}><PrivateImage client={client} organizationId={organizationId} userId={userId} attachment={attachment} /></li>)}</ul>}</li>;
-  })}</ul></section>;
+  return <section className="inspection-submitted" aria-label="Latest saved results"><h3>Latest saved results · version {submission.version}</h3>
+    <SubmissionResults detail={detail} submission={submission} attachments={attachments} evidenceState={evidenceState} client={client} organizationId={organizationId} userId={userId} timeZone={timeZone} />
+  </section>;
 }
 
-function InspectionHistory({ detail, timeZone }: { detail: InspectionDetail; timeZone: string }) {
+function SubmissionResults({ detail, submission, attachments, evidenceState, client, organizationId, userId, timeZone }: SubmissionResultsProps) {
+  return <div className="inspection-submission-results"><p>Submitted {displayInstant(submission.submitted_at, timeZone)} · Submitted by inspector {submission.inspector_id}{submission.correction_reason ? ` · Correction: ${submission.correction_reason}` : ''}</p><ul>{submission.results.map((result) => {
+    const item = detail.revision.items.find((candidate) => candidate.id === result.item_id);
+    const images = attachments.filter((attachment) => result.evidence_ids.includes(attachment.id));
+    const missingEvidenceCount = result.evidence_ids.length - images.length;
+    return <li key={result.item_id}><div><strong>{item?.label ?? `Checklist item ${result.item_id.slice(0, 8)}`}</strong><span className={`inspection-status inspection-status--${result.outcome === 'not_applicable' ? 'not-applicable' : result.outcome}`}>{result.outcome === 'not_applicable' ? 'Not applicable' : result.outcome === 'pass' ? 'Passed' : 'Failed'}</span></div>{result.reason && <p>Reason: {result.reason}</p>}{result.remarks && <p>Remarks: {result.remarks}</p>}{images.length > 0 && <ul className="inspection-private-images">{images.map((attachment) => <li key={attachment.id}><PrivateImage client={client} organizationId={organizationId} userId={userId} attachment={attachment} /></li>)}</ul>}{missingEvidenceCount > 0 && <p role="status">{evidenceState === 'failed' ? 'Private evidence references could not be verified.' : evidenceState === 'loading' ? 'Loading authorized private evidence…' : `${missingEvidenceCount} evidence reference${missingEvidenceCount === 1 ? ' is' : 's are'} outside the 10 most recent authorized evidence records currently loaded.`}</p>}</li>;
+  })}</ul></div>;
+}
+
+function InspectionHistory({ detail, attachments, evidenceState, client, organizationId, userId, timeZone }: Omit<SubmissionResultsProps, 'submission'>) {
   if (!detail.history.length && !detail.episodes.length && !detail.holds.length) return null;
   const holdById = new Map(detail.holds.map((hold) => [hold.id, hold]));
   return <section className="inspection-history" aria-labelledby="inspection-history-title"><h3 id="inspection-history-title">Correction and hold history</h3>
-    {detail.history.length > 0 && <ol className="inspection-history-list">{detail.history.map((submission) => <li key={submission.id}><div><strong>Submission version {submission.version}</strong><span>{displayInstant(submission.submitted_at, timeZone)}</span></div>{submission.correction_reason && <p>Correction reason: {submission.correction_reason}</p>}{submission.supersedes_id && <p>Supersedes submission {submission.supersedes_id.slice(0, 8)}.</p>}{detail.episode_links.filter((link) => link.submission_id === submission.id).map((link) => {
+    {detail.history.length > 0 && <ol className="inspection-history-list">{detail.history.map((submission) => <li key={submission.id}><div><strong>Submission version {submission.version}</strong><span>{displayInstant(submission.submitted_at, timeZone)}</span></div><p>Submitted by inspector {submission.inspector_id}</p>{submission.correction_reason && <p>Correction reason: {submission.correction_reason}</p>}{submission.supersedes_id && <p>Supersedes submission {submission.supersedes_id.slice(0, 8)}.</p>}{detail.episode_links.filter((link) => link.submission_id === submission.id).map((link) => {
       const episode = detail.episodes.find((item) => item.id === link.episode_id); const hold = episode?.hold_id ? holdById.get(episode.hold_id) : undefined;
       return <p key={`${link.submission_id}:${link.item_id}`}><span>Failure episode · </span>{episode?.predecessor_id && <span>linked to prior episode {episode.predecessor_id.slice(0, 8)} · </span>}{episode ? <Link to={`/requests?request=${encodeURIComponent(episode.corrective_request_id)}`}>Open corrective request</Link> : <span>Corrective request link unavailable</span>}{hold && <> · <span className={hold.released_at ? 'inspection-hold inspection-hold--released' : 'inspection-hold'}>{hold.released_at ? 'Released hold' : hold.resolved_at ? 'Resolved; unreleased hold' : 'Unresolved hold'}</span></>}</p>;
-    })}</li>)}</ol>}
+    })}{submission.id !== detail.submission?.id && <details className="inspection-history-results" aria-label={`Historical results for submission version ${submission.version}`}><summary>View saved results for version {submission.version}</summary><SubmissionResults detail={detail} submission={submission} attachments={attachments} evidenceState={evidenceState} client={client} organizationId={organizationId} userId={userId} timeZone={timeZone} /></details>}</li>)}</ol>}
     {detail.episodes.length > 0 && <div className="inspection-episodes"><h4>Failure episodes</h4><ul>{detail.episodes.map((episode) => {
       const hold = episode.hold_id ? holdById.get(episode.hold_id) : undefined;
       return <li key={episode.id}><span>Episode {episode.id.slice(0, 8)} · {displayInstant(episode.created_at, timeZone)}</span>{episode.predecessor_id && <span> · follows {episode.predecessor_id.slice(0, 8)}</span>}<span> · </span><Link to={`/requests?request=${encodeURIComponent(episode.corrective_request_id)}`}>Corrective request</Link>{hold && <span className={hold.released_at ? 'inspection-hold inspection-hold--released' : 'inspection-hold'}> · {hold.released_at ? 'Released' : hold.resolved_at ? 'Resolved; unreleased' : 'Unresolved hold'}</span>}</li>;
