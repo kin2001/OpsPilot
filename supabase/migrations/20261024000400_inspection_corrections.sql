@@ -112,7 +112,13 @@ begin
    select * into prior_episode from public.inspection_failure_episodes e where e.organization_id=org and e.assignment_id=assignment.id and e.item_id=(item->>'id')::uuid and not exists(select 1 from public.inspection_failure_episodes child where child.organization_id=org and child.predecessor_id=e.id);
    if prior_episode.id is not null then
     select * into remedy from public.maintenance_requests where organization_id=org and id=prior_episode.corrective_request_id;
-    if remedy.status in ('draft','submitted','returned') or (remedy.status='converted' and exists(select 1 from public.work_orders w where w.organization_id=org and w.id=remedy.converted_work_order_id and w.status not in ('completed','canceled'))) then continue; end if;
+    if remedy.status in ('draft','submitted','returned') or (remedy.status='converted' and exists(select 1 from public.work_orders w where w.organization_id=org and w.id=remedy.converted_work_order_id and w.status not in ('completed','canceled'))) then
+     if (item->>'safety_relevant')::boolean and not exists(select 1 from public.asset_holds h where h.organization_id=org and h.source='inspection' and h.source_id=prior_episode.id and h.resolved_at is null and h.released_at is null) then
+      insert into public.asset_holds(organization_id,asset_id,source,source_id,reason,created_by) values(org,asset.id,'inspection',prior_episode.id,'Inspection failure: '||(item->>'label'),actor) returning id into hold_id;
+      insert into public.audit_logs(organization_id,actor_id,action,entity_id,request_id,changes) values(org,actor,'inspection.hold_renewed',hold_id,request,jsonb_build_object('submission_id',submission.id,'episode_id',prior_episode.id,'corrective_request_id',remedy.id));
+     end if;
+     continue;
+    end if;
    end if;
    episode_id:=gen_random_uuid();hold_id:=null;
    insert into public.maintenance_requests(organization_id,asset_id,reporter_id,description,category,status) values(org,asset.id,actor,'Inspection failure: '||(item->>'label'),'inspection','submitted') returning id into request_id;
@@ -124,7 +130,7 @@ begin
    insert into public.audit_logs(organization_id,actor_id,action,entity_id,request_id,changes) values(org,actor,'inspection.failure_episode',episode_id,request,jsonb_build_object('submission_id',submission.id,'corrective_request_id',request_id,'hold_id',hold_id,'item_id',item->>'id'));
    insert into public.notifications(organization_id,recipient_user_id,event_id,category,source_id) select org,user_id,episode_id,'inspection_failure',assignment.id from public.organization_members where organization_id=org and active and organization_members.role in ('owner','manager','supervisor') and private.auth_user_active(user_id) on conflict do nothing;
   end loop;
-  if exists(select 1 from public.inspection_failure_episodes where organization_id=org and submission_id=submission.id and inspection_failure_episodes.hold_id is not null) then perform private.refresh_availability(org,asset.id); end if;
+  perform private.refresh_availability(org,asset.id);
   data:=to_jsonb(submission);
  else raise exception using message='VALIDATION';
  end case;
@@ -169,8 +175,25 @@ begin
  from public.inspection_submissions s cross join lateral jsonb_array_elements(s.results) r
  cross join lateral (select e.id from public.inspection_failure_episodes e join public.inspection_submissions origin on origin.organization_id=e.organization_id and origin.id=e.submission_id where e.organization_id=s.organization_id and e.assignment_id=s.assignment_id and e.item_id=(r.value->>'item_id')::uuid and origin.version<=s.version order by origin.version desc limit 1) link
  where s.organization_id=get_inspection.organization_id and s.assignment_id=get_inspection.assignment_id and r.value->>'outcome'='fail'),
- 'holds',(select coalesce(jsonb_agg(to_jsonb(h) order by h.id),'[]') from public.asset_holds h join public.inspection_failure_episodes e on e.organization_id=h.organization_id and e.hold_id=h.id where e.organization_id=get_inspection.organization_id and e.assignment_id=get_inspection.assignment_id));
+ 'holds',(select coalesce(jsonb_agg(to_jsonb(h) order by h.id),'[]') from public.asset_holds h join public.inspection_failure_episodes e on e.organization_id=h.organization_id and h.source='inspection' and h.source_id=e.id where e.organization_id=get_inspection.organization_id and e.assignment_id=get_inspection.assignment_id));
 end $$;
 create function public.correct_inspection(ctx jsonb,assignment_id uuid,template_revision_id uuid,supersedes_id uuid,correction_reason text,results jsonb) returns jsonb language sql security definer set search_path='' as $$ select private.inspection_command(ctx,'correct_inspection',jsonb_build_object('assignment_id',assignment_id,'template_revision_id',template_revision_id,'supersedes_id',supersedes_id,'correction_reason',correction_reason,'results',results)) $$;
 revoke all on function public.correct_inspection(jsonb,uuid,uuid,uuid,text,jsonb) from public,anon,authenticated,service_role;
 grant execute on function public.correct_inspection(jsonb,uuid,uuid,uuid,text,jsonb) to authenticated;
+
+create or replace function private.inspection_release_guard() returns trigger language plpgsql security definer set search_path='' as $$
+begin
+ if exists(select 1 from public.asset_holds h join public.inspection_failure_episodes e on e.organization_id=h.organization_id and h.source='inspection' and h.source_id=e.id
+  join public.work_orders w on w.organization_id=e.organization_id and w.source_request_id=e.corrective_request_id
+  join public.work_order_participants p on p.organization_id=w.organization_id and p.work_order_id=w.id
+  where h.organization_id=new.organization_id and h.asset_id=new.asset_id and h.released_at is null and p.user_id=new.actor_id) then raise exception using message='FORBIDDEN'; end if;
+ return new;
+end $$;
+create or replace function private.inspection_hold_guard() returns trigger language plpgsql security definer set search_path='' as $$
+begin
+ if old.source='inspection' and old.resolved_at is null and new.resolved_at is not null and exists(
+  select 1 from public.inspection_failure_episodes e join public.work_orders w on w.organization_id=e.organization_id and w.source_request_id=e.corrective_request_id
+  where e.organization_id=old.organization_id and e.id=old.source_id and (w.status not in ('completed','canceled') or (w.status='completed' and not exists(select 1 from public.work_order_reviews r where r.organization_id=w.organization_id and r.work_order_id=w.id and r.repair_revision=w.repair_revision and r.decision='approved')))
+ ) then raise exception using message='INVALID_TRANSITION'; end if;
+ return new;
+end $$;

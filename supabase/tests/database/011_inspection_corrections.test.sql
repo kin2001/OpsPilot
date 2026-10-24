@@ -46,6 +46,19 @@ select throws_ok($$delete from public.inspection_failure_episodes$$,'P0001','FOR
 select lives_ok($$select public.reserve_inspection_attachment(pg_temp.ctx(),(select (result->'data'->>'id')::uuid from assigned),'new.png','image/png',100)$$,'Correction can reserve fresh evidence');
 select is((select jsonb_array_length(public.get_inspection('10000033-0000-4000-8000-000000000001',(result->'data'->>'id')::uuid)->'history') from assigned),4,'Read includes every original and correction');
 select is((select jsonb_array_length(public.get_inspection('10000033-0000-4000-8000-000000000001',(result->'data'->>'id')::uuid)->'episode_links') from assigned),3,'Read links each failed submission to its remedy');
+-- Reuse an actionable request after disposition without losing the renewed safety block.
+update public.asset_holds set resolved_at=now(),resolved_by='00000033-0000-4000-8000-000000000001',resolution='Synthetic prior disposition';
+select lives_ok($$select pg_temp.correct((select id from public.inspection_submissions where version=4),4)$$,'Fresh failure renews disposed unreleased hold');
+select is((select count(*)::integer from public.asset_holds where resolved_at is null and released_at is null),1,'Exactly one renewed unresolved hold');
+select is((select count(*)::integer from public.inspection_failure_episodes),2,'Renewal reuses active episode');
+update public.asset_holds set resolved_at=now(),resolved_by='00000033-0000-4000-8000-000000000001',resolution='Synthetic second disposition' where resolved_at is null;
+update public.asset_holds set released_at=now();
+update public.assets set availability='operational';
+select lives_ok($$select pg_temp.correct((select id from public.inspection_submissions where version=5),5)$$,'Fresh failure renews released hold');
+select is((select count(*)::integer from public.asset_holds where resolved_at is null and released_at is null),1,'Released history retained alongside one renewed hold');
+select is((select count(*)::integer from public.maintenance_requests),2,'Renewal creates no duplicate request');
+select is((select availability from public.assets where id='20000033-0000-4000-8000-000000000001'),'out_of_service','Renewed failure invalidates Operational');
+select is((select jsonb_array_length(public.get_inspection('10000033-0000-4000-8000-000000000001',(result->'data'->>'id')::uuid)->'holds') from assigned),4,'Read includes original and renewed holds');
 update public.organization_members set role='inventory' where user_id='00000033-0000-4000-8000-000000000002';
 select throws_ok($$select pg_temp.correct((select (result->'data'->>'id')::uuid from original),1,'Rechecked','fail',request) from correction$$,'P0001','FORBIDDEN','Role revocation checked before receipt replay');
 select ok(not has_function_privilege('anon','public.correct_inspection(jsonb,uuid,uuid,uuid,text,jsonb)','execute'),'Anonymous corrections denied');

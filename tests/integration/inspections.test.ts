@@ -278,3 +278,34 @@ it('reuses Converted active work and creates a fresh episode after canceled work
   expect(detail.holds.filter((h) => h.resolved_at === null)).toHaveLength(2);
   expect(sql(`select status from public.work_orders where id='${work.id}';`)).toBe('canceled');
 });
+
+it.each([false, true])('renews a safety hold without duplicating an active request after disposition (released=%s)', async (released) => {
+  const { assignment } = await assigned(false);
+  const results = [{ item_id: item, outcome: 'fail' as const, remarks: 'Guard still missing', evidence_ids: [] }];
+  const initial = await submitInspection(people.inspector.client, org, assignment.id, assignment.template_revision_id, results, randomUUID());
+  const episode = (await getInspection(people.owner.client, org, assignment.id)).episodes[0];
+  await command('owner', 'resolve_asset_hold', { ctx: ctx(await version()), hold_id: episode.hold_id, disposition: 'withdrawn_with_reason', reason: 'Synthetic prior observation disposition' });
+  if (released) await command('reviewer', 'release_asset', { ctx: ctx(await version()), asset_id: asset, acknowledgment: 'Synthetic independent release' });
+  const prior = (await getInspection(people.owner.client, org, assignment.id)).holds[0];
+  const request = randomUUID();
+  const fields = { assignment_id: assignment.id, template_revision_id: assignment.template_revision_id, supersedes_id: initial.id, correction_reason: 'Fresh unsafe observation', results };
+  const corrected = await Promise.all([correctInspection(people.inspector.client, org, fields, request, 1), correctInspection(people.inspector.client, org, fields, request, 1)]);
+  expect(corrected[0]).toEqual(corrected[1]);
+  const detail = await getInspection(people.owner.client, org, assignment.id);
+  expect(detail.episodes).toEqual([episode]);
+  expect(detail.holds).toHaveLength(2);
+  expect(detail.holds.find((h) => h.id === prior.id)).toEqual(prior);
+  const renewed = detail.holds.find((h) => h.id !== prior.id)!;
+  expect(renewed.source_id).toBe(episode.id); expect(renewed.resolved_at).toBeNull(); expect(renewed.released_at).toBeNull();
+  expect(sql(`select count(*) from public.maintenance_requests where organization_id='${org}';`)).toBe('1');
+  expect(sql(`select status from public.maintenance_requests where id='${episode.corrective_request_id}';`)).toBe('submitted');
+  expect(sql(`select availability from public.assets where id='${asset}';`)).toBe('out_of_service');
+  expect((await people.reviewer.client.rpc('release_asset', { ctx: ctx(await version()), asset_id: asset, acknowledgment: 'Cannot bypass renewed failure' })).error?.message).toBe('INVALID_TRANSITION');
+  let work = await command('owner', 'convert_request', { ctx: ctx(), id: episode.corrective_request_id, work_order_fields: { title: 'Repair renewed guard', priority: 'normal' } });
+  work = await command('owner', 'assign_work_order', { ctx: ctx(work.version), id: work.id, user_ids: [people.repairer.id] });
+  expect((await people.owner.client.rpc('resolve_asset_hold', { ctx: ctx(await version()), hold_id: renewed.id, disposition: 'repaired', reason: 'Active remedy cannot be bypassed' })).error?.message).toBe('INVALID_TRANSITION');
+  work = await command('owner', 'transition_work_order', { ctx: ctx(work.version), id: work.id, target: 'canceled', reason: 'Synthetic terminal cancellation' });
+  await command('owner', 'resolve_asset_hold', { ctx: ctx(await version()), hold_id: renewed.id, disposition: 'withdrawn_with_reason', reason: 'Separate renewed disposition' });
+  sql(`update public.organization_members set role='supervisor' where organization_id='${org}' and user_id='${people.repairer.id}';`);
+  expect((await people.repairer.client.rpc('release_asset', { ctx: ctx(await version()), asset_id: asset, acknowledgment: 'Former renewed remedy participant' })).error?.message).toBe('FORBIDDEN');
+});
