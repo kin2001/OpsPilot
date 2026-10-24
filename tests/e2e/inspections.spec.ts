@@ -136,6 +136,54 @@ test('inspection counts describe the loaded page and keep unverified outcomes ou
   }
 });
 
+test('stored checklist labels wrap in latest and historical results on narrow screens', async ({ page }) => {
+  await prepareWorkspacePage(page);
+  const id = assignmentIds[0]!;
+  const longItemLabel = 'GuardCheck'.repeat(45);
+  const original: FixtureSubmission = submission(id, 'fail');
+  const latest: FixtureSubmission = {
+    ...submission(id, 'pass'), version: 2, supersedes_id: original.id, correction_reason: 'Corrected after the repair review.',
+  };
+  const revision = {
+    id: revisionId, organization_id: fixtureOrganizationIds.alpha, template_id: templateId, revision: 1,
+    title: 'Daily safety check', items: [{ id: itemId, label: longItemLabel, required: true, safety_relevant: true, evidence_required: false }],
+    published_by: fixtureUserId, published_at: '2026-10-23T00:00:00.000Z',
+  };
+  await page.route(`${origin}/rest/v1/attachments**`, async (route) => respond(route, 200, []));
+  await page.route(`${origin}/rest/v1/rpc/**`, async (route) => {
+    if (route.request().method() === 'OPTIONS') return route.fallback();
+    const name = new URL(route.request().url()).pathname.split('/').at(-1);
+    if (name === 'list_inspection_assignments') return respond(route, 200, { items: [assignment(id)], next_cursor: null });
+    if (name === 'list_inspection_templates') return respond(route, 200, { items: [], next_cursor: null });
+    if (name === 'get_inspection') return respond(route, 200, {
+      assignment: assignment(id), revision, submission: latest, episodes: [], history: [original, latest], episode_links: [], holds: [],
+    });
+    return route.fallback();
+  });
+
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto('/inspections');
+  await page.getByRole('button', { name: /Assignment 40000000/ }).first().click();
+  const detail = page.getByRole('region', { name: 'Selected inspection detail' });
+  await expect(detail.getByRole('heading', { name: 'Latest saved results · version 2' })).toBeVisible();
+  for (const width of [320, 375]) {
+    await page.setViewportSize({ width, height: 844 });
+    if (width === 320) await page.screenshot({ path: 'test-results/por34-results-latest-320.png', fullPage: true });
+    const dimensions = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth }));
+    expect(dimensions.content, `latest result overflows at ${width}px`).toBeLessThanOrEqual(dimensions.viewport);
+  }
+
+  const historical = detail.locator('details[aria-label="Historical results for submission version 1"]');
+  await historical.locator('summary').click();
+  await expect(historical.locator('.inspection-submission-results strong')).toContainText(longItemLabel);
+  for (const width of [320, 375]) {
+    await page.setViewportSize({ width, height: 844 });
+    if (width === 320) await page.screenshot({ path: 'test-results/por34-results-history-320.png', fullPage: true });
+    const dimensions = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth }));
+    expect(dimensions.content, `historical result overflows at ${width}px`).toBeLessThanOrEqual(dimensions.viewport);
+  }
+});
+
 test('uncertain template saves keep the exact retry identity and lock the new-template action', async ({ page }) => {
   await prepareWorkspacePage(page);
   const template = {
@@ -327,6 +375,89 @@ test('a selected private image remains retryable after closing and reopening an 
   expect((reserveBodies[0]!.ctx as { request_id: string }).request_id).not.toBe((reserveBodies[1]!.ctx as { request_id: string }).request_id);
   expect(uploadAttachmentIds).toEqual([...evidenceIds.slice(0, 2), evidenceIds[1]]);
   expect(correctionBodies).toHaveLength(1);
+});
+
+test('an uncertain reservation stays on its exact item until retried or safely removed', async ({ page }) => {
+  await prepareWorkspacePage(page);
+  const id = assignmentIds[3]!;
+  const secondItemId = '40000000-0000-4000-8000-000000000030';
+  const revision = {
+    id: revisionId, organization_id: fixtureOrganizationIds.alpha, template_id: templateId, revision: 1,
+    title: 'Daily safety check', items: [
+      { id: itemId, label: 'Check the guard', required: true, safety_relevant: false, evidence_required: true },
+      { id: secondItemId, label: 'Check the interlock', required: true, safety_relevant: false, evidence_required: true },
+    ],
+    published_by: fixtureUserId, published_at: '2026-10-23T00:00:00.000Z',
+  };
+  const evidenceId = '40000000-0000-4000-8000-000000000031';
+  const evidence = (status: 'pending' | 'ready') => ({
+    id: evidenceId, organization_id: fixtureOrganizationIds.alpha, inspection_assignment_id: id, work_order_id: null, asset_id: null, request_id: null,
+    object_key: `${fixtureOrganizationIds.alpha}/${id}/${evidenceId}`, name: 'guard.png', media_type: 'image/png', size: 68,
+    uploader_id: fixtureUserId, status, checksum: null, width: 1, height: 1, created_at: '2026-10-24T01:30:00.000Z',
+    ready_at: status === 'ready' ? '2026-10-24T01:31:00.000Z' : null, cleanup_completed_at: null,
+  });
+  const reserveBodies: Record<string, unknown>[] = [];
+  const validPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jhGQAAAAASUVORK5CYII=', 'base64');
+  await page.route(`${origin}/rest/v1/attachments**`, async (route) => respond(route, 200, []));
+  await page.route(`${origin}/functions/v1/attachment-upload**`, async (route) => {
+    if (route.request().method() === 'OPTIONS') return respond(route, 200, {});
+    if (route.request().method() === 'GET') return route.fulfill({ status: 200, contentType: 'image/png', body: validPng });
+    if (route.request().method() === 'PUT') return respond(route, 200, evidence('ready'));
+    return route.fallback();
+  });
+  await page.route(`${origin}/rest/v1/rpc/**`, async (route) => {
+    if (route.request().method() === 'OPTIONS') return route.fallback();
+    const name = new URL(route.request().url()).pathname.split('/').at(-1);
+    if (name === 'list_inspection_assignments') return respond(route, 200, { items: [assignment(id)], next_cursor: null });
+    if (name === 'list_inspection_templates') return respond(route, 200, { items: [], next_cursor: null });
+    if (name === 'get_inspection') return respond(route, 200, { assignment: assignment(id), revision, submission: null, episodes: [], history: [], episode_links: [], holds: [] });
+    if (name === 'reserve_inspection_attachment') {
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      reserveBodies.push(body);
+      if (reserveBodies.length === 1) return respond(route, 503, { message: 'Service unavailable' });
+      if (reserveBodies.length === 3) return respond(route, 429, { message: 'RATE_LIMITED' });
+      const requestId = (body.ctx as { request_id: string }).request_id;
+      return respond(route, 200, { data: evidence('pending'), version: 1, request_id: requestId });
+    }
+    return route.fallback();
+  });
+
+  await page.goto('/inspections');
+  await page.getByRole('button', { name: /Assignment 40000000/ }).first().click();
+  const detail = page.getByRole('region', { name: 'Selected inspection detail' });
+  const first = detail.locator('.inspection-checklist-item').nth(0);
+  const second = detail.locator('.inspection-checklist-item').nth(1);
+  const firstInput = first.locator('input[type="file"]');
+  const secondInput = second.locator('input[type="file"]');
+
+  await firstInput.setInputFiles({ name: 'guard.png', mimeType: 'image/png', buffer: validPng });
+  await first.getByRole('button', { name: 'Remove selected file' }).click();
+  await expect(first.getByRole('button', { name: 'Upload private evidence' })).toHaveCount(0);
+  await expect(firstInput).toBeEnabled();
+  await firstInput.setInputFiles({ name: 'guard.png', mimeType: 'image/png', buffer: validPng });
+  await first.getByRole('button', { name: 'Upload private evidence' }).click();
+  await expect(detail.getByText(/Retry keeps the same request and attachment\./)).toBeVisible();
+  expect(reserveBodies).toHaveLength(1);
+  await expect(secondInput).toBeDisabled();
+  await expect(first.getByRole('button', { name: 'Remove selected file' })).toHaveCount(0);
+
+  await first.getByRole('button', { name: 'Upload private evidence' }).click();
+  await expect(first.getByText('Private evidence uploaded and ready.')).toBeVisible();
+  expect(reserveBodies).toHaveLength(2);
+  expect(reserveBodies[1]).toEqual(reserveBodies[0]);
+  await expect(secondInput).toBeEnabled();
+  await secondInput.setInputFiles({ name: 'interlock.png', mimeType: 'image/png', buffer: validPng });
+  await second.getByRole('button', { name: 'Upload private evidence' }).click();
+  await expect(second.getByText(/Too many requests\. Try again later\./)).toBeVisible();
+  await expect(second.getByRole('button', { name: 'Remove selected file' })).toBeVisible();
+  await second.getByRole('button', { name: 'Remove selected file' }).click();
+  await expect(second.getByRole('button', { name: 'Upload private evidence' })).toHaveCount(0);
+  await expect(secondInput).toBeEnabled();
+  await secondInput.setInputFiles({ name: 'interlock.png', mimeType: 'image/png', buffer: validPng });
+  await second.getByRole('button', { name: 'Upload private evidence' }).click();
+  await expect(second.getByText('Private evidence uploaded and ready.')).toBeVisible();
+  expect(reserveBodies).toHaveLength(4);
+  expect((reserveBodies[2]!.ctx as { request_id: string }).request_id).not.toBe((reserveBodies[3]!.ctx as { request_id: string }).request_id);
 });
 
 test('pinned checklist validates N/A reasons and retries one exact correction with linked history', async ({ page }) => {
@@ -597,21 +728,24 @@ test('loopback P2 inspection failure converts to a repaired request and correcti
   const workOrderId = new URL(ownerPage.url()).searchParams.get('workOrder');
   expect(workOrderId).toMatch(/^[0-9a-f-]{36}$/);
   const ownerWorkOrder = ownerPage.getByRole('region', { name: 'Selected work order details' });
-  await expect(ownerWorkOrder.getByText('draft', { exact: true })).toBeVisible();
+  const ownerWorkOrderStatus = ownerWorkOrder.locator(':scope > .record-header .state-badge');
+  await expect(ownerWorkOrderStatus).toHaveText('draft');
   await ownerWorkOrder.getByRole('checkbox', { name: new RegExp(repairer.id) }).check();
   await ownerWorkOrder.getByRole('button', { name: 'Save assignment' }).click();
   await expect(ownerWorkOrder.locator('.assigned-list').getByText(repairer.id, { exact: true })).toBeVisible();
   await ownerWorkOrder.getByRole('button', { name: 'Publish work order' }).click();
-  await expect(ownerWorkOrder.getByText('open', { exact: true })).toBeVisible();
+  await expect(ownerWorkOrderStatus).toHaveText('open');
 
   await repairerPage.goto(`/work-orders?workOrder=${workOrderId}`);
   const repairerWorkOrder = repairerPage.getByRole('region', { name: 'Selected work order details' });
+  const repairerWorkOrderStatus = repairerWorkOrder.locator(':scope > .record-header .state-badge');
   await repairerWorkOrder.getByRole('button', { name: 'Start work' }).click();
-  await expect(repairerWorkOrder.getByText('in progress', { exact: true })).toBeVisible();
+  await expect(repairerWorkOrderStatus).toHaveText('in progress');
   await repairerWorkOrder.getByLabel('Repair note or correction').fill('Replaced and secured the inspection guard assembly.');
   await repairerWorkOrder.getByLabel('Labor minutes').fill('30');
   await repairerWorkOrder.getByRole('button', { name: 'Record repair update' }).click();
-  await expect(repairerWorkOrder.getByText('Repair update recorded.', { exact: true })).toBeVisible();
+  const repairRecord = repairerWorkOrder.getByRole('region', { name: 'Work and repair record', exact: true });
+  await expect(repairRecord.getByRole('status')).toHaveText('Repair update recorded.');
   await repairerWorkOrder.getByLabel('Choose a repair image').setInputFiles({ name: 'guard-repair.png', mimeType: 'image/png', buffer: validPng });
   await repairerWorkOrder.getByRole('button', { name: 'Upload private image' }).click();
   await expect(repairerPage.locator('img.private-image')).toBeVisible({ timeout: 20_000 });
@@ -620,14 +754,15 @@ test('loopback P2 inspection failure converts to a repaired request and correcti
   await expect(repairerWorkOrder.getByText(/you are recorded/)).toBeVisible();
   await repairerWorkOrder.getByLabel('Submission attestation', { exact: true }).fill('The repaired guard is secure and the private evidence shows the completed work.');
   await repairerWorkOrder.getByRole('button', { name: 'Submit repair for review' }).click();
-  await expect(repairerWorkOrder.getByText('awaiting review', { exact: true })).toBeVisible();
+  await expect(repairerWorkOrderStatus).toHaveText('awaiting review');
 
   await reviewerPage.goto(`/work-orders?workOrder=${workOrderId}`);
   const reviewerWorkOrder = reviewerPage.getByRole('region', { name: 'Selected work order details' });
-  await expect(reviewerWorkOrder.getByText('awaiting review', { exact: true })).toBeVisible();
+  const reviewerWorkOrderStatus = reviewerWorkOrder.locator(':scope > .record-header .state-badge');
+  await expect(reviewerWorkOrderStatus).toHaveText('awaiting review');
   await reviewerWorkOrder.getByLabel('Review reason').fill('Inspected the repair record and verified the guard evidence.');
   await reviewerWorkOrder.getByRole('button', { name: 'Approve repair' }).click();
-  await expect(reviewerWorkOrder.getByText('completed', { exact: true })).toBeVisible();
+  await expect(reviewerWorkOrderStatus).toHaveText('completed');
   const participants = await ownerReader.from('work_order_participants').select('user_id').eq('organization_id', organizationId).eq('work_order_id', workOrderId);
   if (participants.error) throw new Error('Repair participants could not be verified.');
   expect(participants.data.map((participant) => participant.user_id)).toEqual(expect.arrayContaining([owner.id, repairer.id]));
@@ -648,7 +783,7 @@ test('loopback P2 inspection failure converts to a repaired request and correcti
   await expect(reviewerOperations.getByText('Release eligibility checks passed against complete current records. The service rechecks all conditions when you submit.')).toBeVisible();
   await reviewerOperations.getByLabel('Release acknowledgment').fill('Reviewed the current asset condition and recorded inspection repair approval.');
   await reviewerOperations.getByRole('button', { name: 'Record asset release' }).click();
-  await expect(reviewerAsset.getByText('operational', { exact: true }).first()).toBeVisible();
+  await expect(reviewerAsset.locator('.asset-record-heading .state-badge')).toHaveText('operational');
   const recordedRelease = await ownerReader.from('asset_releases').select('actor_id,acknowledgment').eq('organization_id', organizationId).eq('asset_id', assetId).single();
   if (recordedRelease.error) throw new Error('Separate asset release could not be verified.');
   expect(recordedRelease.data).toMatchObject({ actor_id: reviewer.id, acknowledgment: 'Reviewed the current asset condition and recorded inspection repair approval.' });

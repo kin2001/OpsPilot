@@ -1,4 +1,5 @@
 .inspections-page { max-width: 1560px; margin-inline: auto; }
+.inspection-stored-copy { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 .inspection-scope-note { margin: -10px 0 18px; color: var(--muted); font-size: .82rem; line-height: 1.45; }
 .inspection-counts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0 0 22px; padding: 18px 8px; border-block: 1px solid var(--line); }
 .inspection-count { display: grid; gap: 5px; padding: 0 24px; border-right: 1px solid var(--line); }
@@ -40,7 +41,7 @@
 .inspection-template-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
 .inspection-template-list > li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 11px 0; border-top: 1px solid #e8e9ec; font-size: .81rem; }
 .inspection-template-list > li > div { display: grid; gap: 4px; min-width: 0; }
-.inspection-template-list strong { overflow-wrap: anywhere; font-weight: 620; }
+.inspection-template-list strong { font-weight: 620; }
 .inspection-template-list span { color: var(--muted); }
 .inspection-template-list--full > li { grid-template-columns: minmax(0, 1fr) auto auto; }
 .inspection-template-list .button { min-height: 34px; padding-inline: 10px; font-size: .78rem; }
@@ -74,7 +75,7 @@
 .inspection-checklist > fieldset { display: grid; gap: 12px; min-width: 0; margin: 0; padding: 12px 0 0; border: 0; }
 .inspection-checklist-item { display: grid; gap: 12px; min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 4px; background: #fff; }
 .inspection-item-heading { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 8px; min-width: 0; }
-.inspection-item-heading h3 { min-width: 0; max-width: 100%; margin: 0; font-size: .98rem; line-height: 1.35; overflow-wrap: anywhere; }
+.inspection-item-heading h3 { margin: 0; font-size: .98rem; line-height: 1.35; }
 .inspection-item-tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .inspection-item-tags span { padding: 4px 7px; border: 1px solid var(--line); border-radius: 3px; color: var(--muted); font-size: .68rem; font-weight: 650; }
 .inspection-evidence-upload { display: grid; gap: 8px; }
