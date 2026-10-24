@@ -262,6 +262,14 @@ const token = (await owner.auth.getSession()).data.session.access_token;
 const uploaded = await fetch(`${url}/functions/v1/attachment-upload?organization_id=${org}&attachment_id=${item.id}`, { method: 'PUT', headers: { Authorization: `Bearer ${token}`, apikey: anon, 'Content-Type': 'image/png' }, body: bytes }); assert.equal(uploaded.status, 200);
 assert.equal((await revoked.storage.from('repair-evidence').download(item.object_key)).error, null);
 
+const inspectionItem = randomUUID();
+const inspectionTemplate = await owner.rpc('publish_inspection_template', { ctx: { organization_id: org, request_id: randomUUID() }, fields: { title: 'Recovery inspection', items: [{ id: inspectionItem, label: 'Guard fitted', required: true, safety_relevant: true, evidence_required: false }] } }); assert.equal(inspectionTemplate.error, null);
+const inspectionAssignment = await owner.rpc('assign_inspection', { ctx: { organization_id: org, request_id: randomUUID() }, asset_id: asset, template_revision_id: inspectionTemplate.data.data.current_revision_id, inspector_id: people[0].id }); assert.equal(inspectionAssignment.error, null);
+const inspectionArgs = { ctx: { organization_id: org, request_id: randomUUID() }, assignment_id: inspectionAssignment.data.data.id, template_revision_id: inspectionAssignment.data.data.template_revision_id, results: [{ item_id: inspectionItem, outcome: 'fail', remarks: 'Synthetic recovery guard failure', evidence_ids: [] }] };
+const inspectionSubmitted = await owner.rpc('submit_inspection', inspectionArgs); assert.equal(inspectionSubmitted.error, null);
+const inspectionBefore = await owner.rpc('get_inspection', { organization_id: org, assignment_id: inspectionAssignment.data.data.id }); assert.equal(inspectionBefore.error, null);
+assert.equal(inspectionBefore.data.episodes.length, 1);
+
 // Snapshot bytes, Auth, schema/data, receipts and non-secret source configuration. Nothing is written as a dump/artifact.
 const owners = () => sql("select md5(string_agg(n.nspname||'.'||c.relname||':'||c.relowner::text||':'||coalesce(c.relacl::text,''),'|' order by n.nspname,c.relname)) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname in ('public','auth','storage','cron') and c.relkind in ('r','v','m','S');").trim();
 const permissions = () => canonicalPermissions(JSON.parse(sql(`
@@ -368,6 +376,9 @@ const currentDownload = await fresh.storage.from('repair-evidence').download(ite
 assert.equal(createHash('sha256').update(Buffer.from(await currentDownload.data.arrayBuffer())).digest('hex'), createHash('sha256').update(bytes).digest('hex'));
 assert.deepEqual((await owner.rpc('save_asset', args)).data, committed.data);
 assert.deepEqual((await owner.rpc('save_maintenance_plan', planArgs)).data, savedPlan.data);
+assert.deepEqual((await owner.rpc('submit_inspection', inspectionArgs)).data, inspectionSubmitted.data);
+assert.deepEqual((await owner.rpc('get_inspection', { organization_id: org, assignment_id: inspectionAssignment.data.data.id })).data, inspectionBefore.data);
+assert.equal(sql(`select count(*) from public.inspection_failure_episodes e join public.asset_holds h on h.organization_id=e.organization_id and h.id=e.hold_id join public.maintenance_requests r on r.organization_id=e.organization_id and r.id=e.corrective_request_id where e.assignment_id='${inspectionAssignment.data.data.id}' and h.source_id=e.id and h.released_at is null and r.status='submitted';`).trim(), '1');
 assert.deepEqual((await owner.rpc('list_maintenance_revisions', { organization_id: org, plan_id: savedPlan.data.data.id })).data, planHistory.data);
 assert.equal((await fresh.from('maintenance_plans').select('id').limit(1)).error?.code, '42501');
 assert.equal((await admin.from('maintenance_plans').select('id').limit(1)).error?.code, '42501');

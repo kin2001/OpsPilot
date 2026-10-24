@@ -621,6 +621,14 @@ isOneToOne: true
             [_ in never]: never
           }
           Functions: {
+            "publish_inspection_template": { Args: { "ctx": Json,"fields": Json }; Returns: Json },
+            "assign_inspection": { Args: { "ctx": Json,"asset_id": string,"template_revision_id": string,"inspector_id": string,"due_on"?: string }; Returns: Json },
+            "submit_inspection": { Args: { "ctx": Json,"assignment_id": string,"template_revision_id": string,"results": Json }; Returns: Json },
+            "reserve_inspection_attachment": { Args: { "ctx": Json,"assignment_id": string,"name": string,"media_type": string,"size": number }; Returns: Json },
+            "list_inspection_templates": { Args: { "organization_id": string,"cursor"?: string,"page_size"?: number }; Returns: Json },
+            "list_inspection_revisions": { Args: { "organization_id": string,"template_id": string,"cursor"?: number,"page_size"?: number }; Returns: Json },
+            "list_inspection_assignments": { Args: { "organization_id": string,"cursor"?: string,"page_size"?: number }; Returns: Json },
+            "get_inspection": { Args: { "organization_id": string,"assignment_id": string }; Returns: Json },
             "accept_organization_invitation":
 { Args: { "request_id": string,"token": string }; Returns: Json
                            },

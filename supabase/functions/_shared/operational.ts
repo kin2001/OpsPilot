@@ -29,6 +29,7 @@ export const operationalWorkOrder = z.strictObject({
   ? row.created_by === null && row.pm_occurrence_id != null
   : row.created_by !== null && row.pm_occurrence_id == null);
 export const attachmentRecord = z.strictObject({
+  inspection_assignment_id: z.uuid().nullable().optional(),
   id: z.uuid(), organization_id: z.uuid(), work_order_id: z.uuid().nullable(), asset_id: z.uuid().nullable(), request_id: z.uuid().nullable(), object_key: z.string(), name: z.string(), media_type: imageMetadata.shape.media_type,
   size: z.int().positive(), uploader_id: z.uuid(), status: z.enum(['pending', 'ready', 'rejected']), checksum: z.string().nullable(),
   width: z.int().nullable(), height: z.int().nullable(), created_at: z.string(), ready_at: z.string().nullable(), cleanup_completed_at: z.string().nullable(),

@@ -143,5 +143,12 @@ assert.equal(sql(`select creation_actor_kind||':'||(created_by is null)::text||'
 assert.deepEqual((await legacyCaller.rpc('transition_work_order', legacyArgs)).data, legacyScheduled.data);
 assert.deepEqual((await legacyCaller.rpc('save_maintenance_plan', planArgs)).data, plan.data);
 assert.equal(sql(`select count(*) from public.maintenance_occurrences where plan_id='${plan.data.data.id}';`).trim(), '1');
+const inspectionItem = randomUUID();
+const inspectionTemplate = await legacyCaller.rpc('publish_inspection_template', { ctx: legacyCtx(), fields: { title: 'Upgraded inspection', items: [{ id: inspectionItem, label: 'Guard fitted', required: true, safety_relevant: true, evidence_required: false }] } }); assert.equal(inspectionTemplate.error, null);
+const inspectionAssignment = await legacyCaller.rpc('assign_inspection', { ctx: legacyCtx(), asset_id: legacyAsset.data.data.id, template_revision_id: inspectionTemplate.data.data.current_revision_id, inspector_id: legacyActor }); assert.equal(inspectionAssignment.error, null);
+const inspectionArgs = { ctx: legacyCtx(), assignment_id: inspectionAssignment.data.data.id, template_revision_id: inspectionAssignment.data.data.template_revision_id, results: [{ item_id: inspectionItem, outcome: 'fail', remarks: 'Synthetic upgrade safety failure', evidence_ids: [] }] };
+const inspectionSubmitted = await legacyCaller.rpc('submit_inspection', inspectionArgs); assert.equal(inspectionSubmitted.error, null);
+assert.deepEqual((await legacyCaller.rpc('submit_inspection', inspectionArgs)).data, inspectionSubmitted.data);
+assert.equal(sql(`select count(*) from public.inspection_failure_episodes e join public.asset_holds h on h.organization_id=e.organization_id and h.id=e.hold_id join public.maintenance_requests r on r.organization_id=e.organization_id and r.id=e.corrective_request_id where e.assignment_id='${inspectionAssignment.data.data.id}' and h.source_id=e.id and h.released_at is null and r.status='submitted';`).trim(), '1');
 assertOwned();
 console.log(JSON.stringify({ populated_t1_upgrade: true, retained_receipt_replay: true, frozen_new_response: true, former_assignment_backfill: true, conservative_initial_history: true, genuine_legacy_schedule_replay: true, undated_schedule_denial_atomic: true, populated_plan_upgrade: true }));

@@ -1,0 +1,154 @@
+import { randomUUID } from 'node:crypto';
+import { spawn, spawnSync } from 'node:child_process';
+import { beforeEach, expect, it } from 'vitest';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { publishInspectionTemplate, assignInspection, submitInspection, getInspection, listInspectionAssignments } from '../../src/app/inspection-client';
+import { enrollMfa } from './mfa';
+
+const url = process.env.TEST_SUPABASE_URL!; const anon = process.env.TEST_SUPABASE_ANON_KEY!; const service = process.env.TEST_SUPABASE_SERVICE_KEY!;
+if (!url || !anon || !service || !['127.0.0.1', 'localhost'].includes(new URL(url).hostname)) throw new Error('Job-owned loopback services required');
+const admin = createClient(url, service, { auth: { persistSession: false, autoRefreshToken: false } });
+type Person = { id: string; client: SupabaseClient };
+let people: Record<string, Person>; let org: string; let asset: string; let item: string;
+const ctx = (version?: number, request = randomUUID()) => ({ organization_id: org, request_id: request, ...(version ? { expected_version: version } : {}) });
+function sql(statement: string) {
+  const result = spawnSync('docker', ['exec', '-i', 'supabase_db_opspilot-t1', 'psql', '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-qAt'], { input: statement, encoding: 'utf8' });
+  if (result.status !== 0) throw new Error('Isolated inspection fixture SQL failed; raw output withheld');
+  return result.stdout.trim();
+}
+function concurrentSql(statement: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('docker', ['exec', '-i', 'supabase_db_opspilot-t1', 'psql', '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-qAt'], { timeout: 20000 });
+    let output = ''; child.stdout.on('data', (chunk) => { output += chunk.toString(); }); child.stderr.resume(); child.on('error', reject);
+    child.on('close', (code) => code === 0 ? resolve(output.trim()) : reject(new Error('Concurrent inspection SQL failed; raw output withheld'))); child.stdin.end(statement);
+  });
+}
+async function command(person: string, name: string, args: Record<string, unknown>) {
+  const result = await people[person].client.rpc(name, args); expect(result.error, `${name} domain failure`).toBeNull(); return result.data.data;
+}
+async function version() { return Number(sql(`select version from public.assets where id='${asset}';`)); }
+const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jhGQAAAAASUVORK5CYII=', 'base64');
+async function upload(person: string, parent: { assignment_id: string } | { id: string }) {
+  const token = (await people[person].client.auth.getSession()).data.session!.access_token;
+  const headers = { Authorization: `Bearer ${token}`, apikey: anon };
+  const reserved = await fetch(`${url}/functions/v1/attachment-upload`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ ctx: ctx(), ...parent, name: 'evidence.png', media_type: 'image/png', size: bytes.length }) });
+  expect(reserved.status).toBe(200); const record = (await reserved.json()).data;
+  const uploaded = await fetch(`${url}/functions/v1/attachment-upload?organization_id=${org}&attachment_id=${record.id}`, { method: 'PUT', headers: { ...headers, 'Content-Type': 'image/png' }, body: bytes });
+  expect(uploaded.status).toBe(200); return await uploaded.json();
+}
+async function assigned(evidence_required = true, safety_relevant = true) {
+  const template = await publishInspectionTemplate(people.owner.client, org, { title: 'Synthetic guard inspection', items: [{ id: item, label: 'Guard fitted', required: true, safety_relevant, evidence_required }] }, randomUUID());
+  const assignment = await assignInspection(people.owner.client, org, { asset_id: asset, template_revision_id: template.current_revision_id, inspector_id: people.inspector.id }, randomUUID());
+  return { template, assignment };
+}
+// Every ordinary test has independent identities, tenant, asset and quota; deliberate races/retries share a fixture.
+beforeEach(async () => {
+  people = {}; org = randomUUID(); asset = randomUUID(); item = randomUUID();
+  for (const name of ['owner', 'inspector', 'repairer', 'reviewer', 'outsider']) {
+    const email = `inspection32-${name}-${randomUUID()}@example.test`; const password = `Synthetic-${randomUUID()}-Aa9!`;
+    const created = await admin.auth.admin.createUser({ email, password, email_confirm: true }); expect(created.error).toBeNull();
+    const client = createClient(url, anon, { auth: { persistSession: false, autoRefreshToken: false } });
+    expect((await client.auth.signInWithPassword({ email, password })).error).toBeNull(); await enrollMfa(client);
+    people[name] = { id: created.data.user!.id, client };
+  }
+  sql(`insert into public.organizations(id,name,timezone,currency,created_by) values('${org}','Synthetic inspections32','UTC','PHP','${people.owner.id}');
+   insert into public.organization_members(organization_id,user_id,role) values('${org}','${people.owner.id}','owner'),('${org}','${people.inspector.id}','technician'),('${org}','${people.repairer.id}','technician'),('${org}','${people.reviewer.id}','supervisor');
+   insert into public.assets(id,organization_id,code,name,category,created_by) values('${asset}','${org}','INS32','Synthetic guard','pump','${people.owner.id}');`);
+});
+
+it('pins published content, validates SQL input and atomically retries one immutable failed episode with private evidence', async () => {
+  const { template, assignment } = await assigned();
+  await publishInspectionTemplate(people.owner.client, org, { id: template.id, title: 'Future checklist', items: [{ id: item, label: 'New guard rule', required: true, safety_relevant: true, evidence_required: false }] }, randomUUID(), template.version);
+  const invalid = (results: unknown) => people.inspector.client.rpc('submit_inspection', { ctx: ctx(), assignment_id: assignment.id, template_revision_id: assignment.template_revision_id, results });
+  expect((await invalid([])).error?.message).toBe('VALIDATION');
+  expect((await invalid([{ item_id: item, outcome: 'not_applicable', remarks: 'Not fitted', evidence_ids: [] }])).error?.message).toBe('VALIDATION');
+  expect((await invalid([{ item_id: item, outcome: 'fail', evidence_ids: [] }])).error?.message).toBe('VALIDATION');
+  expect((await invalid([{ item_id: item, outcome: 'fail', remarks: 'Missing', evidence_ids: [] }])).error?.message).toBe('VALIDATION');
+  const evidence = await upload('inspector', { assignment_id: assignment.id });
+  expect((await people.repairer.client.storage.from('repair-evidence').download(evidence.object_key)).error).not.toBeNull();
+  expect((await people.inspector.client.storage.from('repair-evidence').download(evidence.object_key)).error).toBeNull();
+  const results = [{ item_id: item, outcome: 'fail' as const, remarks: 'Guard absent', evidence_ids: [evidence.id] }]; const request = randomUUID();
+  const submissions = await Promise.all([submitInspection(people.inspector.client, org, assignment.id, assignment.template_revision_id, results, request), submitInspection(people.inspector.client, org, assignment.id, assignment.template_revision_id, results, request)]);
+  expect(submissions[0]).toEqual(submissions[1]);
+  const detail = await getInspection(people.inspector.client, org, assignment.id);
+  expect(detail.revision.title).toBe('Synthetic guard inspection'); expect(detail.revision.items[0].label).toBe('Guard fitted'); expect(detail.episodes).toHaveLength(1);
+  expect(detail.submission?.inspector_id).toBe(people.inspector.id);
+  expect(sql(`select status from public.maintenance_requests where id='${detail.episodes[0].corrective_request_id}';`)).toBe('submitted');
+  expect(sql(`select count(*) from public.work_orders where organization_id='${org}';`)).toBe('0');
+  await expect(submitInspection(people.inspector.client, org, assignment.id, assignment.template_revision_id, [{ ...results[0], remarks: 'Changed retry' }], request)).rejects.toThrow('CONFLICT');
+  await expect(submitInspection(people.inspector.client, org, assignment.id, assignment.template_revision_id, results, randomUUID())).rejects.toThrow('CONFLICT');
+  sql(`update public.organization_members set active=false where organization_id='${org}' and user_id='${people.inspector.id}';`);
+  await expect(submitInspection(people.inspector.client, org, assignment.id, assignment.template_revision_id, results, request)).rejects.toThrow('FORBIDDEN');
+  await expect(getInspection(people.inspector.client, org, assignment.id)).rejects.toThrow('FORBIDDEN');
+  expect((await people.inspector.client.storage.from('repair-evidence').download(evidence.object_key)).error).not.toBeNull();
+  const token = (await people.inspector.client.auth.getSession()).data.session!.access_token;
+  expect((await fetch(`${url}/functions/v1/attachment-upload?organization_id=${org}&attachment_id=${evidence.id}`, { headers: { Authorization: `Bearer ${token}`, apikey: anon } })).status).toBe(404);
+});
+it('denies wrong tenant, wrong inspector, stale pinned revision and revoked inspector role', async () => {
+  const { assignment } = await assigned(false);
+  await expect(getInspection(people.outsider.client, org, assignment.id)).rejects.toThrow('FORBIDDEN');
+  await expect(listInspectionAssignments(people.outsider.client, org)).rejects.toThrow('FORBIDDEN');
+  const results = [{ item_id: item, outcome: 'pass' as const, evidence_ids: [] }];
+  await expect(submitInspection(people.owner.client, org, assignment.id, assignment.template_revision_id, results, randomUUID())).rejects.toThrow('FORBIDDEN');
+  await expect(submitInspection(people.inspector.client, org, assignment.id, randomUUID(), results, randomUUID())).rejects.toThrow('CONFLICT');
+  sql(`update public.organization_members set role='inventory' where organization_id='${org}' and user_id='${people.inspector.id}';`);
+  await expect(submitInspection(people.inspector.client, org, assignment.id, assignment.template_revision_id, results, randomUUID())).rejects.toThrow('FORBIDDEN');
+});
+it('accepts justified N/A and creates a request without a hold for non-safety failures', async () => {
+  const { assignment } = await assigned(false, false);
+  await submitInspection(people.inspector.client, org, assignment.id, assignment.template_revision_id, [{ item_id: item, outcome: 'not_applicable', reason: 'Not on this model', remarks: 'Model plate verified', evidence_ids: [] }], randomUUID());
+  expect((await getInspection(people.inspector.client, org, assignment.id)).episodes).toEqual([]);
+  const next = await assigned(false, false);
+  await submitInspection(people.inspector.client, org, next.assignment.id, next.assignment.template_revision_id, [{ item_id: item, outcome: 'fail', remarks: 'Paint missing', evidence_ids: [] }], randomUUID());
+  const detail = await getInspection(people.owner.client, org, next.assignment.id); expect(detail.episodes).toHaveLength(1); expect(detail.episodes[0].hold_id).toBeNull();
+});
+it('safety failure on an already archived asset still creates an unresolved hold', async () => {
+  const { assignment } = await assigned(false);
+  sql(`update public.assets set archived_at=now(),availability='operational' where id='${asset}';`);
+  await submitInspection(people.inspector.client, org, assignment.id, assignment.template_revision_id, [{ item_id: item, outcome: 'fail', remarks: 'Unsafe archived guard', evidence_ids: [] }], randomUUID());
+  expect(sql(`select availability from public.assets where id='${asset}';`)).toBe('out_of_service');
+  expect(sql(`select count(*) from public.asset_holds where organization_id='${org}' and resolved_at is null and released_at is null;`)).toBe('1');
+});
+it('racing release and a fresh safety failure cannot leave Operational in either lock order', async () => {
+  const { assignment } = await assigned(false);
+  for (const first of ['failure', 'release']) {
+    const a = first === 'failure' ? assignment : (await assigned(false)).assignment;
+    if (first === 'release') {
+      const detail = await getInspection(people.owner.client, org, assignment.id);
+      await command('owner', 'resolve_asset_hold', { ctx: ctx(await version()), hold_id: detail.episodes[0].hold_id, disposition: 'withdrawn_with_reason', reason: 'Synthetic acknowledged disposition' });
+    }
+    const fail = `select set_config('request.jwt.claim.sub','${people.inspector.id}',true); select public.submit_inspection('${JSON.stringify(ctx())}'::jsonb,'${a.id}','${a.template_revision_id}','${JSON.stringify([{ item_id: item, outcome: 'fail', remarks: 'Fresh unsafe condition', evidence_ids: [] }])}'::jsonb);`;
+    const release = `select set_config('request.jwt.claim.sub','${people.reviewer.id}',true); select set_config('request.jwt.claims','{"aal":"aal2"}',true); do $guard$ begin perform public.release_asset('${JSON.stringify(ctx(await version()))}'::jsonb,'${asset}','Synthetic release race'); exception when others then if SQLERRM not in ('CONFLICT','INVALID_TRANSITION') then raise; end if; end $guard$;`;
+    const leading = concurrentSql(`begin; select 1 from public.organizations where id='${org}' for update; select pg_advisory_xact_lock(320032); select pg_sleep(2); ${first === 'failure' ? fail : release} commit;`);
+    // Observe the held advisory marker before issuing the waiter; no timing-only race assertion.
+    await expect.poll(() => sql("select exists(select 1 from pg_locks where locktype='advisory' and objid=320032 and granted);"), { timeout: 5000, interval: 30 }).toBe('t');
+    const waiting = concurrentSql(`begin; ${first === 'failure' ? release : fail} commit;`);
+    await expect.poll(() => sql("select exists(select 1 from pg_stat_activity where wait_event_type='Lock' and query like 'begin;%' and query not like '%pg_sleep%');"), { timeout: 5000, interval: 30 }).toBe('t');
+    await Promise.all([leading, waiting]);
+    expect(sql(`select availability from public.assets where id='${asset}';`)).toBe('out_of_service');
+  }
+});
+it('requires explicit conversion, real repair evidence, independent review, hold disposition and a separate eligible release', async () => {
+  const { assignment } = await assigned(false);
+  await submitInspection(people.inspector.client, org, assignment.id, assignment.template_revision_id, [{ item_id: item, outcome: 'fail', remarks: 'Guard missing', evidence_ids: [] }], randomUUID());
+  const episode = (await getInspection(people.owner.client, org, assignment.id)).episodes[0];
+  let work = await command('owner', 'convert_request', { ctx: ctx(), id: episode.corrective_request_id, work_order_fields: { title: 'Fit guard', priority: 'normal' } });
+  work = await command('owner', 'assign_work_order', { ctx: ctx(work.version), id: work.id, user_ids: [people.repairer.id] });
+  work = await command('owner', 'transition_work_order', { ctx: ctx(work.version), id: work.id, target: 'open', reason: 'Repair approved' });
+  work = await command('repairer', 'transition_work_order', { ctx: ctx(work.version), id: work.id, target: 'in_progress', reason: 'Fitting guard' });
+  expect((await people.owner.client.rpc('resolve_asset_hold', { ctx: ctx(await version()), hold_id: episode.hold_id, disposition: 'repaired', reason: 'Premature' })).error?.message).toBe('INVALID_TRANSITION');
+  await upload('repairer', { id: work.id });
+  work = (await people.owner.client.from('work_orders').select('*').eq('id', work.id).single()).data;
+  work = await command('repairer', 'declare_work_order_performers', { ctx: ctx(work.version), id: work.id, user_ids: [people.repairer.id] });
+  work = await command('repairer', 'submit_work_order', { ctx: ctx(work.version), id: work.id, acknowledgment: 'All actual repair performers declared' });
+  sql(`update public.organization_members set role='supervisor' where organization_id='${org}' and user_id='${people.repairer.id}';`);
+  expect((await people.repairer.client.rpc('review_work_order', { ctx: ctx(work.version), id: work.id, decision: 'approved', reason: 'Cannot review own work' })).error?.message).toBe('FORBIDDEN');
+  work = await command('reviewer', 'review_work_order', { ctx: ctx(work.version), id: work.id, decision: 'approved', reason: 'Guard and evidence checked' }); expect(work.status).toBe('completed');
+  expect((await people.reviewer.client.rpc('release_asset', { ctx: ctx(await version()), asset_id: asset, acknowledgment: 'Inspection hold unresolved' })).error?.message).toBe('INVALID_TRANSITION');
+  await command('owner', 'resolve_asset_hold', { ctx: ctx(await version()), hold_id: episode.hold_id, disposition: 'repaired', reason: 'Independent repair review confirmed' });
+  expect((await people.repairer.client.rpc('release_asset', { ctx: ctx(await version()), asset_id: asset, acknowledgment: 'Cannot self release' })).error?.message).toBe('FORBIDDEN');
+  await command('reviewer', 'release_asset', { ctx: ctx(await version()), asset_id: asset, acknowledgment: 'Separate synthetic safety procedure confirmed' });
+  expect(sql(`select availability from public.assets where id='${asset}';`)).toBe('operational');
+  // Exclusion is current unreleased scope, not a lifetime performer ban.
+  await command('repairer', 'release_asset', { ctx: ctx(await version()), asset_id: asset, acknowledgment: 'No current remedy scope remains' });
+});
