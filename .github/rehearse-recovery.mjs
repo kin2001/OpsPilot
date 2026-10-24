@@ -282,7 +282,8 @@ const stockArgs = { ctx: { organization_id: org, request_id: randomUUID() }, fie
 const stockReceived = await owner.rpc('receive_stock', stockArgs); assert.equal(stockReceived.error, null);
 assert.equal((await owner.rpc('receive_stock', { ctx: { organization_id: org, request_id: randomUUID() }, fields: { ...stockArgs.fields, quantity: '0.200' } })).error, null);
 const jobPartsCtx = (version) => ({ organization_id: org, request_id: randomUUID(), expected_version: version });
-const jobPartsRequest = { ctx: jobPartsCtx(1), fields: { work_order_id: job, lines: [{ part_id: recoveryPart.data.data.id, quantity: '0.200', unit: 'kg' }] } };
+const jobPartsInitial = await revoked.rpc('get_job_parts', { organization_id: org, work_order_id: job }); assert.equal(jobPartsInitial.error, null);
+const jobPartsRequest = { ctx: jobPartsCtx(jobPartsInitial.data.version), fields: { work_order_id: job, lines: [{ part_id: recoveryPart.data.data.id, quantity: '0.200', unit: 'kg' }] } };
 const requestedParts = await revoked.rpc('request_parts', jobPartsRequest); assert.equal(requestedParts.error, null);
 const jobPartsReserve = { ctx: jobPartsCtx(requestedParts.data.version), fields: { work_order_id: job, lines: [{ ...jobPartsRequest.fields.lines[0], location_id: recoveryLocation.data.data.id }] } };
 const reservedParts = await owner.rpc('reserve_parts', jobPartsReserve); assert.equal(reservedParts.error, null);
