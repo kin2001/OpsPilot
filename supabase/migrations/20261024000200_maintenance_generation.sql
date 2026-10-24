@@ -186,7 +186,7 @@ declare org uuid:=organization_id;target uuid:=plan_id;p public.maintenance_plan
 begin
  perform private.confirmed_actor();
  if not private.can_read_maintenance(org,target) then raise exception using message='FORBIDDEN';end if;
- select * into p from public.maintenance_plans where organization_id=org and id=target;
+ select mp.* into p from public.maintenance_plans mp where mp.organization_id=org and mp.id=target;
  if not found then raise exception using message='NOT_FOUND';end if;
  if page_size is null or page_size not between 1 and 100 or (cursor is not null and cursor<=0) then raise exception using message='VALIDATION';end if;
  with bounded as (
