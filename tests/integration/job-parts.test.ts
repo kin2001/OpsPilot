@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { beforeEach, expect, it } from 'vitest';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from '../../src/lib/database.types';
-import { savePart, saveStockLocation, receiveStock, listInventoryBalances, listInventoryMovements, requestParts, reserveParts, releaseReservation, issueReservedStock, returnStock, getJobParts } from '../../src/app/inventory-client';
+import { savePart, saveStockLocation, receiveStock, adjustStock, listInventoryBalances, listInventoryMovements, requestParts, reserveParts, releaseReservation, issueReservedStock, returnStock, getJobParts } from '../../src/app/inventory-client';
 import { enrollMfa } from './mfa';
 
 const url = process.env.TEST_SUPABASE_URL!; const anon = process.env.TEST_SUPABASE_ANON_KEY!; const service = process.env.TEST_SUPABASE_SERVICE_KEY!;
@@ -48,7 +48,9 @@ it('posts partial issues once after lost replies, bounds net returns and preserv
   expect(await balance()).toMatchObject({ on_hand: '8.000', reserved: '3.000', available: '5.000' });
   const canceled = await people.manager.client.rpc('transition_work_order', { ctx: { organization_id: org, request_id: randomUUID(), expected_version: state.version }, id: job, target: 'canceled', reason: 'Unused allocation released' }); expect(canceled.error).toBeNull();
   state = await read(); expect(state.reservations[0]).toMatchObject({ reserved: '0.000', issued: '2.000', released: '3.000' });
-  state = await returnStock(people.owner.client, org, movement(id), randomUUID(), state.version);
+  const returnRequest = randomUUID(); const returnVersion = state.version;
+  state = await returnStock(people.owner.client, org, movement(id), returnRequest, returnVersion);
+  expect(await returnStock(people.owner.client, org, movement(id), returnRequest, returnVersion)).toEqual(state);
   await expect(returnStock(people.owner.client, org, movement(id, '1.001'), randomUUID(), state.version)).rejects.toThrow('CONFLICT');
   expect(await balance()).toMatchObject({ on_hand: '9.000', reserved: '0.000', available: '9.000' });
   expect(state.reconciliation_state).toBe('consistent');
@@ -127,4 +129,49 @@ it('keeps two-line physical issue identity atomic and never consumes again when 
   expect((await listInventoryBalances(people.owner.client, org)).items).toEqual(originalStock);
   expect((await read()).parts[0]).toMatchObject({ issued: '2.000', reserved: '0.000', returned: '0.000' });
   expect(sql(`select count(*) from public.job_stock_movements where organization_id='${org}';`)).toBe('2');
+});
+it('routes job movement reversals through net-issued returns while preserving legacy AAL2 receipt compensation', async () => {
+  await requested(); let state = await reserve(); const id = state.reservations[0].id;
+  state = await issueReservedStock(people.owner.client, org, movement(id), randomUUID(), state.version);
+  const issue = (await listInventoryMovements(people.owner.client, org)).items.find((row) => row.kind === 'issue')!;
+  await enrollMfa(people.owner.client);
+  const correction = { ...reserved().lines[0], direction: 'in' as const, reason: 'Attempted issue reversal through wrong command', correction_of: issue.id };
+  await expect(adjustStock(people.owner.client, org, correction, randomUUID())).rejects.toThrow('INVALID_TRANSITION');
+  expect(await balance()).toMatchObject({ on_hand: '9.000', reserved: '0.000' });
+  const returnRequest = randomUUID(); const returnVersion = state.version;
+  state = await returnStock(people.owner.client, org, movement(id), returnRequest, returnVersion);
+  expect(await returnStock(people.owner.client, org, movement(id), returnRequest, returnVersion)).toEqual(state);
+  await expect(returnStock(people.owner.client, org, movement(id), randomUUID(), state.version)).rejects.toThrow('CONFLICT');
+  const rows = (await listInventoryMovements(people.owner.client, org)).items;
+  const returned = rows.find((row) => row.kind === 'return')!;
+  await expect(adjustStock(people.owner.client, org, { ...correction, direction: 'out', correction_of: returned.id }, randomUUID())).rejects.toThrow('INVALID_TRANSITION');
+  expect(await balance()).toMatchObject({ on_hand: '10.000', reserved: '0.000' });
+  const receipt = rows.find((row) => row.kind === 'receipt')!;
+  const receiptFields = { ...correction, direction: 'out' as const, quantity: '10.000', correction_of: receipt.id }; const receiptRequest = randomUUID();
+  const compensated = await adjustStock(people.owner.client, org, receiptFields, receiptRequest);
+  expect(await adjustStock(people.owner.client, org, receiptFields, receiptRequest)).toEqual(compensated);
+  expect(await balance()).toMatchObject({ on_hand: '0.000', reserved: '0.000' });
+  const adjustmentFields = { ...receiptFields, direction: 'in' as const, correction_of: compensated.id }; const adjustmentRequest = randomUUID();
+  const restored = await adjustStock(people.owner.client, org, adjustmentFields, adjustmentRequest);
+  expect(await adjustStock(people.owner.client, org, adjustmentFields, adjustmentRequest)).toEqual(restored);
+  expect(await balance()).toMatchObject({ on_hand: '10.000', reserved: '0.000' });
+  expect((await read()).reconciliation_state).toBe('consistent');
+});
+
+it('rejects UUID identity duplicates at every direct RPC boundary before resolving lines', async () => {
+  const lower = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'; const upper = lower.toUpperCase();
+  const line = { part_id: lower, quantity: '1.000', unit: 'kg' }; const allocation = { ...line, location_id: lower };
+  const reservation = { reservation_id: lower, quantity: '1.000', unit: 'kg' }; const before = await read();
+  const cases: { command: 'request_parts' | 'reserve_parts' | 'release_reservation' | 'issue_reserved_stock' | 'return_stock'; role: string; lines: Record<string, string>[] }[] = [
+    { command: 'request_parts', role: 'technician', lines: [line, { ...line, part_id: upper }] },
+    { command: 'reserve_parts', role: 'manager', lines: [allocation, { ...allocation, part_id: upper }] },
+    { command: 'reserve_parts', role: 'manager', lines: [allocation, { ...allocation, location_id: upper }] },
+    ...(['release_reservation', 'issue_reserved_stock', 'return_stock'] as const).map((command) => ({ command, role: 'inventory', lines: [reservation, { ...reservation, reservation_id: upper }] })),
+  ];
+  for (const scenario of cases) {
+    const result = await people[scenario.role].client.rpc(scenario.command, { ctx: { organization_id: org, request_id: randomUUID(), expected_version: before.version }, fields: { work_order_id: job, lines: scenario.lines } });
+    expect(result.error?.message).toBe('VALIDATION');
+  }
+  expect(await read()).toEqual(before);
+  expect(await balance()).toMatchObject({ on_hand: '10.000', reserved: '0.000' });
 });

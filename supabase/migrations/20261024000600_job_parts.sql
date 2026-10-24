@@ -82,9 +82,9 @@ begin
  if action<>'return_stock' and (wo.status in ('completed','canceled') or asset.archived_at is not null) then raise exception using message='INVALID_TRANSITION';end if;
  if jsonb_typeof(fields->'lines') is distinct from 'array' then raise exception using message='VALIDATION';end if;
  if jsonb_array_length(fields->'lines') not between 1 and 100 then raise exception using message='VALIDATION';end if;
- if action='request_parts' and (select count(distinct value->>'part_id') from jsonb_array_elements(fields->'lines'))<>jsonb_array_length(fields->'lines')
- or action='reserve_parts' and (select count(distinct (value->>'part_id',value->>'location_id')) from jsonb_array_elements(fields->'lines'))<>jsonb_array_length(fields->'lines')
- or action in ('release_reservation','issue_reserved_stock','return_stock') and (select count(distinct value->>'reservation_id') from jsonb_array_elements(fields->'lines'))<>jsonb_array_length(fields->'lines') then raise exception using message='VALIDATION';end if;
+ if action='request_parts' and (select count(distinct (value->>'part_id')::uuid) from jsonb_array_elements(fields->'lines'))<>jsonb_array_length(fields->'lines')
+ or action='reserve_parts' and (select count(distinct ((value->>'part_id')::uuid,(value->>'location_id')::uuid)) from jsonb_array_elements(fields->'lines'))<>jsonb_array_length(fields->'lines')
+ or action in ('release_reservation','issue_reserved_stock','return_stock') and (select count(distinct (value->>'reservation_id')::uuid) from jsonb_array_elements(fields->'lines'))<>jsonb_array_length(fields->'lines') then raise exception using message='VALIDATION';end if;
  perform private.rate_check(org,actor,action);
  -- Tenant admission serializes stock commands; acquire dependent stock rows deterministically too.
  perform 1 from public.parts p where p.organization_id=org and (p.id in (select (value->>'part_id')::uuid from jsonb_array_elements(fields->'lines')) or p.id in (select r.part_id from public.stock_reservations r where r.organization_id=org and r.id in (select (value->>'reservation_id')::uuid from jsonb_array_elements(fields->'lines')))) order by p.id for update;
@@ -163,11 +163,20 @@ begin
  end loop;
 end $$;
 do $migration$
-declare definition text;anchor text:='  update public.work_orders set status=next_status,opened_at=';
+declare definition text;anchor text:='  update public.work_orders set status=next_status,';
 begin
  definition:=pg_get_functiondef('private.operational_command_base(jsonb,text,jsonb)'::regprocedure);
  if (length(definition)-length(replace(definition,anchor,'')))/length(anchor)<>1 then raise exception 'Expected one job cancellation source anchor';end if;
  execute replace(definition,anchor,E'  if next_status=''canceled'' then perform private.cancel_job_reservations(org,wo.id);end if;\n'||anchor);
+end $migration$;
+
+-- Job consumption is reversed only through the net-issued return boundary.
+do $migration$
+declare definition text;anchor text:='   if original.id is null then raise exception using message=''NOT_FOUND''; end if;';
+begin
+ definition:=pg_get_functiondef('private.inventory_command(jsonb,text,jsonb)'::regprocedure);
+ if (length(definition)-length(replace(definition,anchor,'')))/length(anchor)<>1 then raise exception 'Expected one stock compensation source anchor';end if;
+ execute replace(definition,anchor,anchor||E'\n   if original.kind in (''issue'',''return'') then raise exception using message=''INVALID_TRANSITION'';end if;');
 end $migration$;
 
 create function public.request_parts(ctx jsonb,fields jsonb) returns jsonb language sql security definer set search_path='' as $$select private.job_parts_command(ctx,'request_parts',fields)$$;

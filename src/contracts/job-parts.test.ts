@@ -11,3 +11,16 @@ it('accepts exact job quantities and rejects duplicate or excessive atomic lines
     expect(schemas.requestPartsFields.safeParse({ work_order_id: id, lines }).success).toBe(false);
   }
 });
+
+it('rejects UUID case variants of the same request, allocation, or reservation identity', () => {
+  const lower = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'; const upper = lower.toUpperCase();
+  const line = { part_id: lower, quantity: '0.001', unit: 'kg' };
+  expect(inventory.requestPartsFields.safeParse({ work_order_id: id, lines: [line, { ...line, part_id: upper }] }).success).toBe(false);
+  const allocation = { ...line, location_id: lower };
+  for (const variant of [{ ...allocation, part_id: upper }, { ...allocation, location_id: upper }]) {
+    expect(inventory.reservePartsFields.safeParse({ work_order_id: id, lines: [allocation, variant] }).success).toBe(false);
+  }
+  const reservation = { reservation_id: lower, quantity: '0.001', unit: 'kg' };
+  expect(inventory.reservationPartsFields.safeParse({ work_order_id: id, lines: [reservation, { ...reservation, reservation_id: upper }] }).success).toBe(false);
+  expect(inventory.requestPartsFields.safeParse({ work_order_id: id, lines: [{ ...line, part_id: upper }] }).success).toBe(true);
+});

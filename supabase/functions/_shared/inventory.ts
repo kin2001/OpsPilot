@@ -25,9 +25,9 @@ export const stockMovementPage = z.strictObject({ items: z.array(stockMovement).
 const requestedLine = z.strictObject({ part_id: z.uuid(), quantity: stockQuantity, unit });
 const reservedLine = requestedLine.extend({ location_id: z.uuid() });
 const reservationLine = z.strictObject({ reservation_id: z.uuid(), quantity: stockQuantity, unit });
-export const requestPartsFields = z.strictObject({ work_order_id: z.uuid(), lines: z.array(requestedLine).min(1).max(100).refine((lines) => new Set(lines.map((line) => line.part_id)).size === lines.length) });
-export const reservePartsFields = z.strictObject({ work_order_id: z.uuid(), lines: z.array(reservedLine).min(1).max(100).refine((lines) => new Set(lines.map((line) => `${line.part_id}/${line.location_id}`)).size === lines.length) });
-export const reservationPartsFields = z.strictObject({ work_order_id: z.uuid(), lines: z.array(reservationLine).min(1).max(100).refine((lines) => new Set(lines.map((line) => line.reservation_id)).size === lines.length) });
+export const requestPartsFields = z.strictObject({ work_order_id: z.uuid(), lines: z.array(requestedLine).min(1).max(100).refine((lines) => new Set(lines.map((line) => line.part_id.toLowerCase())).size === lines.length) });
+export const reservePartsFields = z.strictObject({ work_order_id: z.uuid(), lines: z.array(reservedLine).min(1).max(100).refine((lines) => new Set(lines.map((line) => `${line.part_id}/${line.location_id}`.toLowerCase())).size === lines.length) });
+export const reservationPartsFields = z.strictObject({ work_order_id: z.uuid(), lines: z.array(reservationLine).min(1).max(100).refine((lines) => new Set(lines.map((line) => line.reservation_id.toLowerCase())).size === lines.length) });
 export type RequestPartsFields = z.infer<typeof requestPartsFields>;
 export type ReservePartsFields = z.infer<typeof reservePartsFields>;
 export type ReservationPartsFields = z.infer<typeof reservationPartsFields>;
