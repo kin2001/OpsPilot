@@ -12,6 +12,7 @@ import { SecurityPanel, PrivilegedArea } from './auth/security';
 import { AssetPage, RequestPage, TeamPage } from './features';
 import { DashboardPage, NotificationsPage, OperationsTeamPage, OrganizationSettingsPage } from './operations';
 import { OperationalWorkOrderPage } from './work-orders';
+import { MaintenancePage } from './maintenance';
 import { AppButton, BrandLogo, ErrorNotice, Field, LoadingNotice, PageHeader, SuccessNotice } from './ui';
 import type { CapturedAuthRedirect } from './auth/capture-url';
 import { acceptInvitation } from './commands';
@@ -223,7 +224,7 @@ function WorkspaceShell({ memberships, selected, onSwitch }: { memberships: Orga
   const [menuOpen, setMenuOpen] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => setMenuOpen(false), [location.pathname]);
-  const pageNames: Record<string, string> = { '/': 'Dashboard', '/requests': 'Requests', '/work-orders': 'Work orders', '/assets': 'Assets', '/team': 'Team', '/notifications': 'Notifications', '/settings': 'Settings', '/settings/security': 'Security' };
+  const pageNames: Record<string, string> = { '/': 'Dashboard', '/requests': 'Requests', '/work-orders': 'Work orders', '/assets': 'Assets', '/maintenance': 'Maintenance', '/team': 'Team', '/notifications': 'Notifications', '/settings': 'Settings', '/settings/security': 'Security' };
   const pageName = pageNames[location.pathname] ?? 'Dashboard';
   const today = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: selected.organization.timezone }).format(new Date());
   const duplicateNames = new Set(memberships.filter((membership, index) => memberships.some((other, otherIndex) => otherIndex !== index && other.organization.name === membership.organization.name)).map((membership) => membership.organization.id));
@@ -231,6 +232,7 @@ function WorkspaceShell({ memberships, selected, onSwitch }: { memberships: Orga
     { to: '/', label: 'Dashboard', glyph: 'dashboard', end: true },
     { to: '/requests', label: 'Requests', glyph: 'requests' },
     { to: '/work-orders', label: 'Work orders', glyph: 'work' },
+    { to: '/maintenance', label: 'Maintenance', glyph: 'calendar' },
     { to: '/assets', label: 'Assets', glyph: 'assets' },
     ...(['owner', 'manager', 'supervisor'].includes(selected.role) ? [{ to: '/team', label: 'Team', glyph: 'team' }] : []),
     { to: '/notifications', label: 'Notifications', glyph: 'notifications' },
@@ -248,6 +250,7 @@ function WorkspaceShell({ memberships, selected, onSwitch }: { memberships: Orga
       <Route path="/assets" element={<AssetPage />} />
       <Route path="/requests" element={<RequestPage />} />
       <Route path="/work-orders" element={<OperationalWorkOrderPage />} />
+      <Route path="/maintenance" element={<MaintenancePage key={`${user?.id ?? ''}:${selected.organization.id}:${selected.role}`} />} />
       <Route path="/team" element={selected.role === 'owner' ? <PrivilegedArea label="managing workspace membership"><TeamPage /></PrivilegedArea> : ['manager', 'supervisor'].includes(selected.role) ? <OperationsTeamPage /> : <AccessDeniedPage />} />
       <Route path="/notifications" element={<NotificationsPage />} />
       <Route path="/settings" element={selected.role === 'owner' ? <PrivilegedArea label="changing workspace settings"><OrganizationSettingsPage /></PrivilegedArea> : <AccessDeniedPage />} />

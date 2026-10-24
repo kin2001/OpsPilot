@@ -44,15 +44,15 @@ const workOrders = [
   { id: '7d014e2c-141c-4c6a-8644-5c0e7809d531', organization_id: fixtureOrganizationIds.alpha, number: 2, asset_id: assets[1]!.id, source_request_id: requests[1]!.id, title: 'Check fan vibration', description: 'Review the submitted vibration report.', category: 'vibration', priority: 'high', due_at: null, supervisor_id: fixtureUserId, status: 'draft', blocks_operation: false, created_by: fixtureUserId, created_at: '2026-10-21T04:00:00.000Z', version: 1, repair_revision: 1, submitted_revision: null, opened_at: null, completed_at: null, priority_reason: null },
 ];
 
-function jwt() {
+function jwt(user = fixtureUser) {
   const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
   const now = Math.floor(Date.now() / 1000);
-  return `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode({ aud: 'authenticated', role: 'authenticated', sub: fixtureUserId, email: fixtureUser.email, aal: 'aal2', amr: [{ method: 'password', timestamp: now }, { method: 'mfa', timestamp: now }], iat: now, exp: now + 3600 })}.fixture`;
+  return `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode({ aud: 'authenticated', role: 'authenticated', sub: user.id, email: user.email, aal: 'aal2', amr: [{ method: 'password', timestamp: now }, { method: 'mfa', timestamp: now }], iat: now, exp: now + 3600 })}.fixture`;
 }
 
-function session() {
+function session(user = fixtureUser) {
   const expiresAt = Math.floor(Date.now() / 1000) + 3600;
-  return { access_token: jwt(), refresh_token: 'fixture-refresh-token', token_type: 'bearer', expires_in: 3600, expires_at: expiresAt, user: fixtureUser };
+  return { access_token: jwt(user), refresh_token: 'fixture-refresh-token', token_type: 'bearer', expires_in: 3600, expires_at: expiresAt, user };
 }
 
 function response(route: Route, status: number, value: unknown) {
@@ -64,8 +64,9 @@ function response(route: Route, status: number, value: unknown) {
   }, body: status === 204 ? '' : JSON.stringify(value) });
 }
 
-export async function prepareWorkspacePage(page: Page, initialMemberships = [fixtureOrganizationIds.alpha]) {
+export async function prepareWorkspacePage(page: Page, initialMemberships = [fixtureOrganizationIds.alpha], initialRole = 'owner') {
   let memberships = [...initialMemberships];
+  let membershipRole = initialRole;
   let authUser = fixtureUser;
   let holdIdentityUserLookups = false;
   let onIdentityUserLookup: (() => void) | null = null;
@@ -88,7 +89,7 @@ export async function prepareWorkspacePage(page: Page, initialMemberships = [fix
     }
     if (url.pathname === '/rest/v1/organization_members') {
       membershipReads++;
-      return response(route, 200, memberships.map((organization_id) => ({ organization_id, user_id: authUser.id, role: 'owner', active: true, created_at: '2026-10-21T00:00:00.000Z', version: 1 })));
+      return response(route, 200, memberships.map((organization_id) => ({ organization_id, user_id: authUser.id, role: membershipRole, active: true, created_at: '2026-10-21T00:00:00.000Z', version: 1 })));
     }
     if (url.pathname === '/rest/v1/organizations') return response(route, 200, organizations.filter((organization) => memberships.includes(organization.id)));
     if (url.pathname === '/rest/v1/assets') {
@@ -168,13 +169,18 @@ export async function prepareWorkspacePage(page: Page, initialMemberships = [fix
     return response(route, 404, { message: 'The isolated browser fixture did not define this request.' });
   });
   const savedSession = session();
-  await page.addInitScript((value) => localStorage.setItem('sb-127-auth-token', JSON.stringify(value)), savedSession);
+  await page.addInitScript((value) => {
+    if (!localStorage.getItem('sb-127-auth-token')) localStorage.setItem('sb-127-auth-token', JSON.stringify(value));
+  }, savedSession);
   return {
     setMemberships: (next: string[]) => { memberships = [...next]; },
+    setRole: (role: string) => { membershipRole = role; },
     switchToSecondUser: () => {
       authUser = { ...fixtureUser, id: '5d3c9d7e-40a8-4b27-a7d8-e350a66b771b', email: 'second-user@example.test', factors: [] };
       return { id: authUser.id, email: authUser.email };
     },
+    sessionFor: (identity: { id: string; email: string }) => session({ ...fixtureUser, ...identity, factors: [] }),
+    setBrowserSession: (value: unknown) => page.evaluate((nextSession) => localStorage.setItem('sb-127-auth-token', JSON.stringify(nextSession)), value),
     holdIdentityUserLookups: () => {
       holdIdentityUserLookups = true;
       let resolveArrival!: () => void;
