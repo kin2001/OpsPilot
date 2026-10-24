@@ -324,3 +324,23 @@ it.each([false, true])('preserves Operational on initial submission without a sa
   expect(await version()).toBe(before);
   expect((await getInspection(people.owner.client, org, assignment.id)).holds).toEqual([]);
 });
+
+it('rejects direct-RPC whitespace reasons atomically and keeps subsequent correction history readable', async () => {
+  const { assignment } = await assigned(false);
+  const results = [{ item_id: item, outcome: 'pass' as const, evidence_ids: [] }];
+  const initial = await submitInspection(people.inspector.client, org, assignment.id, assignment.template_revision_id, results, randomUUID());
+  const args = { assignment_id: assignment.id, template_revision_id: assignment.template_revision_id, supersedes_id: initial.id, results };
+  for (const correction_reason of [' ', '\t', '\n\r', '\t \n', '\u00a0', '\ufeff', '\u00a0\ufeff', '\u1680\u2000\u2028\u2029\u202f\u205f\u3000']) {
+    const denied = await people.inspector.client.rpc('correct_inspection', { ctx: ctx(1), ...args, correction_reason });
+    expect(denied.error?.message).toBe('VALIDATION');
+  }
+  expect((await getInspection(people.inspector.client, org, assignment.id)).history).toEqual([initial]);
+  const request = randomUUID();
+  const valid = { ctx: { ...ctx(1), request_id: request }, ...args, correction_reason: '\t\u00a0Rechecked guard\ufeff\n' };
+  const corrected = await people.inspector.client.rpc('correct_inspection', valid);
+  expect(corrected.error).toBeNull(); expect(corrected.data.data.correction_reason).toBe('Rechecked guard');
+  expect((await people.inspector.client.rpc('correct_inspection', valid)).data).toEqual(corrected.data);
+  const detail = await getInspection(people.inspector.client, org, assignment.id);
+  expect(detail.history).toHaveLength(2); expect(detail.history[1].correction_reason).toBe('Rechecked guard');
+  expect(detail.submission?.id).toBe(corrected.data.data.id);
+});

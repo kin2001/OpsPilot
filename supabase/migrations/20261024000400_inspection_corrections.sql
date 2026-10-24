@@ -1,3 +1,4 @@
+-- Correction reasons use the ECMAScript trim character set shared by the strict client.
 -- Preserve submitted facts and durable receipts; corrections append one successor under the organization/asset locks.
 alter table public.inspection_submissions
  drop constraint inspection_submissions_organization_id_assignment_id_key,
@@ -5,7 +6,7 @@ alter table public.inspection_submissions
  add column supersedes_id uuid,
  add column correction_reason text,
  add constraint inspection_submission_version check(version between 1 and 100),
- add constraint inspection_submission_lineage check((version=1 and supersedes_id is null and correction_reason is null) or (version>1 and supersedes_id is not null and length(trim(correction_reason)) between 1 and 2000 and correction_reason is not null)),
+ add constraint inspection_submission_lineage check((version=1 and supersedes_id is null and correction_reason is null) or (version>1 and supersedes_id is not null and length(btrim(correction_reason,U&'\0009\000A\000B\000C\000D\0020\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000\FEFF')) between 1 and 2000 and correction_reason is not null)),
  add unique(organization_id,assignment_id,version),
  add unique(organization_id,assignment_id,id),
  add unique(organization_id,supersedes_id),
@@ -85,7 +86,7 @@ begin
    if previous.id is not null then raise exception using message='CONFLICT'; end if;
   else
    perform private.object_fields(payload,array['assignment_id','template_revision_id','supersedes_id','correction_reason','results']);
-   if jsonb_typeof(payload->'correction_reason') is distinct from 'string' or length(trim(payload->>'correction_reason')) not between 1 and 2000 or (payload->>'supersedes_id')::uuid is null or expected is null then raise exception using message='VALIDATION'; end if;
+   if jsonb_typeof(payload->'correction_reason') is distinct from 'string' or length(btrim(payload->>'correction_reason',U&'\0009\000A\000B\000C\000D\0020\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000\FEFF')) not between 1 and 2000 or (payload->>'supersedes_id')::uuid is null or expected is null then raise exception using message='VALIDATION'; end if;
    if previous.id is null then raise exception using message='INVALID_TRANSITION'; end if;
    if previous.id is distinct from (payload->>'supersedes_id')::uuid or previous.version<>expected then raise exception using message='CONFLICT'; end if;
    if previous.version>=100 then raise exception using message='RATE_LIMITED'; end if;
@@ -106,7 +107,7 @@ begin
    if exists(select 1 from unnest(evidence_ids) ev(id) where not exists(select 1 from public.attachments a where a.organization_id=org and a.id=ev.id and a.inspection_assignment_id=assignment.id and a.status='ready')) then raise exception using message='VALIDATION'; end if;
   end loop;
   if exists(select 1 from jsonb_array_elements(revision.items) i where (i->>'required')::boolean and not exists(select 1 from jsonb_array_elements(results) r where (r->>'item_id')::uuid=(i->>'id')::uuid)) then raise exception using message='VALIDATION'; end if;
-  insert into public.inspection_submissions(organization_id,assignment_id,template_revision_id,inspector_id,results,version,supersedes_id,correction_reason) values(org,assignment.id,revision.id,actor,results,coalesce(previous.version,0)+1,previous.id,case when action='correct_inspection' then trim(payload->>'correction_reason') end) returning * into submission;
+  insert into public.inspection_submissions(organization_id,assignment_id,template_revision_id,inspector_id,results,version,supersedes_id,correction_reason) values(org,assignment.id,revision.id,actor,results,coalesce(previous.version,0)+1,previous.id,case when action='correct_inspection' then btrim(payload->>'correction_reason',U&'\0009\000A\000B\000C\000D\0020\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000\FEFF') end) returning * into submission;
   for result in select value from jsonb_array_elements(results) where value->>'outcome'='fail' loop
    select value into item from jsonb_array_elements(revision.items) where (value->>'id')::uuid=(result->>'item_id')::uuid;
    select * into prior_episode from public.inspection_failure_episodes e where e.organization_id=org and e.assignment_id=assignment.id and e.item_id=(item->>'id')::uuid and not exists(select 1 from public.inspection_failure_episodes child where child.organization_id=org and child.predecessor_id=e.id);
