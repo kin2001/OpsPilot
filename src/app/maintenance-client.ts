@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database, Json } from '../lib/database.types';
 import { domainError } from '../lib/domain-errors';
-import { maintenanceFields, maintenancePlan, maintenancePlanPage, maintenancePreview, maintenanceRevisionPage, type MaintenanceFields } from '../contracts/maintenance';
+import { maintenanceFields, maintenancePlan, maintenancePlanPage, maintenancePreview, maintenanceRevisionPage, maintenanceAgendaPage, maintenanceBacklogPage, type MaintenanceFields } from '../contracts/maintenance';
 import { commandResult, contextFor } from './commands';
 
 type Response = { data: Json | null; error: { message: string } | null };
@@ -39,4 +39,20 @@ export function listMaintenanceRevisions(client: SupabaseClient<Database>, organ
   const args = z.strictObject({ organization_id: z.uuid(), plan_id: z.uuid(), cursor: z.int().positive().optional(), page_size: pageSize }).parse({ organization_id: organizationId, plan_id: planId, ...page, page_size: page.page_size ?? 25 });
   const response = client.rpc('list_maintenance_revisions', args);
   return read(signal ? response.abortSignal(signal) : response, maintenanceRevisionPage);
+}
+export function listMaintenanceAgenda(client: SupabaseClient<Database>, organizationId: string, page: { from_on: string; to_on: string; cursor?: { date: string; id: string }; page_size?: number }, signal?: AbortSignal) {
+  const args = z.strictObject({ organization_id: z.uuid(), from_on: z.iso.date(), to_on: z.iso.date(),
+    cursor: z.strictObject({ date: z.iso.date(), id: z.uuid() }).optional(), page_size: pageSize,
+  }).refine((p) => p.from_on >= '0001-01-01' && p.to_on <= '9999-12-30' && p.to_on >= p.from_on
+    && Date.parse(p.to_on) - Date.parse(p.from_on) <= 366 * 86400000
+    && (!p.cursor || (p.cursor.date >= p.from_on && p.cursor.date <= p.to_on)))
+    .parse({ organization_id: organizationId, ...page, page_size: page.page_size ?? 25 });
+  const response = client.rpc('list_maintenance_agenda', args);
+  return read(signal ? response.abortSignal(signal) : response, maintenanceAgendaPage);
+}
+export function listMaintenanceBacklog(client: SupabaseClient<Database>, organizationId: string, planId: string, page: { cursor?: number; page_size?: number } = {}, signal?: AbortSignal) {
+  const args = z.strictObject({ organization_id: z.uuid(), plan_id: z.uuid(), cursor: z.int().positive().optional(), page_size: pageSize })
+    .parse({ organization_id: organizationId, plan_id: planId, ...page, page_size: page.page_size ?? 25 });
+  const response = client.rpc('list_maintenance_backlog', args);
+  return read(signal ? response.abortSignal(signal) : response, maintenanceBacklogPage);
 }

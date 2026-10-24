@@ -38,3 +38,18 @@ export const maintenanceRevisionPage = z.strictObject({
     organization_id: z.uuid(), plan_id: z.uuid(), revision_id: z.uuid(), next_ordinal: z.int().nonnegative(), protected_through: z.iso.date().nullable(),
   }) })).max(100), next_cursor: z.int().positive().nullable(),
 });
+export const maintenanceAgendaPage = z.strictObject({
+  items: z.array(z.strictObject({
+    id: z.uuid(), organization_id: z.uuid(), plan_id: z.uuid(), revision_id: z.uuid(), scheduled_local_date: z.iso.date(),
+    timezone: z.string(), due_policy: z.literal('local_day_end'), due_at: instant, work_order_id: z.uuid(),
+    authorized_by: z.uuid(), supervisor_id: z.uuid(), assignee_ids: z.array(z.uuid()).min(1).max(30), generated_at: instant,
+    work_status: z.enum(['draft', 'open', 'scheduled', 'in_progress', 'blocked', 'awaiting_review', 'completed', 'canceled']),
+    blocks_operation: z.boolean(), planned_on: z.iso.date().nullable(), title: z.string(),
+  })).max(100), next_cursor: z.strictObject({ date: z.iso.date(), id: z.uuid() }).nullable(),
+});
+export const maintenanceBacklogPage = z.strictObject({
+  items: z.array(z.strictObject({ revision_id: z.uuid(), revision: z.int().positive(), author_id: z.uuid(), next_ordinal: z.int().nonnegative(),
+    next_on: z.iso.date(), protected_through: z.iso.date().nullable(), timezone: z.string(), due_at: instant })).max(100),
+  next_cursor: z.int().positive().nullable(), evaluated_at: instant, status,
+  generation_blocked: maintenancePlan.shape.generation_blocked, last_checked_at: z.string().nullable(),
+});

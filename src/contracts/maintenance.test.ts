@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { maintenanceFields, maintenancePreview, maintenancePlanPage, maintenanceRevisionPage } from './maintenance';
+import { maintenanceFields, maintenancePreview, maintenancePlanPage, maintenanceRevisionPage, maintenanceAgendaPage, maintenanceBacklogPage } from './maintenance';
 
 const id = 'c4a27337-9db2-4128-92db-c62b1e578397';
 const fields = { asset_id: id, title: 'Monthly inspection', instructions: 'Check belt tension', category: 'routine', cadence: 'month', frequency: 1, anchor_on: '2024-01-31', supervisor_id: id, assignee_ids: [id], checklist: ['Inspect belt'], status: 'active' };
@@ -35,5 +35,13 @@ describe('maintenance read boundary', () => {
     expect(maintenancePlanPage.safeParse({ items: [], next_cursor: 'invalid' }).success).toBe(false);
     expect(maintenancePlanPage.safeParse({ items: Array(101).fill({}), next_cursor: null }).success).toBe(false);
     expect(maintenanceRevisionPage.safeParse({ items: [], next_cursor: 0 }).success).toBe(false);
+  });
+  it('requires bounded agenda identities and a truthful pending backlog evaluation', () => {
+    expect(maintenanceAgendaPage.parse({ items: [], next_cursor: null })).toEqual({ items: [], next_cursor: null });
+    expect(maintenanceAgendaPage.safeParse({ items: [], next_cursor: { date: '2026-02-30', id } }).success).toBe(false);
+    expect(maintenanceAgendaPage.safeParse({ items: Array(101).fill({}), next_cursor: null }).success).toBe(false);
+    const backlog = { items: [], next_cursor: null, evaluated_at: '2026-10-24T00:00:00Z', status: 'paused', generation_blocked: 'person_ineligible', last_checked_at: null };
+    expect(maintenanceBacklogPage.parse(backlog)).toEqual(backlog);
+    expect(maintenanceBacklogPage.safeParse({ ...backlog, evaluated_at: undefined }).success).toBe(false);
   });
 });

@@ -589,6 +589,10 @@ isOneToOne: true
             [_ in never]: never
           }
           Functions: {
+"list_maintenance_agenda":
+{ Args: { organization_id: string; from_on: string; to_on: string; cursor?: Json; page_size?: number }; Returns: Json };
+"list_maintenance_backlog":
+{ Args: { organization_id: string; plan_id: string; cursor?: number; page_size?: number }; Returns: Json };
             "accept_organization_invitation":
 { Args: { "request_id": string,"token": string }; Returns: Json
                            },

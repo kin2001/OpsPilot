@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from '../lib/database.types';
-import { saveMaintenancePlan, previewMaintenancePlan, listMaintenancePlans, listMaintenanceRevisions } from './maintenance-client';
+import { saveMaintenancePlan, previewMaintenancePlan, listMaintenancePlans, listMaintenanceRevisions, listMaintenanceAgenda, listMaintenanceBacklog } from './maintenance-client';
 
 const org = '70f7906a-5061-48b6-927c-53e4bc3bdc63';
 const id = 'c4a27337-9db2-4128-92db-c62b1e578397';
@@ -50,5 +50,14 @@ describe('maintenance client commands and bounded reads', () => {
     expect(() => listMaintenancePlans(f.client, org, { page_size: 101 })).toThrow();
     expect(() => listMaintenanceRevisions(f.client, org, id, { cursor: 0 })).toThrow();
     expect(f.requests).toEqual([]);
+  });
+  it('validates agenda windows and backlog pages before transport', async () => {
+    const f = fixture({ items: [], next_cursor: null });
+    expect(() => listMaintenanceAgenda(f.client, org, { from_on: '2026-01-01', to_on: '2028-01-01' })).toThrow();
+    expect(() => listMaintenanceAgenda(f.client, org, { from_on: '2026-02-30', to_on: '2026-03-01' })).toThrow();
+    expect(() => listMaintenanceBacklog(f.client, org, id, { page_size: 101 })).toThrow();
+    expect(f.requests).toHaveLength(0);
+    expect(await listMaintenanceAgenda(f.client, org, { from_on: '2026-10-01', to_on: '2026-10-31' })).toEqual({ items: [], next_cursor: null });
+    expect(f.requests[0].body).toEqual({ organization_id: org, from_on: '2026-10-01', to_on: '2026-10-31', page_size: 25 });
   });
 });
