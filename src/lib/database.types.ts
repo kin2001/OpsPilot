@@ -367,32 +367,6 @@ isOneToOne: false
       referencedColumns: ["organization_id","part_id","location_id"]
     }
                   ]
-                },"maintenance_occurrences": {
-                  Row: {
-                    "assignee_ids": (string)[],"authorized_by": string,"due_at": string,"due_policy": string,"generated_at": string,"id": string,"organization_id": string,"plan_id": string,"revision_id": string,"scheduled_local_date": string,"supervisor_id": string,"timezone": string,"work_order_id": string
-                  }
-                  ComputedFields: never
-                  Insert: {
-                    "assignee_ids": (string)[],"authorized_by": string,"due_at": string,"due_policy"?: string,"generated_at"?: string,"id"?: string,"organization_id": string,"plan_id": string,"revision_id": string,"scheduled_local_date": string,"supervisor_id": string,"timezone": string,"work_order_id": string
-                  }
-                  Update: {
-                    "assignee_ids"?: (string)[],"authorized_by"?: string,"due_at"?: string,"due_policy"?: string,"generated_at"?: string,"id"?: string,"organization_id"?: string,"plan_id"?: string,"revision_id"?: string,"scheduled_local_date"?: string,"supervisor_id"?: string,"timezone"?: string,"work_order_id"?: string
-                  }
-                  Relationships: [
-                    {
-      foreignKeyName: "maintenance_occurrences_organization_id_plan_id_revision_i_fkey"
-      columns: ["organization_id","plan_id","revision_id"]
-isOneToOne: false
-      referencedRelation: "maintenance_plan_revisions"
-      referencedColumns: ["organization_id","plan_id","id"]
-    },{
-      foreignKeyName: "maintenance_occurrences_organization_id_work_order_id_fkey"
-      columns: ["organization_id","work_order_id"]
-isOneToOne: true
-      referencedRelation: "work_orders"
-      referencedColumns: ["organization_id","id"]
-    }
-                  ]
                 },"job_stock_movements": {
                   Row: {
                     "movement_id": string,"organization_id": string,"request_id": string,"reservation_id": string
@@ -416,6 +390,32 @@ isOneToOne: true
       columns: ["organization_id","reservation_id"]
 isOneToOne: false
       referencedRelation: "stock_reservations"
+      referencedColumns: ["organization_id","id"]
+    }
+                  ]
+                },"maintenance_occurrences": {
+                  Row: {
+                    "assignee_ids": (string)[],"authorized_by": string,"due_at": string,"due_policy": string,"generated_at": string,"id": string,"organization_id": string,"plan_id": string,"revision_id": string,"scheduled_local_date": string,"supervisor_id": string,"timezone": string,"work_order_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "assignee_ids": (string)[],"authorized_by": string,"due_at": string,"due_policy"?: string,"generated_at"?: string,"id"?: string,"organization_id": string,"plan_id": string,"revision_id": string,"scheduled_local_date": string,"supervisor_id": string,"timezone": string,"work_order_id": string
+                  }
+                  Update: {
+                    "assignee_ids"?: (string)[],"authorized_by"?: string,"due_at"?: string,"due_policy"?: string,"generated_at"?: string,"id"?: string,"organization_id"?: string,"plan_id"?: string,"revision_id"?: string,"scheduled_local_date"?: string,"supervisor_id"?: string,"timezone"?: string,"work_order_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "maintenance_occurrences_organization_id_plan_id_revision_i_fkey"
+      columns: ["organization_id","plan_id","revision_id"]
+isOneToOne: false
+      referencedRelation: "maintenance_plan_revisions"
+      referencedColumns: ["organization_id","plan_id","id"]
+    },{
+      foreignKeyName: "maintenance_occurrences_organization_id_work_order_id_fkey"
+      columns: ["organization_id","work_order_id"]
+isOneToOne: true
+      referencedRelation: "work_orders"
       referencedColumns: ["organization_id","id"]
     }
                   ]
