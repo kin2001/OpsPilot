@@ -1,12 +1,29 @@
 import { expect, it } from 'vitest';
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from '../lib/database.types';
-import { receiveStock, adjustStock, savePart, saveStockLocation, listInventoryParts, listStockLocations, listInventoryBalances, listInventoryMovements } from './inventory-client';
+import { receiveStock, adjustStock, savePart, saveStockLocation, listInventoryParts, listStockLocations, listInventoryBalances, listInventoryMovements, requestParts, reserveParts, releaseReservation, issueReservedStock, returnStock, getJobParts } from './inventory-client';
 const id = '00000035-0000-4000-8000-000000000001';
 const org = '10000035-0000-4000-8000-000000000001';
 const requestId = '30000035-0000-4000-8000-000000000001';
 const fields = { part_id: id, location_id: id, quantity: '0.100', unit: 'kg' };
 const movement = { ...fields, id, organization_id: org, kind: 'receipt', direction: 'in', actor_id: id, request_id: requestId, source: null, reason: null, correction_of: null, created_at: '2026-10-24T00:00:00Z' };
+const job = { id, number: 1, status: 'open', version: 2, parts: [], reservations: [], reconciliation_state: 'consistent' };
+it('sends job commands with mandatory WO version, exact quantities and replay identity', async () => {
+  const f = fixture({ data: job, version: 2, request_id: requestId });
+  const request = { work_order_id: id, lines: [{ part_id: id, quantity: '0.100', unit: 'kg' }] };
+  const reserve = { work_order_id: id, lines: [fields] };
+  const reservation = { work_order_id: id, lines: [{ reservation_id: id, quantity: '0.100', unit: 'kg' }] };
+  await requestParts(f.client, org, request, requestId, 1);
+  await reserveParts(f.client, org, reserve, requestId, 1);
+  await releaseReservation(f.client, org, reservation, requestId, 1);
+  await issueReservedStock(f.client, org, reservation, requestId, 1);
+  await returnStock(f.client, org, reservation, requestId, 1);
+  expect(f.sent.map((r) => r.url.split('/').at(-1))).toEqual(['request_parts', 'reserve_parts', 'release_reservation', 'issue_reserved_stock', 'return_stock']);
+  expect(f.sent[0].body).toEqual({ ctx: { organization_id: org, request_id: requestId, expected_version: 1 }, fields: request });
+  expect(() => requestParts(f.client, org, request, requestId, 0)).toThrow();
+  expect(await getJobParts(fixture(job).client, org, id)).toEqual(job);
+  await expect(getJobParts(fixture({ ...job, people: [] }).client, org, id)).rejects.toThrow('DEPENDENCY_UNAVAILABLE');
+});
 function fixture(body: unknown, status = 200) {
   const sent: { url: string; body: unknown }[] = [];
   const client = createClient<Database>('http://127.0.0.1:54321', 'synthetic-key', { auth: { persistSession: false, autoRefreshToken: false }, global: { fetch: async (input, init) => {

@@ -1,0 +1,44 @@
+begin;
+select no_plan();
+insert into auth.users(id,email,email_confirmed_at) select ('00000036-0000-4000-8000-'||lpad(n::text,12,'0'))::uuid,'job36-'||n||'@example.test',now() from generate_series(1,4) n;
+insert into public.organizations(id,name,timezone,currency,created_by) values('10000036-0000-4000-8000-000000000001','Synthetic job36','UTC','PHP','00000036-0000-4000-8000-000000000001');
+insert into public.organization_members(organization_id,user_id,role) values
+ ('10000036-0000-4000-8000-000000000001','00000036-0000-4000-8000-000000000001','owner'),
+ ('10000036-0000-4000-8000-000000000001','00000036-0000-4000-8000-000000000002','technician'),
+ ('10000036-0000-4000-8000-000000000001','00000036-0000-4000-8000-000000000003','inventory');
+insert into public.assets(id,organization_id,code,name,category,created_by) values('20000036-0000-4000-8000-000000000001','10000036-0000-4000-8000-000000000001','J36','Synthetic pump','pump','00000036-0000-4000-8000-000000000001');
+insert into public.work_orders(id,organization_id,number,asset_id,title,description,category,priority,supervisor_id,status,created_by) values('30000036-0000-4000-8000-000000000001','10000036-0000-4000-8000-000000000001',1,'20000036-0000-4000-8000-000000000001','Synthetic repair','Synthetic allocation','pump','normal','00000036-0000-4000-8000-000000000001','open','00000036-0000-4000-8000-000000000001');
+insert into public.work_order_assignments(organization_id,work_order_id,user_id) values('10000036-0000-4000-8000-000000000001','30000036-0000-4000-8000-000000000001','00000036-0000-4000-8000-000000000002');
+insert into public.parts(id,organization_id,code,name,unit,created_by) values('40000036-0000-4000-8000-000000000001','10000036-0000-4000-8000-000000000001','KG','Synthetic stock','kg','00000036-0000-4000-8000-000000000001');
+create function pg_temp.ctx(version integer) returns jsonb language sql as $$select jsonb_build_object('organization_id','10000036-0000-4000-8000-000000000001','request_id',gen_random_uuid(),'expected_version',version)$$;
+create function pg_temp.fields(qty jsonb) returns jsonb language sql as $$select jsonb_build_object('work_order_id','30000036-0000-4000-8000-000000000001','lines',jsonb_build_array(jsonb_build_object('part_id','40000036-0000-4000-8000-000000000001','unit','kg','quantity',qty)))$$;
+do $$begin perform set_config('request.jwt.claim.sub','00000036-0000-4000-8000-000000000001',true);end$$;
+select throws_ok($$select public.request_parts(pg_temp.ctx(1),pg_temp.fields('"1"'))$$,'P0001','FORBIDDEN','Owner cannot impersonate assigned technician request');
+do $$begin perform set_config('request.jwt.claim.sub','00000036-0000-4000-8000-000000000002',true);end$$;
+select throws_ok($$select public.request_parts(pg_temp.ctx(1),pg_temp.fields('1'))$$,'P0001','VALIDATION','Numeric JSON quantities rejected');
+select throws_ok($$select public.request_parts(pg_temp.ctx(1),pg_temp.fields('"0.0001"'))$$,'P0001','VALIDATION','Extra precision rejected before rounding');
+create temp table requested as select pg_temp.ctx(1) ctx,pg_temp.fields('"0.100"') fields;
+alter table requested add column result jsonb;
+update requested set result=public.request_parts(ctx,fields);
+select is((select result#>>'{data,parts,0,requested}' from requested),'0.100','Request quantity is exact string');
+select is((select public.request_parts(ctx,fields) from requested),(select result from requested),'Lost acknowledgement replays original result');
+select throws_ok($$select public.request_parts(ctx,jsonb_set(fields,'{lines,0,quantity}','"0.200"')) from requested$$,'P0001','CONFLICT','Changed payload cannot reuse receipt');
+select throws_ok($$select public.request_parts(pg_temp.ctx(1),pg_temp.fields('"1"'))$$,'P0001','CONFLICT','Fresh command requires current WO version');
+select is((select count(*)::integer from public.inventory_movements),0,'Requests never move stock');
+select is((select count(*)::integer from public.stock_reservations),0,'Requests never reserve stock');
+select throws_ok($$select public.reserve_parts(pg_temp.ctx(2),pg_temp.fields('"1"'))$$,'P0001','FORBIDDEN','Technician cannot reserve stock');
+update public.work_order_assignments set unassigned_at=now() where work_order_id='30000036-0000-4000-8000-000000000001';
+select throws_ok($$select public.request_parts(ctx,fields) from requested$$,'P0001','FORBIDDEN','Removed assignment denied before replay');
+select throws_ok($$select public.get_job_parts('10000036-0000-4000-8000-000000000001','30000036-0000-4000-8000-000000000001')$$,'P0001','FORBIDDEN','Former technician cannot read job parts');
+set local role authenticated;
+select throws_ok($$select * from public.work_order_parts$$,'42501',null,'Direct job quantities read denied');
+select throws_ok($$select * from public.stock_reservations$$,'42501',null,'Direct allocations read denied');
+select throws_ok($$insert into public.job_stock_movements values(gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid())$$,'42501',null,'Direct movement lineage write denied');
+select throws_ok($$select private.cancel_job_reservations(gen_random_uuid(),gen_random_uuid())$$,'42501',null,'Private cancellation bypass denied');
+reset role;
+set local role service_role;
+select throws_ok($$select * from public.stock_reservations$$,'42501',null,'Service role has no allocation bypass');
+select throws_ok($$select public.request_parts('{}','{}')$$,'42501',null,'Service role cannot invoke user command');
+reset role;
+select * from finish();
+rollback;

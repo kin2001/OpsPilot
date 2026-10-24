@@ -187,4 +187,32 @@ const upgradedBalances = await correctionCaller.rpc('list_inventory_balances', {
 assert.equal(upgradedBalances.data.items[0].on_hand, '0.001'); assert.equal(upgradedBalances.data.items[0].available, '0.001');
 assert.deepEqual((await correctionCaller.rpc('submit_inspection', oldSubmissionArgs)).data, oldSubmission.data);
 assertOwned();
+// Populate the accepted 26A schema before applying job allocations; retain its receipt exactly.
+execute('npm', ['exec', '--no', '--', 'supabase', 'db', 'reset', '--local', '--version', '20261024000500', '--network-id', network]);
+assertOwned(); await requireAuthReady();
+const jobAdmin = createClient(url, service, options); const jobOwner = createClient(url, anon, options); const jobTechnician = createClient(url, anon, options);
+const jobPeople = [];
+for (const [role, client] of [['owner', jobOwner], ['technician', jobTechnician]]) {
+  const email = `job-upgrade-${role}-${randomUUID()}@example.test`; const password = `Synthetic-${randomUUID()}-Aa9!`;
+  const user = await jobAdmin.auth.admin.createUser({ email, password, email_confirm: true }); assert.equal(user.error, null);
+  assert.equal((await client.auth.signInWithPassword({ email, password })).error, null); jobPeople.push(user.data.user.id);
+}
+const jobOrg = randomUUID(); const jobAsset = randomUUID(); const jobId = randomUUID();
+sql(`insert into public.organizations(id,name,timezone,currency,created_by) values('${jobOrg}','Populated 26A upgrade','UTC','PHP','${jobPeople[0]}');
+ insert into public.organization_members(organization_id,user_id,role) values('${jobOrg}','${jobPeople[0]}','owner'),('${jobOrg}','${jobPeople[1]}','technician');
+ insert into public.assets(id,organization_id,code,name,category,created_by) values('${jobAsset}','${jobOrg}','UP36','Synthetic pump','pump','${jobPeople[0]}');
+ insert into public.work_orders(id,organization_id,number,asset_id,title,description,category,priority,supervisor_id,status,created_by) values('${jobId}','${jobOrg}',1,'${jobAsset}','Synthetic job','Populated job','pump','normal','${jobPeople[0]}','open','${jobPeople[0]}');
+ insert into public.work_order_assignments(organization_id,work_order_id,user_id) values('${jobOrg}','${jobId}','${jobPeople[1]}');`);
+const jobCtx = (version) => ({ organization_id: jobOrg, request_id: randomUUID(), ...(version ? { expected_version: version } : {}) });
+const jobPart = await jobOwner.rpc('save_part', { ctx: jobCtx(), fields: { code: 'UP36', name: 'Retained 26A stock', unit: 'kg', reorder_threshold: null } }); assert.equal(jobPart.error, null);
+const jobLocation = await jobOwner.rpc('save_stock_location', { ctx: jobCtx(), fields: { code: 'UP36', name: 'Retained shelf' } }); assert.equal(jobLocation.error, null);
+const oldStockArgs = { ctx: jobCtx(), fields: { part_id: jobPart.data.data.id, location_id: jobLocation.data.data.id, quantity: '0.300', unit: 'kg' } };
+const oldStock = await jobOwner.rpc('receive_stock', oldStockArgs); assert.equal(oldStock.error, null);
+const oldStockRows = await jobOwner.rpc('list_inventory_movements', { organization_id: jobOrg }); assert.equal(oldStockRows.error, null);
+assertOwned(); execute('npm', ['exec', '--no', '--', 'supabase', 'migration', 'up', '--local', '--network-id', network]); assertOwned();
+assert.deepEqual((await jobOwner.rpc('receive_stock', oldStockArgs)).data, oldStock.data);
+assert.deepEqual((await jobOwner.rpc('list_inventory_movements', { organization_id: jobOrg })).data, oldStockRows.data);
+const parts = await jobTechnician.rpc('request_parts', { ctx: jobCtx(1), fields: { work_order_id: jobId, lines: [{ part_id: jobPart.data.data.id, quantity: '0.200', unit: 'kg' }] } }); assert.equal(parts.error, null);
+const allocation = await jobOwner.rpc('reserve_parts', { ctx: jobCtx(parts.data.version), fields: { work_order_id: jobId, lines: [{ part_id: jobPart.data.data.id, location_id: jobLocation.data.data.id, quantity: '0.200', unit: 'kg' }] } }); assert.equal(allocation.error, null);
+assert.equal(allocation.data.data.parts[0].reserved, '0.200'); assert.equal(allocation.data.data.reconciliation_state, 'consistent');
 console.log(JSON.stringify({ populated_t1_upgrade: true, retained_receipt_replay: true, frozen_new_response: true, former_assignment_backfill: true, conservative_initial_history: true, genuine_legacy_schedule_replay: true, undated_schedule_denial_atomic: true, populated_plan_upgrade: true, additive_inventory_exact_receipts: true }));
