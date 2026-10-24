@@ -1,6 +1,8 @@
 name: POR-23 isolated verification
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
 permissions:
   contents: read
 concurrency:
