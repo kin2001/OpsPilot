@@ -1,0 +1,169 @@
+name: POR-23 isolated verification
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: por23-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      CI: true
+      npm_config_cache: ${{ github.workspace }}/.cache/npm
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/ms-playwright
+      TMPDIR: ${{ github.workspace }}/.cache/tmp
+      TEMP: ${{ github.workspace }}/.cache/tmp
+      TMP: ${{ github.workspace }}/.cache/tmp
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.15.0
+      - name: Prepare script-free dependencies
+        run: |
+          mkdir -p .cache/tmp
+          test "$(npm --version)" = "11.12.1"
+          npm ci --ignore-scripts
+          npm ls --depth=0
+          npm run typecheck
+          npm run lint
+          npm test
+          python3 .github/ci-diagnostics.py --self-test
+          npm run build
+          npm exec --no -- playwright install chromium
+      - name: Start job-owned loopback services
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker network create --driver bridge --opt com.docker.network.bridge.host_binding_ipv4=127.0.0.1 "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null
+          if ! npm exec --no -- supabase start --network-id "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >.cache/start.log 2>&1; then
+            python3 .github/ci-diagnostics.py .cache/start.log
+            exit 1
+          fi
+          docker inspect $(docker ps -q --filter network="por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}") >.cache/containers.json
+          python3 - <<'PY'
+          import json
+          for container in json.load(open('.cache/containers.json')):
+              for bindings in container['NetworkSettings']['Ports'].values():
+                  for binding in bindings or []:
+                      assert binding['HostIp'] in ('127.0.0.1', '::1'), 'Non-loopback published port'
+          PY
+          npm exec --no -- supabase status -o json >.cache/status.json 2>.cache/status.log
+          node --input-type=module <<'JS'
+          import { readFileSync, appendFileSync } from 'node:fs';
+          const values = JSON.parse(readFileSync('.cache/status.json', 'utf8'));
+          for (const value of Object.values(values)) {
+            if (typeof value === 'string' && value) console.log(`::add-mask::${value.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A')}`);
+          }
+          const selected = { TEST_SUPABASE_URL: values.API_URL, TEST_SUPABASE_ANON_KEY: values.ANON_KEY, TEST_SUPABASE_SERVICE_KEY: values.SERVICE_ROLE_KEY, VITE_SUPABASE_URL: values.API_URL, VITE_SUPABASE_PUBLISHABLE_KEY: values.ANON_KEY };
+          for (const [key, value] of Object.entries(selected)) {
+            if (typeof value !== 'string' || !value || /[\r\n]/.test(value)) throw new Error('Required isolated service configuration missing');
+            appendFileSync(process.env.GITHUB_ENV, `${key}=${value}\n`);
+          }
+          JS
+      - name: Rehearse populated T1 forward upgrade in the verified job-owned stack
+        run: node .github/rehearse-upgrade.mjs
+      - name: Reset and generate the actual schema contract
+        run: |
+          if ! npm exec --no -- supabase db reset --local --network-id "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >.cache/reset.log 2>&1; then
+            python3 .github/ci-diagnostics.py .cache/reset.log
+            exit 1
+          fi
+          docker inspect $(docker ps -q --filter network="por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}") >.cache/containers.json
+          python3 - <<'PY'
+          import json
+          for container in json.load(open('.cache/containers.json')):
+              for bindings in container['NetworkSettings']['Ports'].values():
+                  for binding in bindings or []:
+                      assert binding['HostIp'] in ('127.0.0.1', '::1'), 'Non-loopback published port after reset'
+          print('Post-reset published ports are loopback-only.')
+          PY
+          # Type generation connects in-process and explicitly rejects --network-id.
+          if ! npm exec --no -- supabase gen types typescript --local >.cache/database.types.ts 2>.cache/typegen.log; then
+            python3 .github/ci-diagnostics.py .cache/typegen.log
+            exit 1
+          fi
+          test -s .cache/database.types.ts
+      - name: Retain only the synthetic generated schema contract
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: por23-database-types
+          path: .cache/database.types.ts
+          include-hidden-files: true
+          retention-days: 1
+          if-no-files-found: error
+      - name: Start and verify Edge service readiness
+        run: |
+          curl --fail --silent http://127.0.0.1:54324/api/v1/messages >/dev/null
+          printf '%s\n' 'APP_ORIGIN=http://127.0.0.1:5173' 'INVITATION_EMAIL_ENABLED=true' >.cache/functions.env
+          npm exec --no -- supabase functions serve --network-id "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --env-file .cache/functions.env >.cache/functions.log 2>&1 &
+          echo $! >.cache/functions.pid
+          ready=0
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --max-time 2 --request OPTIONS --header 'Origin: http://127.0.0.1:5173' http://127.0.0.1:54321/functions/v1/organization-invite >/dev/null && curl --fail --silent --max-time 2 --request OPTIONS --header 'Origin: http://127.0.0.1:5173' http://127.0.0.1:54321/functions/v1/attachment-upload >/dev/null; then ready=1; break; fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then python3 .github/ci-diagnostics.py .cache/functions.log; exit 1; fi
+      - name: Verify database authorization
+        run: |
+          npm run db:test -- --local --network-id "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+      - name: Verify service integration and denial logs
+        run: |
+          npm run test:integration
+          docker logs supabase_db_opspilot-t1 >.cache/db-security.log 2>&1
+          grep -q 'opspilot_command_denied' .cache/db-security.log
+      - name: Verify browser journeys
+        run: |
+          npm run test:e2e
+      - name: Rehearse isolated backup and recovery
+        run: |
+          node .github/rehearse-recovery.mjs
+      - name: Verify generated schema matches source
+        run: |
+          diff -u src/lib/database.types.ts .cache/database.types.ts
+      - name: Stop only job-owned resources and discard generated credentials
+        if: always()
+        shell: bash
+        run: |
+          failed=0
+          if [ -f .cache/functions.pid ]; then kill "$(cat .cache/functions.pid)" 2>/dev/null || true; fi
+          if ! npm exec --no -- supabase stop --no-backup >.cache/stop.log 2>&1; then
+            python3 .github/ci-diagnostics.py .cache/stop.log
+            failed=1
+          fi
+          if containers=$(docker ps -aq --filter label=com.supabase.cli.project=opspilot-t1); then
+            if [ -n "$containers" ]; then
+              echo 'Cleanup failed: project-owned containers remain.'
+              failed=1
+            fi
+          else
+            echo 'Cleanup failed: container inventory unavailable.'
+            failed=1
+          fi
+          if networks=$(docker network ls --format '{{.Name}}'); then
+            if grep -Fxq "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" <<<"$networks"; then
+              docker network rm "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null || failed=1
+            fi
+          else
+            echo 'Cleanup failed: network inventory unavailable.'
+            failed=1
+          fi
+          if networks=$(docker network ls --format '{{.Name}}'); then
+            if grep -Fxq "por23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" <<<"$networks"; then
+              echo 'Cleanup failed: job-owned network remains.'
+              failed=1
+            fi
+          else
+            echo 'Cleanup failed: final network inventory unavailable.'
+            failed=1
+          fi
+          rm -f .cache/status.json .cache/status.log .cache/start.log .cache/reset.log .cache/stop.log .cache/containers.json .cache/functions.env .cache/functions.log .cache/functions.pid .cache/db-security.log .cache/typegen.log
+          if [ "$failed" -ne 0 ]; then exit 1; fi
+          echo 'Verified absence of project-owned containers and job-owned network.'
