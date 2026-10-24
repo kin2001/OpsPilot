@@ -6,6 +6,7 @@ import { domainError } from '../_shared/domain-errors.ts';
 
 type Configuration = { apiUrl: string; publishableKey: string; serviceKey: string; appOrigin: string };
 const reservation = z.union([
+  z.strictObject({ ctx: commandContext, assignment_id: z.uuid(), ...imageMetadata.shape }),
   z.strictObject({ ctx: commandContext, id: z.uuid(), ...imageMetadata.shape }),
   z.strictObject({ ctx: commandContext, parent_type: z.enum(['asset', 'request']), parent_id: z.uuid(), ...imageMetadata.shape }),
 ]);
@@ -34,7 +35,7 @@ export async function handleAttachment(request: Request, config: Configuration):
       const input = reservation.parse(JSON.parse(new TextDecoder().decode(bytes)));
       imageMetadata.parse({ name: input.name, media_type: input.media_type, size: input.size });
       requestId = input.ctx.request_id;
-      const result = await caller.rpc('id' in input ? 'reserve_attachment' : 'reserve_record_attachment', input);
+      const result = await caller.rpc('assignment_id' in input ? 'reserve_inspection_attachment' : 'id' in input ? 'reserve_attachment' : 'reserve_record_attachment', input);
       if (result.error) return error(result.error, requestId);
       const record = attachmentRecord.parse(result.data.data);
       if (result.data.request_id !== requestId) return error({ message: 'DEPENDENCY_UNAVAILABLE' }, requestId);
