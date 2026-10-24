@@ -57,6 +57,7 @@ describe('real maintenance command/read boundaries', () => {
     const plan = await saveMaintenancePlan(people.owner.client, org, fields, randomUUID());
     expect((await people.owner.client.schema('public').rpc('generate_due_maintenance' as never)).error).not.toBeNull();
     expect(sql("select has_function_privilege('service_role','private.generate_due_maintenance(timestamptz)','execute');")).toBe('f');
+    console.info('Native Cron authority', sql("select jsonb_build_object('pg_cron_version',e.extversion,'schedule_owner',p.proowner::regrole::text,'grantors',(select jsonb_agg(distinct a.grantor::regrole::text) from aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a),'service_schema_usage',has_schema_privilege('service_role','cron','usage')) from pg_extension e cross join pg_proc p where e.extname='pg_cron' and p.oid='cron.schedule(text,text,text)'::regprocedure;"));
     const jobId = Number(sql("select jobid from cron.job where jobname='opspilot-maintenance' and username='postgres' and command='select private.generate_due_maintenance();';"));
     expect(Number.isSafeInteger(jobId) && jobId > 0).toBe(true);
     try {

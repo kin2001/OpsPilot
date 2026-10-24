@@ -28,11 +28,25 @@ select ok(not has_function_privilege('authenticated','private.generate_due_maint
 select ok(not has_function_privilege('anon','private.generate_due_maintenance(timestamptz)','EXECUTE'),'Anon cannot execute scheduler');
 select ok(not has_function_privilege('service_role','private.generate_due_maintenance(timestamptz)','EXECUTE'),'Service role cannot execute scheduler');
 select ok(not has_schema_privilege('authenticated','cron','USAGE'),'Browser cannot reach native Cron');
-select ok(not has_function_privilege('service_role','cron.schedule(text,text,text)','EXECUTE'),'Service role cannot schedule native execution');
+select ok(not has_schema_privilege('service_role','cron','USAGE'),'Service role cannot reach native Cron');
+select ok(not has_schema_privilege('anon','cron','USAGE'),'Anon cannot reach native Cron');
+select diag(jsonb_build_object('pg_cron_version',(select extversion from pg_extension where extname='pg_cron'),
+ 'schedule_owner',(select proowner::regrole::text from pg_proc where oid='cron.schedule(text,text,text)'::regprocedure),
+ 'schedule_grants',(select jsonb_agg(jsonb_build_object('grantor',a.grantor::regrole::text,'grantee',case when a.grantee=0 then 'PUBLIC' else a.grantee::regrole::text end,'privilege',a.privilege_type))
+ from pg_proc p cross join lateral aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a where p.oid='cron.schedule(text,text,text)'::regprocedure))::text);
 select is((select count(*)::integer from cron.job where jobname='opspilot-maintenance' and username='postgres' and command='select private.generate_due_maintenance();'),1,'Exactly one intended native owner job installed');
 select ok(not has_table_privilege('service_role','public.maintenance_occurrences','SELECT'),'Occurrence source denied even to service clients');
 set local role authenticated;
 select throws_ok($$select private.generate_due_maintenance()$$,'42501',null,'Browser invocation denied at privilege boundary');
+select throws_ok($$select cron.schedule('pm30-forged','5 * * * *','select 1')$$,'42501','permission denied for schema cron','Authenticated cannot schedule native execution');
+reset role;
+set local role anon;
+select throws_ok($$select cron.schedule('pm30-forged','5 * * * *','select 1')$$,'42501','permission denied for schema cron','Anon cannot schedule native execution');
+select throws_ok($$select private.generate_due_maintenance()$$,'42501',null,'Anon cannot invoke private generation');
+reset role;
+set local role service_role;
+select throws_ok($$select cron.schedule('pm30-forged','5 * * * *','select 1')$$,'42501','permission denied for schema cron','Service role cannot schedule native execution');
+select throws_ok($$select private.generate_due_maintenance()$$,'42501',null,'Service role cannot invoke private generation');
 reset role;
 select throws_ok($$select private.generate_due_maintenance(null)$$,'P0001','VALIDATION','Invalid executor evaluation rejected');
 

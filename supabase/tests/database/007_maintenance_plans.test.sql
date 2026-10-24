@@ -97,6 +97,6 @@ select ok(not has_function_privilege('anon','public.save_maintenance_plan(jsonb,
 select ok(not has_function_privilege('service_role','public.save_maintenance_plan(jsonb,jsonb)','EXECUTE'),'Service-role cannot impersonate plan author');
 select ok(not has_function_privilege('authenticated','private.maintenance_preview(uuid,jsonb,timestamptz)','EXECUTE'),'Browser cannot choose server clock');
 select ok(not has_function_privilege('authenticated','private.maintenance_current_people_eligible(uuid,uuid)','EXECUTE'),'Internal authorization helper is not public');
-select is(to_regprocedure('private.generate_due_maintenance(timestamp with time zone)')::text,null::text,'Generator is not exposed by this slice');
+select is(to_regprocedure('public.generate_due_maintenance(timestamp with time zone)')::text,null::text,'Generator has no public RPC surface');
 select * from finish();
 rollback;

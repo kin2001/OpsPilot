@@ -130,6 +130,8 @@ begin
    wo.blocks_operation:=true;
   end if;
   if wo.blocks_operation and not (wo.status='draft' and next_status='canceled') then$new$],
+  array[$old$or (wo.status='scheduled' and next_status in ('open','in_progress','canceled'))$old$,
+        $new$or (wo.status='scheduled' and (next_status in ('open','in_progress','canceled') or (wo.pm_occurrence_id is not null and next_status='scheduled')))$new$],
   array[$old$if action='review_work_order' or (action='transition_work_order' and not (next_status='canceled' and wo.opened_at is null)) then$old$,
         $new$if action='review_work_order' or (action='transition_work_order' and wo.blocks_operation and not (next_status='canceled' and wo.opened_at is null)) then$new$]
  ] loop
@@ -203,6 +205,6 @@ end $$;
 revoke all on function private.maintenance_daily_usage(uuid),private.generate_due_maintenance(timestamptz),private.pin_pm_work_order(),public.list_maintenance_agenda(uuid,date,date,jsonb,integer),public.list_maintenance_backlog(uuid,uuid,integer,integer) from public,anon,authenticated,service_role;
 grant execute on function public.list_maintenance_agenda(uuid,date,date,jsonb,integer),public.list_maintenance_backlog(uuid,uuid,integer,integer) to authenticated;
 revoke all on schema cron from public,anon,authenticated,service_role;
-revoke all on all tables in schema cron from public,anon,authenticated,service_role;
-revoke all on all functions in schema cron from public,anon,authenticated,service_role;
+-- Supabase owns extension function PUBLIC grants. Schema USAGE is the effective
+-- application-role boundary; private generator EXECUTE remains explicitly denied.
 select cron.schedule('opspilot-maintenance','5 * * * *',$cron$select private.generate_due_maintenance();$cron$);
