@@ -155,6 +155,58 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
+                },"maintenance_plan_revisions": {
+                  Row: {
+                    "anchor_on": string,"assignee_ids": (string)[],"author_id": string,"cadence": string,"category": string,"checklist": NonNullable<Json>,"created_at": string,"frequency": number,"id": string,"instructions": string,"organization_id": string,"plan_id": string,"revision": number,"supervisor_id": string,"timezone": string,"title": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "anchor_on": string,"assignee_ids": (string)[],"author_id": string,"cadence": string,"category": string,"checklist": NonNullable<Json>,"created_at"?: string,"frequency": number,"id"?: string,"instructions": string,"organization_id": string,"plan_id": string,"revision": number,"supervisor_id": string,"timezone": string,"title": string
+                  }
+                  Update: {
+                    "anchor_on"?: string,"assignee_ids"?: (string)[],"author_id"?: string,"cadence"?: string,"category"?: string,"checklist"?: NonNullable<Json>,"created_at"?: string,"frequency"?: number,"id"?: string,"instructions"?: string,"organization_id"?: string,"plan_id"?: string,"revision"?: number,"supervisor_id"?: string,"timezone"?: string,"title"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "maintenance_plan_revisions_organization_id_plan_id_fkey"
+      columns: ["organization_id","plan_id"]
+isOneToOne: false
+      referencedRelation: "maintenance_plans"
+      referencedColumns: ["organization_id","id"]
+    }
+                  ]
+                },"maintenance_plans": {
+                  Row: {
+                    "asset_id": string,"authorized_by": string,"created_at": string,"created_by": string,"current_revision_id": string | null,"generation_blocked": string | null,"id": string,"last_checked_at": string | null,"organization_id": string,"status": string,"version": number
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "asset_id": string,"authorized_by": string,"created_at"?: string,"created_by": string,"current_revision_id"?: string | null,"generation_blocked"?: string | null,"id"?: string,"last_checked_at"?: string | null,"organization_id": string,"status": string,"version"?: number
+                  }
+                  Update: {
+                    "asset_id"?: string,"authorized_by"?: string,"created_at"?: string,"created_by"?: string,"current_revision_id"?: string | null,"generation_blocked"?: string | null,"id"?: string,"last_checked_at"?: string | null,"organization_id"?: string,"status"?: string,"version"?: number
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "maintenance_plans_organization_id_asset_id_fkey"
+      columns: ["organization_id","asset_id"]
+isOneToOne: false
+      referencedRelation: "assets"
+      referencedColumns: ["organization_id","id"]
+    },{
+      foreignKeyName: "maintenance_plans_organization_id_fkey"
+      columns: ["organization_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "maintenance_plans_organization_id_id_current_revision_id_fkey"
+      columns: ["organization_id","id","current_revision_id"]
+isOneToOne: false
+      referencedRelation: "maintenance_plan_revisions"
+      referencedColumns: ["organization_id","plan_id","id"]
+    }
+                  ]
                 },"maintenance_requests": {
                   Row: {
                     "asset_id": string,"category": string,"converted_work_order_id": string | null,"created_at": string,"description": string,"id": string,"organization_id": string,"reporter_id": string,"status": string,"transition_reason": string | null,"version": number
@@ -185,6 +237,32 @@ isOneToOne: false
 isOneToOne: false
       referencedRelation: "organizations"
       referencedColumns: ["id"]
+    }
+                  ]
+                },"maintenance_segments": {
+                  Row: {
+                    "next_ordinal": number,"organization_id": string,"plan_id": string,"protected_through": string | null,"revision_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "next_ordinal"?: number,"organization_id": string,"plan_id": string,"protected_through"?: string | null,"revision_id": string
+                  }
+                  Update: {
+                    "next_ordinal"?: number,"organization_id"?: string,"plan_id"?: string,"protected_through"?: string | null,"revision_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "maintenance_segments_organization_id_plan_id_fkey"
+      columns: ["organization_id","plan_id"]
+isOneToOne: false
+      referencedRelation: "maintenance_plans"
+      referencedColumns: ["organization_id","id"]
+    },{
+      foreignKeyName: "maintenance_segments_organization_id_plan_id_revision_id_fkey"
+      columns: ["organization_id","plan_id","revision_id"]
+isOneToOne: false
+      referencedRelation: "maintenance_plan_revisions"
+      referencedColumns: ["organization_id","plan_id","id"]
     }
                   ]
                 },"notifications": {
@@ -559,6 +637,12 @@ isOneToOne: true
 "get_team":
 { Args: { "organization_id": string }; Returns: Json
                            },
+"list_maintenance_plans":
+{ Args: { "cursor"?: string,"organization_id": string,"page_size"?: number }; Returns: Json
+                           },
+"list_maintenance_revisions":
+{ Args: { "cursor"?: number,"organization_id": string,"page_size"?: number,"plan_id": string }; Returns: Json
+                           },
 "lookup_request_asset":
 { Args: { "asset_code"?: string,"asset_id"?: string,"organization_id": string }; Returns: {
               "code": string,"id": string,"name": string
@@ -566,6 +650,9 @@ isOneToOne: true
                            },
 "mark_notifications_read":
 { Args: { "ctx": Json,"ids": (string)[] }; Returns: Json
+                           },
+"preview_maintenance_plan":
+{ Args: { "fields": Json,"organization_id": string }; Returns: Json
                            },
 "record_meter_reading":
 { Args: { "asset_id": string,"ctx": Json,"kind": string,"observed_at": string,"value": number }; Returns: Json
@@ -590,6 +677,9 @@ isOneToOne: true
                            },
 "save_asset":
 { Args: { "asset_id": string,"ctx": Json,"fields": Json }; Returns: Json
+                           },
+"save_maintenance_plan":
+{ Args: { "ctx": Json,"fields": Json }; Returns: Json
                            },
 "save_organization_settings":
 { Args: { "ctx": Json,"fields": Json }; Returns: Json
