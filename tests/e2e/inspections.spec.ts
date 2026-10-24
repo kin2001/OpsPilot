@@ -5,6 +5,7 @@ import { expect, test, type Route } from '@playwright/test';
 import { enrollMfa } from '../integration/mfa';
 import { readIsolatedServiceConfig } from './service-config';
 import { fixtureOrganizationIds, fixtureUserId, prepareWorkspacePage } from './workspace-fixture';
+import { assignWorkOrder } from '../../src/app/commands';
 
 const origin = 'http://127.0.0.1:54321';
 const serviceConfig = readIsolatedServiceConfig(process.env);
@@ -733,6 +734,13 @@ test('loopback P2 inspection failure converts to a repaired request and correcti
   await ownerWorkOrder.getByRole('checkbox', { name: new RegExp(repairer.id) }).check();
   await ownerWorkOrder.getByRole('button', { name: 'Save assignment' }).click();
   await expect(ownerWorkOrder.locator('.assigned-list').getByText(repairer.id, { exact: true })).toBeVisible();
+  // The UI intentionally offers technician assignments only. Seed the coordinator as an
+  // additional participant through the real authenticated command to exercise self-release denial.
+  const assignedWorkOrder = await ownerReader.from('work_orders').select('version').eq('organization_id', organizationId).eq('id', workOrderId!).single();
+  if (assignedWorkOrder.error) throw new Error('Work order version could not be read before the synthetic participant setup.');
+  await assignWorkOrder(ownerReader, organizationId, workOrderId!, assignedWorkOrder.data.version, [owner.id, repairer.id], randomUUID());
+  await ownerWorkOrder.getByRole('button', { name: 'Refresh record' }).click();
+  await expect(ownerWorkOrder.locator('.assigned-list').getByText(owner.id, { exact: true })).toBeVisible();
   await ownerWorkOrder.getByRole('button', { name: 'Publish work order' }).click();
   await expect(ownerWorkOrderStatus).toHaveText('open');
 
