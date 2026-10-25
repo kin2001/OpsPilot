@@ -31,7 +31,7 @@ function json(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
-function harness(report: (page: number) => Response | ReportFacts | Promise<Response | ReportFacts>, options: { expired?: boolean; timeoutMs?: number } = {}) {
+function harness(report: (page: number) => Response | ReportFacts | Promise<Response | ReportFacts>, options: { expired?: boolean; timeoutMs?: number; authStatus?: number; authCode?: string } = {}) {
   let authCalls = 0;
   let reportCalls = 0;
   const fetcher: typeof fetch = async (resource) => {
@@ -39,6 +39,7 @@ function harness(report: (page: number) => Response | ReportFacts | Promise<Resp
     if (url.pathname === '/auth/v1/user') {
       authCalls++;
       if (options.expired) return json({ message: 'expired token' }, 401);
+      if (options.authStatus) return json({ message: 'auth service unavailable', ...(options.authCode ? { error_code: options.authCode } : {}) }, options.authStatus);
       return json({ id: uuid(50), aud: 'authenticated', role: 'authenticated', factors: [{ id: uuid(51), factor_type: 'totp', status: 'verified' }] });
     }
     if (url.pathname === '/rest/v1/rpc/get_report') {
@@ -48,10 +49,11 @@ function harness(report: (page: number) => Response | ReportFacts | Promise<Resp
     }
     return json({ message: 'unhandled fixture request' }, 404);
   };
-  const call = (aal: 'aal1' | 'aal2' = 'aal2') => handleReportExport(new Request('http://127.0.0.1:54321/functions/v1/report-export', {
-    method: 'POST', headers: { Origin: 'http://127.0.0.1:5173', Authorization: `Bearer ${token(aal, options.expired)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+  const callWithToken = (accessToken: string) => handleReportExport(new Request('http://127.0.0.1:54321/functions/v1/report-export', {
+    method: 'POST', headers: { Origin: 'http://127.0.0.1:5173', Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify(input),
   }), { apiUrl: 'http://127.0.0.1:54321', publishableKey: 'synthetic-anon-key', appOrigin: 'http://127.0.0.1:5173', fetcher, timeoutMs: options.timeoutMs });
-  return { call, authCalls: () => authCalls, reportCalls: () => reportCalls };
+  const call = (aal: 'aal1' | 'aal2' = 'aal2') => callWithToken(token(aal, options.expired));
+  return { call, callWithToken, authCalls: () => authCalls, reportCalls: () => reportCalls };
 }
 
 it('requires AAL2 before any report facts are read', async () => {
@@ -75,6 +77,34 @@ it('rejects an expired session before reading report facts', async () => {
   const service = harness(() => workReport([1], null), { expired: true });
   const response = await service.call();
   expect(response.status).toBe(401);
+  expect(service.reportCalls()).toBe(0);
+  expect(service.authCalls()).toBe(1);
+});
+
+it.each(['invalid.expired.token', 'not-a-jwt', '@@@.e30.signature'])('rejects malformed JWT %j as unauthenticated without trusting its claims', async (malformedToken) => {
+  const service = harness(() => workReport([1], null), { authStatus: 401 });
+  const response = await service.callWithToken(malformedToken);
+  expect(response.status).toBe(401);
+  expect(await response.json()).toMatchObject({ code: 'UNAUTHENTICATED' });
+  expect(service.authCalls()).toBe(1);
+  expect(service.reportCalls()).toBe(0);
+});
+
+it('maps Auth invalid_jwt errors to unauthenticated even when returned with status 400', async () => {
+  const service = harness(() => workReport([1], null), { authStatus: 400, authCode: 'invalid_jwt' });
+  const response = await service.callWithToken('@@@.e30.signature');
+  expect(response.status).toBe(401);
+  expect(await response.json()).toMatchObject({ code: 'UNAUTHENTICATED' });
+  expect(service.authCalls()).toBe(1);
+  expect(service.reportCalls()).toBe(0);
+});
+
+it('keeps Auth service failures classified as dependency errors', async () => {
+  const service = harness(() => workReport([1], null), { authStatus: 503 });
+  const response = await service.call();
+  expect(response.status).toBe(503);
+  expect(await response.json()).toMatchObject({ code: 'DEPENDENCY_UNAVAILABLE' });
+  expect(service.authCalls()).toBe(1);
   expect(service.reportCalls()).toBe(0);
 });
 

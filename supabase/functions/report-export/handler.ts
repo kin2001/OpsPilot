@@ -14,6 +14,18 @@ const bodyLimit = 8_192;
 type Configuration = { apiUrl: string; publishableKey: string; appOrigin: string; fetcher?: typeof fetch; timeoutMs?: number };
 type PageReadResult = { ok: true; page: ReportFacts } | { ok: false; response: Response };
 
+function aalFromVerifiedJwt(jwt: string): 'aal1' | 'aal2' | null {
+  const encodedPayload = jwt.split('.')[1] ?? '';
+  const base64Payload = encodedPayload.replace(/-/g, '+').replace(/_/g, '/');
+  const paddedPayload = base64Payload.padEnd(Math.ceil(base64Payload.length / 4) * 4, '=');
+  const binaryPayload = atob(paddedPayload);
+  const bytes = Uint8Array.from(binaryPayload, (character) => character.charCodeAt(0));
+  const claims: unknown = JSON.parse(new TextDecoder().decode(bytes));
+  if (!claims || typeof claims !== 'object' || Array.isArray(claims)) return null;
+  const aal = (claims as { aal?: unknown }).aal;
+  return aal === 'aal1' || aal === 'aal2' ? aal : null;
+}
+
 export async function handleReportExport(request: Request, config: Configuration): Promise<Response> {
   const headers = {
     'Access-Control-Allow-Origin': config.appOrigin,
@@ -65,10 +77,15 @@ export async function handleReportExport(request: Request, config: Configuration
   } catch { return error({ message: 'DEPENDENCY_UNAVAILABLE' }, 503); }
   const readPage = async (cursor: { after?: string; page_size: number }): Promise<PageReadResult> => {
     if (!caller) return { ok: false, response: error({ message: 'DEPENDENCY_UNAVAILABLE' }, 503) };
-    const assurance = await caller.auth.mfa.getAuthenticatorAssuranceLevel(authorization.slice(7));
+    const accessToken = authorization.slice(7);
+    const verifiedUser = await caller.auth.getUser(accessToken);
     if (timedOut()) return { ok: false, response: timeoutResponse() };
-    if (assurance.error) return { ok: false, response: error({ message: assurance.error.status === 401 ? 'UNAUTHENTICATED' : 'DEPENDENCY_UNAVAILABLE' }, assurance.error.status === 401 ? 401 : 503) };
-    if (assurance.data.currentLevel !== 'aal2') {
+    if (verifiedUser.error) {
+      const unauthenticated = verifiedUser.error.status === 401 || verifiedUser.error.code === 'invalid_jwt';
+      return { ok: false, response: error({ message: unauthenticated ? 'UNAUTHENTICATED' : 'DEPENDENCY_UNAVAILABLE' }, unauthenticated ? 401 : 503) };
+    }
+    // Auth validated the JWT with the identity provider before these signed claims are read.
+    if (aalFromVerifiedJwt(accessToken) !== 'aal2') {
       return { ok: false, response: specialError('MFA_REQUIRED', 'Fresh authenticator verification is required to export this CSV.', 403) };
     }
 
