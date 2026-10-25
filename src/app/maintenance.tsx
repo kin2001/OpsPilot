@@ -9,7 +9,7 @@ import { listMaintenanceAgenda, listMaintenanceBacklog, listMaintenancePlans, li
 import { recordFilter, recordPageSize, splitRecordPage, type RecordCursor } from './record-query';
 import { transitionWorkOrder } from './commands';
 import { useWorkspace } from './workspace';
-import { AppButton, ErrorNotice, Field, LoadingNotice, PageHeader, SelectField, TextAreaField } from './ui';
+import { TabList, AppButton, ErrorNotice, Field, LoadingNotice, PageHeader, SelectField, TextAreaField } from './ui';
 import '../styles/maintenance.css';
 
 const maintenanceAsset = z.strictObject({ id: z.uuid(), code: z.string(), name: z.string(), created_at: z.string() });
@@ -315,10 +315,10 @@ export function MaintenancePage() {
 
   return <section className="maintenance-page">
     <PageHeader eyebrow="Preventive care" title="Maintenance plans" description={`Calendar and recurring plans for ${organization.name}. Dates follow each plan’s local calendar.`} action={isCoordinator && <AppButton disabled={Boolean(saveIntent) || saveBusy} onClick={() => { setTab('plans'); openCreate(); }}>Create plan</AppButton>} />
-    <div className="maintenance-tabs" role="tablist" aria-label="Maintenance views">
+    <TabList className="maintenance-tabs" aria-label="Maintenance views">
       <button role="tab" aria-selected={tab === 'calendar'} id="maintenance-tab-calendar" aria-controls="maintenance-panel-calendar" onClick={() => setTab('calendar')}>Calendar</button>
       <button role="tab" aria-selected={tab === 'plans'} id="maintenance-tab-plans" aria-controls="maintenance-panel-plans" onClick={() => setTab('plans')}>Plans</button>
-    </div>
+    </TabList>
     {tab === 'calendar' ? <div role="tabpanel" id="maintenance-panel-calendar" aria-labelledby="maintenance-tab-calendar" className="maintenance-layout">
       <section className="maintenance-calendar" aria-label="Maintenance calendar">
         <header className="maintenance-month"><AppButton variant="secondary" aria-label="Previous month" onClick={() => shiftMonth(-1)}>←</AppButton><h2>{formatDate(bounds.from, { month: 'long', year: 'numeric' })}</h2><AppButton variant="secondary" aria-label="Next month" onClick={() => shiftMonth(1)}>→</AppButton></header>

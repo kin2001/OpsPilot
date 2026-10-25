@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { Children, cloneElement, isValidElement, type ReactElement, type ReactNode } from 'react';
 import logo from '../assets/opspilot-logo.png';
 import { domainError } from '../lib/domain-errors';
 
@@ -64,4 +64,22 @@ export function failureCode(error: unknown) {
 
 export function LinkButton({ children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) {
   return <a className="button button--secondary" {...props}>{children}</a>;
+}
+
+export function TabList({ children, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+  return <div {...props} role="tablist" onKeyDown={(event) => {
+    const tabs = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]:not(:disabled)')];
+    const current = tabs.indexOf(event.target as HTMLButtonElement);
+    if (current < 0) return;
+    const index = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
+      : event.key === 'ArrowRight' ? (current + 1) % tabs.length
+      : event.key === 'ArrowLeft' ? (current + tabs.length - 1) % tabs.length : -1;
+    if (index < 0) return;
+    event.preventDefault();
+    tabs[index]?.focus();
+    tabs[index]?.click();
+  }}>{Children.map(children, (child) => {
+    if (!isValidElement<React.HTMLAttributes<HTMLElement>>(child) || child.props.role !== 'tab') return child;
+    return cloneElement(child as ReactElement<React.HTMLAttributes<HTMLElement>>, { tabIndex: child.props['aria-selected'] ? 0 : -1 });
+  })}</div>;
 }

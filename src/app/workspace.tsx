@@ -144,7 +144,7 @@ function WorkspaceOverview() {
 }
 
 function MobileMenuButton({ open, setOpen }: { open: boolean; setOpen: (open: boolean) => void }) {
-  return <button className="mobile-nav-toggle" aria-label={open ? 'Close navigation' : 'Open navigation'} aria-expanded={open} aria-controls="primary-navigation" onClick={() => setOpen(!open)}><span aria-hidden="true">{open ? '×' : '☰'}</span></button>;
+  return <button id="mobile-navigation-toggle" className="mobile-nav-toggle" aria-label="Open navigation" aria-expanded={open} aria-controls="primary-navigation" onClick={() => setOpen(!open)}><span aria-hidden="true">{open ? '×' : '☰'}</span></button>;
 }
 
 function WorkspaceGlyph({ name }: { name: string }) {
@@ -230,6 +230,25 @@ function WorkspaceShell({ memberships, selected, onSwitch }: { memberships: Orga
   const { user, signOut } = useAuth();
   const location = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [mobile, setMobile] = useState(() => window.matchMedia('(max-width: 680px)').matches);
+  const rail = useRef<HTMLElement>(null);
+  const closeNavigation = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 680px)');
+    const update = () => { setMobile(media.matches); setMenuOpen(false); };
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+  useEffect(() => {
+    if (!mobile || !menuOpen) return;
+    closeNavigation.current?.focus();
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.getElementById('mobile-navigation-toggle')?.focus();
+    };
+  }, [mobile, menuOpen]);
   const [error, setError] = useState('');
   useEffect(() => setMenuOpen(false), [location.pathname]);
   const pageNames: Record<string, string> = { '/': 'Dashboard', '/requests': 'Requests', '/work-orders': 'Work orders', '/assets': 'Assets', '/maintenance': 'Maintenance', '/inspections': 'Inspections', '/inventory': 'Inventory', '/reports': 'Reports', '/assistant': 'Assistant', '/team': 'Team', '/notifications': 'Notifications', '/settings': 'Settings', '/settings/security': 'Security' };
@@ -240,24 +259,34 @@ function WorkspaceShell({ memberships, selected, onSwitch }: { memberships: Orga
     { to: '/', label: 'Dashboard', glyph: 'dashboard', end: true },
     { to: '/requests', label: 'Requests', glyph: 'requests' },
     { to: '/work-orders', label: 'Work orders', glyph: 'work' },
+    { to: '/assets', label: 'Assets', glyph: 'assets' },
     { to: '/maintenance', label: 'Maintenance', glyph: 'calendar' },
     { to: '/inspections', label: 'Inspections', glyph: 'inspection' },
-    { to: '/assets', label: 'Assets', glyph: 'assets' },
     ...(['owner', 'manager', 'supervisor', 'inventory'].includes(selected.role) ? [{ to: '/inventory', label: 'Inventory', glyph: 'inventory' }] : []),
+    ...(['owner', 'manager', 'supervisor'].includes(selected.role) ? [{ to: '/team', label: 'Team', glyph: 'team' }] : []),
     ...(['owner', 'manager', 'supervisor', 'inventory'].includes(selected.role) ? [{ to: '/reports', label: 'Reports', glyph: 'reports' }] : []),
     { to: '/assistant', label: 'Assistant', glyph: 'assistant' },
-    ...(['owner', 'manager', 'supervisor'].includes(selected.role) ? [{ to: '/team', label: 'Team', glyph: 'team' }] : []),
     { to: '/notifications', label: 'Notifications', glyph: 'notifications' },
   ];
   return <div className="app-shell">
     <a className="skip-link" href="#main-content">Skip to content</a>
-    <aside className="side-rail" data-open={menuOpen} aria-label="Workspace navigation">
+    <aside ref={rail} className="side-rail" data-open={menuOpen} aria-label="Workspace navigation" role={mobile ? 'dialog' : undefined} aria-modal={mobile && menuOpen ? true : undefined} inert={mobile && !menuOpen} onKeyDown={(event) => {
+      if (!mobile || !menuOpen) return;
+      if (event.key === 'Escape') { event.preventDefault(); setMenuOpen(false); }
+      if (event.key === 'Tab') {
+        const controls = [...rail.current!.querySelectorAll<HTMLElement>('a[href], button:not(:disabled), select:not(:disabled)')].filter((item) => item.getClientRects().length);
+        const first = controls[0]; const last = controls.at(-1);
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+      }
+    }}>
+      <button ref={closeNavigation} className="mobile-nav-close" aria-label="Close navigation" onClick={() => setMenuOpen(false)}>Close navigation ×</button>
       <div className="side-brand"><BrandLogo /></div>
       <div className="workspace-picker"><label className="sr-only" htmlFor="workspace-switcher">Workspace</label><select id="workspace-switcher" aria-label="Workspace" value={selected.organization.id} onChange={(event) => onSwitch(event.target.value)}>{memberships.map((membership) => <option key={membership.organization.id} value={membership.organization.id}>{membership.organization.name}{duplicateNames.has(membership.organization.id) ? ` · ${membership.role}` : ''}</option>)}</select><span className="workspace-chevron" aria-hidden="true">⌄</span></div>
       <nav id="primary-navigation" className="side-nav" aria-label="Primary navigation">{navigation.map((item) => <NavLink key={item.to} to={item.to} end={item.end}><span className="nav-icon" aria-hidden="true"><WorkspaceGlyph name={item.glyph} /></span>{item.label}</NavLink>)}</nav>
       <div className="side-footer">{selected.role === 'owner' && <NavLink className="side-utility-link" to="/settings"><span className="nav-icon" aria-hidden="true"><WorkspaceGlyph name="settings" /></span>Settings</NavLink>}{error && <ErrorNotice>{error}</ErrorNotice>}<div className="account-summary"><Link className="account-profile" to="/settings/security" aria-label="Account security"><span className="account-avatar" aria-hidden="true">{(user?.email?.[0] ?? 'U').toUpperCase()}</span><span className="account-email">{user?.email ?? 'Verified account'}</span></Link><AppButton variant="quiet" aria-label="Sign out" onClick={() => void signOut().catch(() => setError('Could not sign out. Please try again.'))}>⌄</AppButton></div></div>
     </aside>
-    <div className="main-frame"><header className="topbar"><div className="topbar-left"><MobileMenuButton open={menuOpen} setOpen={setMenuOpen} /><nav className="breadcrumb" aria-label="Breadcrumb"><Link to="/">Dashboard</Link>{location.pathname !== '/' && <><span aria-hidden="true">›</span><span aria-current="page">{pageName}</span></>}</nav></div><WorkspaceRecordSearch /><div className="topbar-date"><span className="nav-icon" aria-hidden="true"><WorkspaceGlyph name="calendar" /></span><time>{today}</time></div></header><main id="main-content" className="main-content"><Routes>
+    <div className="main-frame" inert={mobile && menuOpen}><header className="topbar"><div className="topbar-left"><MobileMenuButton open={menuOpen} setOpen={setMenuOpen} /><nav className="breadcrumb" aria-label="Breadcrumb"><Link to="/">Dashboard</Link>{location.pathname !== '/' && <><span aria-hidden="true">›</span><span aria-current="page">{pageName}</span></>}</nav></div><WorkspaceRecordSearch /><div className="topbar-date"><span className="nav-icon" aria-hidden="true"><WorkspaceGlyph name="calendar" /></span><time>{today}</time></div></header><main id="main-content" className="main-content" tabIndex={-1}><Routes>
       <Route path="/" element={<WorkspaceOverview />} />
       <Route path="/assets" element={<AssetPage />} />
       <Route path="/requests" element={<RequestPage />} />
