@@ -48,3 +48,11 @@ it('keeps the notice loop record distinct from its SQL relation alias before any
   expect(producer.includes('for b in select balance.*')).toBe(true);
   expect(producer.includes('for b in select b.*')).toBe(false);
 });
+
+it('uses complete matched dollar delimiters in the guardrail migration and SQL fixtures', () => {
+  for (const sql of [guardrails, readFileSync('supabase/tests/database/014_inventory_guardrails.test.sql', 'utf8')]) {
+    const delimiters = [...sql.matchAll(/\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$/g)].map((match) => match[0]);
+    expect(sql.replace(/\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$/g, '').includes('$')).toBe(false);
+    for (const delimiter of new Set(delimiters)) expect(delimiters.filter((value) => value === delimiter).length % 2).toBe(0);
+  }
+});
