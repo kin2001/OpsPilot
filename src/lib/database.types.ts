@@ -1050,6 +1050,9 @@ isOneToOne: true
 "list_maintenance_revisions":
 { Args: { "cursor"?: number,"organization_id": string,"page_size"?: number,"plan_id": string }; Returns: Json
                            },
+"list_requestable_job_parts":
+{ Args: { "cursor"?: string,"organization_id": string,"page_size"?: number,"work_order_id": string }; Returns: Json
+                           },
 "list_stock_locations":
 { Args: { "cursor"?: string,"organization_id": string,"page_size"?: number }; Returns: Json
                            },

@@ -9,6 +9,8 @@ import { addWorkOrderTask, assignWorkOrder, createWorkOrder, declareWorkOrderPer
 import { readBoundedRows, recordFilter, recordPageSize, splitRecordPage, type RecordCursor } from './record-query';
 import { PrivilegedArea } from './auth/security';
 import { PrivateImage, reserveWorkOrderImage, uploadPrivateImage } from './private-attachments';
+import { getJobParts, listRequestableJobParts, requestParts } from './inventory-client';
+import type { RequestPartsFields } from '../contracts/inventory';
 import { useWorkspace } from './workspace';
 import { AppButton, ErrorNotice, Field, LoadingNotice, PageHeader, SelectField, SuccessNotice, TextAreaField } from './ui';
 
@@ -26,6 +28,7 @@ const readyAttachments = z.array(attachmentRecord).max(10);
 const assetSummary = z.strictObject({ id: z.uuid(), code: z.string(), name: z.string(), availability: z.enum(['operational', 'under_maintenance', 'out_of_service', 'pending_release']), archived_at: z.string().nullable() });
 const createAssetRows = z.array(z.strictObject({ id: z.uuid(), code: z.string(), name: z.string(), created_at: z.string(), archived_at: z.string().nullable() })).max(recordPageSize + 1);
 const evidenceSettings = z.strictObject({ evidence_required: z.boolean() });
+const stockQuantityPattern = '(?:0|[1-9][0-9]{0,10})(?:\\.[0-9]{1,3})?';
 const workOrderLanes = [
   { id: 'open', label: 'Open', statuses: ['draft', 'open', 'scheduled'] },
   { id: 'in-progress', label: 'In progress', statuses: ['in_progress'] },
@@ -52,6 +55,10 @@ function localDateTime(value: string | null) {
   if (!value) return '';
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? '' : new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
+function decimalMilli(value: string) {
+  const [whole, fraction = ''] = value.split('.');
+  return BigInt(whole!) * 1000n + BigInt(fraction.padEnd(3, '0'));
 }
 
 type Intent = { id: string; execute: (id: string) => Promise<unknown>; success: string };
@@ -81,6 +88,7 @@ export function OperationalWorkOrderPage() {
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState('');
   const [createIntent, setCreateIntent] = useState<{ id: string; values: typeof createFields } | null>(null);
+  const [partsDraft, setPartsDraft] = useState<{ workOrderId: string; partId: string; quantity: string } | null>(null);
   const intents = useRef(new Map<string, Intent>());
   const uploadIntents = useRef(new Map<string, UploadIntent>());
   const [, redrawUploads] = useState(0);
@@ -205,6 +213,20 @@ export function OperationalWorkOrderPage() {
       return assignmentRows.parse(result.data ?? []);
     },
   });
+  const canReadSelectedParts = Boolean(selected && (isCoordinator || role === 'technician' && assignments.data?.some((assignment) => assignment.user_id === user.id && assignment.unassigned_at === null)));
+  const jobParts = useQuery({
+    queryKey: ['work-order-parts', user.id, organization.id, selectedId],
+    enabled: canReadSelectedParts,
+    queryFn: ({ signal }) => getJobParts(client, organization.id, selected!.id, signal),
+  });
+  const canRequestParts = Boolean(selected && role === 'technician' && selected.status === 'in_progress' && assignments.data?.some((assignment) => assignment.user_id === user.id && assignment.unassigned_at === null));
+  const requestableParts = useInfiniteQuery({
+    queryKey: ['work-order-requestable-parts', user.id, organization.id, selectedId],
+    enabled: canRequestParts,
+    initialPageParam: null as string | null,
+    queryFn: ({ signal, pageParam }) => listRequestableJobParts(client, organization.id, selected!.id, { cursor: pageParam ?? undefined, page_size: 25 }, signal),
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+  });
   const team = useQuery({
     queryKey: ['work-order-team', user.id, organization.id], enabled: isCoordinator,
     queryFn: async ({ signal }) => {
@@ -283,6 +305,8 @@ export function OperationalWorkOrderPage() {
       ...(linkedId ? [queryClient.invalidateQueries({ queryKey: ['work-order-target', user.id, organization.id, linkedId] })] : []),
       queryClient.invalidateQueries({ queryKey: ['work-order-assignments', user.id, organization.id, selectedId] }),
       queryClient.invalidateQueries({ queryKey: ['work-order-tasks', user.id, organization.id, selectedId] }),
+      queryClient.invalidateQueries({ queryKey: ['work-order-parts', user.id, organization.id, selectedId] }),
+      queryClient.invalidateQueries({ queryKey: ['work-order-requestable-parts', user.id, organization.id, selectedId] }),
       queryClient.invalidateQueries({ queryKey: ['work-order-events', user.id, organization.id, selectedId] }),
       queryClient.invalidateQueries({ queryKey: ['work-order-reviews', user.id, organization.id, selectedId] }),
       queryClient.invalidateQueries({ queryKey: ['work-order-participants', user.id, organization.id, selectedId] }),
@@ -321,6 +345,13 @@ export function OperationalWorkOrderPage() {
       ? 'Work order reopened. Its repair revision advanced and must be submitted for independent review again.'
       : `Work order ${target.replaceAll('_', ' ')} recorded.`;
     void run(key, (requestId) => transitionWorkOrder(client, organization.id, selected.id, selected.version, target, reason, requestId), success);
+  };
+  const submitPartsRequest = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!selected || !selectedRequestablePart || !currentPartsDraft?.quantity.trim()) return;
+    const fields: RequestPartsFields = { work_order_id: selected.id, lines: [{ part_id: selectedRequestablePart.id, quantity: currentPartsDraft.quantity.trim(), unit: selectedRequestablePart.unit }] };
+    const workOrder = selected;
+    void run(partsRequestKey, (requestId) => requestParts(client, organization.id, fields, requestId, workOrder.version), 'Parts request recorded. Review the latest shortage before resuming work.');
   };
   const fieldOr = (key: string, fallback: string) => Object.hasOwn(formValues, `${selectedId}:${key}`) ? field(key) : fallback;
   const runSchedule = () => {
@@ -383,11 +414,25 @@ export function OperationalWorkOrderPage() {
   const currentPerformerKey = selected ? `${selected.id}:${selected.repair_revision}` : '';
   const selectedPerformers = performerSelection?.key === currentPerformerKey ? performerSelection.ids : [];
   const canWork = Boolean(selected && selected.status === 'in_progress' && (isCoordinator || selectedActiveAssignments.includes(user.id)));
+  const requestableRows = requestableParts.data?.pages.flatMap((page) => page.items) ?? [];
+  const requestableById = new Map(requestableRows.map((part) => [part.id, part]));
+  const currentPartsDraft = selected && partsDraft?.workOrderId === selected.id ? partsDraft : null;
+  const selectedRequestableId = currentPartsDraft?.partId || requestableRows[0]?.id || '';
+  const selectedRequestablePart = requestableById.get(selectedRequestableId);
+  const partsRequestKey = selected ? `parts-request:${selected.id}` : '';
+  const selectedJobParts = jobParts.data;
+  const materialsReadyForResume = Boolean(selected && selectedJobParts
+    && selectedJobParts.id === selected.id && selectedJobParts.version === selected.version
+    && selectedJobParts.reconciliation_state === 'consistent'
+    && selectedJobParts.parts.every((part) => decimalMilli(part.shortage) === 0n));
+  const resumeBlockedByParts = Boolean(selected?.status === 'blocked' && (jobParts.isPending || jobParts.isError || !materialsReadyForResume));
   const uploadIntent = selectedId ? uploadIntents.current.get(selectedId) : undefined;
   const currentRevisionDeclaration = selected && (events.data ?? []).find((event) => event.action === 'declare_work_order_performers' && event.repair_revision === selected.repair_revision);
   const declaredAtCurrentRevision = Boolean(currentRevisionDeclaration?.changes.performer_ids?.includes(user.id));
   const selectedIntentEntry = selected ? [...intents.current.entries()].find(([key]) => key.split(':')[1] === selected.id) : undefined;
   const intentLocked = Boolean(selectedIntentEntry);
+  const partsRequestPending = Boolean(partsRequestKey && intents.current.has(partsRequestKey));
+  const partsRequestOtherIntentLocked = intentLocked && !partsRequestPending;
   const pendingTransition = selected && ['open', 'scheduled', 'in_progress', 'blocked'].some((target) => intents.current.has(`transition:${selected.id}:${target}`));
   const transitionLocked = (target: string) => intentLocked || Boolean(selected && busyKey !== '' && busyKey !== `transition:${selected.id}:${target}`)
     || Boolean(selected && ['open', 'scheduled', 'in_progress', 'blocked'].some((other) => other !== target && intents.current.has(`transition:${selected.id}:${other}`)));
@@ -579,6 +624,9 @@ export function OperationalWorkOrderPage() {
             </section>}
 
             {notices[`transition:${selected.id}:open`]?.error && <ErrorNotice>{notices[`transition:${selected.id}:open`].error}</ErrorNotice>}
+              {selected.status === 'blocked' && jobParts.isPending && <LoadingNotice label="Confirming parts and stock before resume…" />}
+              {selected.status === 'blocked' && jobParts.isError && <ErrorNotice>Parts and stock status is unavailable. Refresh it before resuming this work order.</ErrorNotice>}
+              {selected.status === 'blocked' && !jobParts.isPending && !jobParts.isError && jobParts.data && !materialsReadyForResume && <p className="info-callout">Resume is unavailable until the latest work-order version has no parts shortage and stock reconciliation is consistent.</p>}
             <section className="operation-section" aria-labelledby="assignment-title">
               <h3 id="assignment-title">Assignment</h3>
               {assignments.isPending ? <LoadingNotice label="Checking assignments…" /> : assignments.isError ? <ErrorNotice>Assignment details are unavailable. Retry before assigning work.</ErrorNotice> : selectedActiveAssignments.length ? <ul className="assigned-list">{selectedActiveAssignments.map((id) => <li key={id}>{id === user.id ? 'You · ' : 'Assigned account · '}<span className="monospace">{id}</span></li>)}</ul> : <p className="field-hint">No active technicians are assigned.</p>}
@@ -589,6 +637,31 @@ export function OperationalWorkOrderPage() {
               </form>}
             </section>
 
+            {canReadSelectedParts && <section className="operation-section" aria-labelledby="work-order-parts-title">
+              <h3 id="work-order-parts-title">Parts for this work order</h3>
+              {jobParts.isPending ? <LoadingNotice label="Loading requested, reserved, consumed and returned parts…" /> : jobParts.isError ? <><ErrorNotice>Work-order parts and stock status could not be confirmed. Retry before making a parts decision or resuming blocked work.</ErrorNotice><AppButton variant="secondary" onClick={() => void jobParts.refetch()}>Retry parts status</AppButton></> : jobParts.data && <>
+                {jobParts.data.reconciliation_state === 'discrepancy' && <ErrorNotice>Stock records disagree with the work-order ledger. Reconcile the movement history before issuing stock or resuming work.</ErrorNotice>}
+                {jobParts.data.parts.some((part) => decimalMilli(part.shortage) > 0n) && <p className="info-callout">A parts shortage remains. Receiving or issuing stock does not resume blocked work. An authorized coordinator must resume it after stock and reconciliation are clear.</p>}
+                {jobParts.data.parts.length ? <div className="record-table-wrap"><table className="record-table"><caption>Exact work-order part quantities</caption><thead><tr><th scope="col">Part</th><th scope="col">Unit</th><th scope="col">Requested</th><th scope="col">Short</th><th scope="col">Reserved</th><th scope="col">Consumed</th><th scope="col">Returned</th></tr></thead><tbody>{jobParts.data.parts.map((part) => {
+                  const catalogPart = requestableById.get(part.part_id);
+                  return <tr key={part.part_id}><th scope="row">{catalogPart ? `${catalogPart.code} · ${catalogPart.name}` : `Part ${part.part_id.slice(0, 8)}`}</th><td>{part.unit}</td><td>{part.requested}</td><td>{part.shortage}</td><td>{part.reserved}</td><td>{part.issued}</td><td>{part.returned}</td></tr>;
+                })}</tbody></table></div> : <p className="field-hint">No parts have been requested for this work order.</p>}
+                {canRequestParts && <>
+                  {requestableParts.isPending ? <LoadingNotice label="Loading parts available for this assigned job…" /> : requestableParts.isError ? <><ErrorNotice>Requestable parts could not be confirmed for this assignment.</ErrorNotice><AppButton variant="secondary" onClick={() => void requestableParts.refetch()}>Retry requestable parts</AppButton></> : requestableRows.length ? <form className="form-stack" onSubmit={submitPartsRequest}>
+                    <h4>Request parts</h4>
+                    <p className="field-hint">Only active catalog parts assigned to this job are available here.</p>
+                    <fieldset disabled={partsRequestOtherIntentLocked || busyKey !== '' || partsRequestPending}>
+                      <label className="field" htmlFor={`requested-part-${selected.id}`}><span>Requested part</span><select id={`requested-part-${selected.id}`} required value={selectedRequestableId} onChange={(event) => setPartsDraft({ workOrderId: selected.id, partId: event.target.value, quantity: currentPartsDraft?.quantity ?? '' })}><option value="" disabled>Select an assigned-job part</option>{requestableRows.map((part) => <option key={part.id} value={part.id}>{part.code} · {part.name} ({part.unit})</option>)}</select></label>
+                      <Field id={`requested-quantity-${selected.id}`} label="Requested quantity" required inputMode="decimal" pattern={stockQuantityPattern} value={currentPartsDraft?.quantity ?? ''} onChange={(event) => setPartsDraft({ workOrderId: selected.id, partId: selectedRequestableId, quantity: event.target.value })} hint={`Unit: ${selectedRequestablePart?.unit ?? 'select a part'}`} />
+                    </fieldset>
+                    {notices[partsRequestKey]?.error && <ErrorNotice>{notices[partsRequestKey].error}</ErrorNotice>}{notices[partsRequestKey]?.success && <SuccessNotice>{notices[partsRequestKey].success}</SuccessNotice>}
+                    <div className="compact-actions"><AppButton type="submit" disabled={partsRequestOtherIntentLocked || busyKey !== '' || !selectedRequestablePart || !currentPartsDraft?.quantity.trim()}>{busyKey === partsRequestKey ? 'Requesting…' : partsRequestPending ? 'Retry exact parts request' : 'Request parts'}</AppButton>{requestableParts.hasNextPage && <AppButton type="button" variant="secondary" disabled={requestableParts.isFetchingNextPage || partsRequestPending || intentLocked} onClick={() => void requestableParts.fetchNextPage()}>{requestableParts.isFetchingNextPage ? 'Loading…' : 'Load more parts'}</AppButton>}</div>
+                  </form> : <p className="field-hint">No active parts are available for this assignment.</p>}
+                </>}
+              </>}
+              {isCoordinator && selected.status === 'blocked' && <p className="field-hint"><Link to={`/inventory?workOrder=${encodeURIComponent(selected.id)}`}>Review linked stock and reservations in Inventory</Link></p>}
+            </section>}
+
             <section className="operation-section" aria-labelledby="progress-title">
               <h3 id="progress-title">Work and repair record</h3>
               {['open', 'blocked'].includes(selected.status) && isCoordinator && <Field id={`planned-on-${selected.id}`} label="Planned work date" type="date" required disabled={intentLocked || busyKey !== '' || Boolean(pendingTransition)} value={fieldOr('planned-on', selected.planned_on ?? '')} onChange={(event) => setField('planned-on', event.target.value)} hint="Scheduling records this date separately from the optional due date." />}
@@ -596,8 +669,8 @@ export function OperationalWorkOrderPage() {
                 {isCoordinator && selected.status === 'draft' && <AppButton disabled={transitionLocked('open')} onClick={() => runTransition('open')}>{intents.current.has(`transition:${selected.id}:open`) ? 'Retry publish' : 'Publish work order'}</AppButton>}
                 {['open', 'scheduled'].includes(selected.status) && (isCoordinator || selectedActiveAssignments.includes(user.id)) && <AppButton disabled={transitionLocked('in_progress') || assignments.isPending || assignments.isError || selectedActiveAssignments.length === 0} onClick={() => runTransition('in_progress')}>{intents.current.has(`transition:${selected.id}:in_progress`) ? 'Retry start work' : 'Start work'}</AppButton>}
                 {isCoordinator && selected.status === 'open' && <AppButton variant="secondary" disabled={transitionLocked('scheduled') || !fieldOr('planned-on', selected.planned_on ?? '').trim()} onClick={runSchedule}>{intents.current.has(`schedule:${selected.id}`) ? 'Retry scheduling' : 'Schedule with planned date'}</AppButton>}
-                {isCoordinator && selected.status === 'blocked' && <AppButton disabled={transitionLocked('in_progress') || assignments.isPending || assignments.isError || selectedActiveAssignments.length === 0 || !field('transition-reason').trim()} onClick={() => runTransition('in_progress', field('transition-reason'))}>{intents.current.has(`transition:${selected.id}:in_progress`) ? 'Retry resume' : 'Resume work'}</AppButton>}
-                {isCoordinator && selected.status === 'blocked' && <AppButton variant="secondary" disabled={transitionLocked('scheduled') || !field('transition-reason').trim() || !fieldOr('planned-on', selected.planned_on ?? '').trim()} onClick={runSchedule}>{intents.current.has(`schedule:${selected.id}`) ? 'Retry scheduled resume' : 'Resume as scheduled'}</AppButton>}
+                {isCoordinator && selected.status === 'blocked' && <AppButton disabled={resumeBlockedByParts || transitionLocked('in_progress') || assignments.isPending || assignments.isError || selectedActiveAssignments.length === 0 || !field('transition-reason').trim()} onClick={() => runTransition('in_progress', field('transition-reason'))}>{intents.current.has(`transition:${selected.id}:in_progress`) ? 'Retry resume' : 'Resume work'}</AppButton>}
+                {isCoordinator && selected.status === 'blocked' && <AppButton variant="secondary" disabled={resumeBlockedByParts || transitionLocked('scheduled') || !field('transition-reason').trim() || !fieldOr('planned-on', selected.planned_on ?? '').trim()} onClick={runSchedule}>{intents.current.has(`schedule:${selected.id}`) ? 'Retry scheduled resume' : 'Resume as scheduled'}</AppButton>}
                 {canWork && <AppButton variant="secondary" disabled={transitionLocked('blocked') || !field('transition-reason').trim()} onClick={() => runTransition('blocked', field('transition-reason'))}>{intents.current.has(`transition:${selected.id}:blocked`) ? 'Retry block' : 'Block work with reason'}</AppButton>}
                 {isCoordinator && selected.status === 'completed' && <AppButton disabled={transitionLocked('in_progress') || assignments.isPending || assignments.isError || selectedActiveAssignments.length === 0 || !field('transition-reason').trim()} onClick={() => runTransition('in_progress', field('transition-reason'))}>{intents.current.has(`transition:${selected.id}:in_progress`) ? 'Retry reopen' : 'Reopen for correction'}</AppButton>}
                 {isCoordinator && ['draft', 'open', 'scheduled', 'in_progress', 'blocked', 'awaiting_review'].includes(selected.status) && <AppButton variant="danger" disabled={transitionLocked('canceled') || !field('transition-reason').trim()} onClick={() => runTransition('canceled', field('transition-reason'))}>{intents.current.has(`transition:${selected.id}:canceled`) ? 'Retry cancellation' : 'Cancel work order'}</AppButton>}

@@ -225,6 +225,9 @@ assertOwned(); execute('npm', ['exec', '--no', '--', 'supabase', 'migration', 'u
 assert.deepEqual((await jobOwner.rpc('receive_stock', oldStockArgs)).data, oldStock.data);
 assert.deepEqual((await jobOwner.rpc('list_inventory_movements', { organization_id: jobOrg })).data, oldStockRows.data);
 const parts = await jobTechnician.rpc('request_parts', { ctx: jobCtx(1), fields: { work_order_id: jobId, lines: [{ part_id: jobPart.data.data.id, quantity: '0.200', unit: 'kg' }] } }); assert.equal(parts.error, null);
+const requestable = await jobTechnician.rpc('list_requestable_job_parts', { organization_id: jobOrg, work_order_id: jobId }); assert.equal(requestable.error, null);
+assert.deepEqual(requestable.data, { items: [{ id: jobPart.data.data.id, code: 'UP36', name: 'Retained 26A stock', unit: 'kg' }], next_cursor: null });
+assert.equal((await jobTechnician.rpc('list_inventory_parts', { organization_id: jobOrg })).error?.message, 'FORBIDDEN');
 const allocation = await jobOwner.rpc('reserve_parts', { ctx: jobCtx(parts.data.version), fields: { work_order_id: jobId, lines: [{ part_id: jobPart.data.data.id, location_id: jobLocation.data.data.id, quantity: '0.200', unit: 'kg' }] } }); assert.equal(allocation.error, null);
 assert.equal(allocation.data.data.parts[0].reserved, '0.200'); assert.equal(allocation.data.data.reconciliation_state, 'consistent');
 console.log(JSON.stringify({ populated_t1_upgrade: true, retained_receipt_replay: true, frozen_new_response: true, former_assignment_backfill: true, conservative_initial_history: true, genuine_legacy_schedule_replay: true, undated_schedule_denial_atomic: true, populated_plan_upgrade: true, additive_inventory_exact_receipts: true }));
