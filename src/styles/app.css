@@ -56,13 +56,13 @@ table.sr-only { width: 1px; min-width: 1px; max-width: 1px; table-layout: fixed;
 .workspace-picker label { color: var(--muted); font-size: .72rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .workspace-picker select { width: 100%; min-width: 0; appearance: none; padding: 4px 22px 4px 0; border: 0; color: var(--ink); background: transparent; font-weight: 650; }
 .workspace-chevron { position: absolute; right: 13px; top: 5px; pointer-events: none; color: var(--muted); }
-.side-nav { display: grid; gap: 3px; }
+.side-nav { display: grid; flex: 1 1 auto; gap: 3px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .side-nav a { display: flex; align-items: center; gap: 12px; min-height: 42px; padding: 8px 12px; border-left: 3px solid transparent; color: #424b46; text-decoration: none; border-radius: 4px; font-weight: 550; }
 .side-nav a:hover { color: var(--ink); background: #e6e7e0; }
 .side-nav a[aria-current="page"] { border-left-color: var(--action); color: var(--action-dark); background: #e2e8fc; font-weight: 700; }
 .nav-icon { width: 18px; height: 18px; display: inline-grid; place-items: center; flex: 0 0 18px; color: currentColor; }
 .nav-icon svg { width: 18px; height: 18px; }
-.side-footer { display: grid; gap: 5px; margin-top: auto; padding: 14px 4px 0; border-top: 1px solid var(--line); }
+.side-footer { display: grid; flex: 0 0 auto; gap: 5px; margin-top: auto; padding: 14px 4px 0; border-top: 1px solid var(--line); }
 .side-utility-link { display: flex; align-items: center; gap: 12px; min-height: 40px; padding: 7px 9px; color: #424b46; text-decoration: none; border-radius: 4px; }
 .side-utility-link[aria-current="page"] { color: var(--action-dark); background: #e2e8fc; }
 .account-summary { display: grid; grid-template-columns: minmax(0, 1fr) 30px; align-items: center; gap: 9px; margin: 7px 0 0; padding-top: 11px; border-top: 1px solid var(--line); }

@@ -533,3 +533,57 @@ test('320px layout keeps the form in view and supports keyboard navigation', asy
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('assistant-320.png'), fullPage: true });
 });
+
+test('sidebar links and account actions stay keyboard reachable at desktop and narrow sizes', async ({ page }, testInfo) => {
+  await prepareWorkspacePage(page, [fixtureOrganizationIds.alpha], 'owner');
+  await page.route(`${origin}/rest/v1/rpc/assistant_history`, async (route) => fulfill(route, 200, { items: [], next_cursor: null }));
+
+  const checkReachability = async () => {
+    const links = page.getByRole('navigation', { name: 'Primary navigation' }).getByRole('link');
+    await expect(links).toHaveCount(11);
+    await page.getByLabel('Workspace', { exact: true }).focus();
+    for (const link of await links.all()) {
+      await page.keyboard.press('Tab');
+      await expect(link).toBeFocused();
+      await expect(link).toBeInViewport({ ratio: 0.9 });
+    }
+
+    for (const action of [
+      page.getByRole('link', { name: 'Settings', exact: true }),
+      page.getByRole('link', { name: 'Account security' }),
+      page.getByRole('button', { name: 'Sign out' }),
+    ]) {
+      await page.keyboard.press('Tab');
+      await expect(action).toBeFocused();
+      await expect(action).toBeInViewport({ ratio: 0.9 });
+    }
+  };
+
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto('/assistant');
+  await page.getByRole('link', { name: 'Account security' }).click({ timeout: 2_500 });
+  await expect(page.getByRole('heading', { name: 'Security' })).toBeVisible();
+  await page.goto('/assistant');
+  await expect(page.getByRole('heading', { name: 'Operations assistant' })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('assistant-sidebar-1280x720-initial.png') });
+  await checkReachability();
+  await page.screenshot({ path: testInfo.outputPath('assistant-sidebar-1280x720-keyboard.png') });
+
+  await page.setViewportSize({ width: 1280, height: 480 });
+  await page.goto('/assistant');
+  await expect(page.getByRole('heading', { name: 'Operations assistant' })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('assistant-sidebar-1280x480-initial.png') });
+  await checkReachability();
+  await page.screenshot({ path: testInfo.outputPath('assistant-sidebar-1280x480-keyboard.png') });
+
+  await page.setViewportSize({ width: 320, height: 780 });
+  await page.goto('/assistant');
+  await expect(page.getByRole('heading', { name: 'Operations assistant' })).toBeVisible();
+  await page.getByRole('button', { name: 'Open navigation' }).click();
+  await expect(page.getByRole('complementary', { name: 'Workspace navigation' })).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, 0)');
+  await page.screenshot({ path: testInfo.outputPath('assistant-sidebar-320x780-initial.png') });
+  await checkReachability();
+  await page.screenshot({ path: testInfo.outputPath('assistant-sidebar-320x780-keyboard.png') });
+  await page.getByRole('link', { name: 'Account security' }).click();
+  await expect(page.getByRole('heading', { name: 'Security' })).toBeVisible();
+});
