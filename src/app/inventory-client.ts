@@ -4,7 +4,7 @@ import type { Database, Json } from '../lib/database.types';
 import { domainError } from '../lib/domain-errors';
 import { commandResult, contextFor } from './commands';
 import { partFields, stockLocationFields, receiveStockFields, adjustStockFields, inventoryPart, stockLocation, stockMovement, inventoryPaging, inventoryPartPage, stockLocationPage, stockBalancePage, stockMovementPage, type PartFields, type StockLocationFields, type ReceiveStockFields, type AdjustStockFields } from '../contracts/inventory';
-import { requestPartsFields, reservePartsFields, reservationPartsFields, jobParts, type RequestPartsFields, type ReservePartsFields, type ReservationPartsFields } from '../contracts/inventory';
+import { requestPartsFields, reservePartsFields, reservationPartsFields, jobParts, requestableJobPartPage, type RequestPartsFields, type ReservePartsFields, type ReservationPartsFields } from '../contracts/inventory';
 
 type Response = { data: Json | null; error: { message: string } | null };
 async function command<T extends z.ZodType>(response: PromiseLike<Response>, schema: T, requestId: string) {
@@ -57,6 +57,10 @@ export function getJobParts(client: SupabaseClient<Database>, organizationId: st
   return read(signal ? response.abortSignal(signal) : response, jobParts);
 }
 type Paging = { cursor?: string; page_size?: number };
+export function listRequestableJobParts(client: SupabaseClient<Database>, organizationId: string, workOrderId: string, paging: Paging = {}, signal?: AbortSignal) {
+  const response = client.rpc('list_requestable_job_parts', { organization_id: z.uuid().parse(organizationId), work_order_id: z.uuid().parse(workOrderId), ...inventoryPaging.parse({ ...paging, page_size: paging.page_size ?? 25 }) });
+  return read(signal ? response.abortSignal(signal) : response, requestableJobPartPage);
+}
 type StockPaging = Paging & { part_id?: string; location_id?: string };
 const stockPaging = inventoryPaging.extend({ part_id: z.uuid().optional(), location_id: z.uuid().optional() });
 export function listInventoryParts(client: SupabaseClient<Database>, organizationId: string, paging: Paging = {}, signal?: AbortSignal) {
