@@ -55,3 +55,7 @@ entrypoint = "./functions/attachment-upload/index.ts"
 verify_jwt = false
 import_map = "./functions/report-export/deno.json"
 entrypoint = "./functions/report-export/index.ts"
+[functions.assistant]
+verify_jwt = false
+import_map = "./functions/assistant/deno.json"
+entrypoint = "./functions/assistant/index.ts"

@@ -111,7 +111,7 @@ jobs:
           echo $! >.cache/functions.pid
           ready=0
           for attempt in $(seq 1 30); do
-            if curl --fail --silent --max-time 2 --request OPTIONS --header 'Origin: http://127.0.0.1:5173' http://127.0.0.1:54321/functions/v1/organization-invite >/dev/null && curl --fail --silent --max-time 2 --request OPTIONS --header 'Origin: http://127.0.0.1:5173' http://127.0.0.1:54321/functions/v1/attachment-upload >/dev/null && curl --fail --silent --max-time 2 --request OPTIONS --header 'Origin: http://127.0.0.1:5173' http://127.0.0.1:54321/functions/v1/report-export >/dev/null; then ready=1; break; fi
+            if curl --fail --silent --max-time 2 --request OPTIONS --header 'Origin: http://127.0.0.1:5173' http://127.0.0.1:54321/functions/v1/organization-invite >/dev/null && curl --fail --silent --max-time 2 --request OPTIONS --header 'Origin: http://127.0.0.1:5173' http://127.0.0.1:54321/functions/v1/attachment-upload >/dev/null && curl --fail --silent --max-time 2 --request OPTIONS --header 'Origin: http://127.0.0.1:5173' http://127.0.0.1:54321/functions/v1/report-export >/dev/null && curl --fail --silent --max-time 2 --request OPTIONS --header 'Origin: http://127.0.0.1:5173' http://127.0.0.1:54321/functions/v1/assistant >/dev/null; then ready=1; break; fi
             sleep 1
           done
           if [ "$ready" -ne 1 ]; then python3 .github/ci-diagnostics.py .cache/functions.log; exit 1; fi

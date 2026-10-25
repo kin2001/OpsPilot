@@ -275,6 +275,8 @@ for (const kind of ['work_orders','asset_availability','pm_compliance','technici
  assert.equal(report.data.kind,kind);assert.equal(report.data.schema_version,1);assert(report.data.items.length<=25);
  if(kind==='maintenance_costs')assert.equal(report.data.summary.entered_estimate,null);
 }
+assert.equal((await jobOwner.rpc('assistant_admit',{organization_id:jobOrg,request_id:randomUUID(),conversation_id:null,mode:'operations'})).error?.message,'AI_DISABLED');
+assert.equal(sql(`select count(*) from private.ai_runs where organization_id='${jobOrg}';`).trim(),'0');
 assert.deepEqual((await jobOwner.rpc('receive_stock',oldStockArgs)).data,oldStock.data);
 assert.deepEqual((await jobOwner.rpc('reserve_parts',allocationArgs)).data,allocation.data);
 assert.deepEqual((await jobOwner.rpc('issue_reserved_stock',issueArgs)).data,issued.data);
