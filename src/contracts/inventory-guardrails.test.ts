@@ -56,3 +56,9 @@ it('uses complete matched dollar delimiters in the guardrail migration and SQL f
     for (const delimiter of new Set(delimiters)) expect(delimiters.filter((value) => value === delimiter).length % 2).toBe(0);
   }
 });
+
+it('keeps discrepancy fixtures inside the database foreign-key and system-trigger boundaries', () => {
+  const fixture = readFileSync('supabase/tests/database/014_inventory_guardrails.test.sql', 'utf8');
+  expect(/disable trigger all|session_replication_role/i.test(fixture)).toBe(false);
+  expect(fixture.includes("'23503',null,'Foreign keys prevent missing balance rows'")).toBe(true);
+});

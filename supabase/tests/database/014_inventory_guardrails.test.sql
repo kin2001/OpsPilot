@@ -48,14 +48,9 @@ select throws_ok($$select public.receive_stock(pg_temp.ctx(null),pg_temp.stock('
 select throws_ok($$select public.adjust_stock(pg_temp.ctx(null),pg_temp.stock('1')||'{"direction":"out","reason":"Cannot hide mismatch"}')$$,'P0001','CONFLICT','Adjustment cannot hide discrepancy');
 select is((select public.receive_stock(ctx,fields) from receipt),(select result from receipt),'Authorized receipt replay survives later discrepancy');
 update public.inventory_balances set on_hand=on_hand-1 where organization_id='10000037-0000-4000-8000-000000000001';
--- Privileged missing-row injection is restored before the independent link fault.
-create temp table lost_balance as select * from public.inventory_balances where organization_id='10000037-0000-4000-8000-000000000001';
-alter table public.inventory_balances disable trigger all;
-delete from public.inventory_balances where organization_id='10000037-0000-4000-8000-000000000001';
-alter table public.inventory_balances enable trigger all;
-select ok(not private.stock_consistent('10000037-0000-4000-8000-000000000001','40000037-0000-4000-8000-000000000001'),'Missing balance with ledger facts is discrepant');
-insert into public.inventory_balances(id,organization_id,part_id,location_id,on_hand,reserved) select id,organization_id,part_id,location_id,on_hand,reserved from lost_balance;
-select ok(private.stock_consistent('10000037-0000-4000-8000-000000000001','40000037-0000-4000-8000-000000000001'),'Missing-row fault restored before independent link fault');
+-- Existing ledger/latch foreign keys prevent normal deletion of historical balances.
+select throws_ok($fk$delete from public.inventory_balances where organization_id='10000037-0000-4000-8000-000000000001'$fk$,'23503',null,'Foreign keys prevent missing balance rows');
+select ok(private.stock_consistent('10000037-0000-4000-8000-000000000001','40000037-0000-4000-8000-000000000001'),'Rejected deletion preserves consistent stock before independent link fault');
 -- Inject an unlinked issue without modifying immutable posted history.
 insert into public.inventory_movements(organization_id,part_id,location_id,kind,direction,quantity,unit,actor_id,request_id)
  select '10000037-0000-4000-8000-000000000001','40000037-0000-4000-8000-000000000001',(result#>>'{data,id}')::uuid,'issue','out',1,'kg','00000037-0000-4000-8000-000000000001',gen_random_uuid() from shelf;
