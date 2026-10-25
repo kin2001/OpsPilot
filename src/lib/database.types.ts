@@ -966,6 +966,21 @@ isOneToOne: true
 "assign_work_order":
 { Args: { "ctx": Json,"id": string,"user_ids": (string)[] }; Returns: Json
                            },
+"assistant_admit":
+{ Args: { "conversation_id": string,"mode": string,"organization_id": string,"request_id": string }; Returns: Json
+                           },
+"assistant_delete":
+{ Args: { "conversation_id": string,"organization_id": string }; Returns: undefined
+                           },
+"assistant_finish":
+{ Args: { "actor_id": string,"outcome": string,"prompt": string,"result": Json,"run_id": string }; Returns: undefined
+                           },
+"assistant_history":
+{ Args: { "after_id"?: string,"conversation_id"?: string,"organization_id": string }; Returns: Json
+                           },
+"assistant_retrieve":
+{ Args: { "mode": string,"organization_id": string,"query": Json }; Returns: Json
+                           },
 "attachment_access":
 { Args: { "attachment_id": string,"organization_id": string }; Returns: Json
                            },

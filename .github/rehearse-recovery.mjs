@@ -313,6 +313,28 @@ for (const kind of ['work_orders', 'pm_compliance', 'parts_consumption', 'mainte
   const { generated_at: _generatedAt, ...facts } = response.data; reportSnapshots.set(kind, facts);
 }
 
+// Synthetic-only Assistant recovery; no provider configuration or call is used.
+sql(`insert into private.assistant_organizations(organization_id,enabled) values('${org}',true);`);
+const assistantRange = { from: '2026-01-01', to: '2027-01-01' };
+async function saveAssistantFixture(client, actor) {
+  const request_id = randomUUID();
+  const admitted = await client.rpc('assistant_admit', { organization_id: org, request_id, conversation_id: null, mode: 'operations' });
+  assert.equal(admitted.error, null);
+  const retrieved = await client.rpc('assistant_retrieve', { organization_id: org, mode: 'operations', query: { kind: 'daily_metrics', range: assistantRange } });
+  assert.equal(retrieved.error, null);
+  const { role: _role, ...retrieval } = retrieved.data;
+  const result = { schema_version: 1, mode: 'operations', answer: 'Synthetic recovery context.', source_ids: retrieval.sources.map(row => row.id), draft: null,
+    uncertainty: 'Synthetic fixture; no provider call.', ...admitted.data, retrieval, provider: { name: 'gemini', model: 'synthetic-recovery', response_id: null },
+    confirmation: { allowed: false, command: 'create_work_order', request_id, requires_human_review: true } };
+  assert.equal((await admin.rpc('assistant_finish', { run_id: admitted.data.run_id, actor_id: actor, outcome: 'succeeded', prompt: 'Synthetic recovery', result })).error, null);
+  return { ...admitted.data, request_id };
+}
+const retainedAssistant = await saveAssistantFixture(owner, people[0].id);
+const deletedAssistant = await saveAssistantFixture(owner, people[0].id);
+const revokedAssistant = await saveAssistantFixture(revoked, people[1].id);
+const assistantBefore = await owner.rpc('assistant_history', { organization_id: org, conversation_id: retainedAssistant.conversation_id });
+assert.equal(assistantBefore.error, null); assert.equal(assistantBefore.data.items.length, 2);
+
 // Snapshot bytes, Auth, schema/data, receipts and non-secret source configuration. Nothing is written as a dump/artifact.
 const owners = () => sql("select md5(string_agg(n.nspname||'.'||c.relname||':'||c.relowner::text||':'||coalesce(c.relacl::text,''),'|' order by n.nspname,c.relname)) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname in ('public','auth','storage','cron') and c.relkind in ('r','v','m','S');").trim();
 const permissions = () => canonicalPermissions(JSON.parse(sql(`
@@ -358,6 +380,7 @@ const config = readFileSync('supabase/config.toml'); const configChecksum = crea
 const checkpoint = performance.now();
 // Retain revocation outside the backup and reapply it before opening restored access.
 const revokedUser = people[1].id;
+assert.equal((await owner.rpc('assistant_delete', { organization_id: org, conversation_id: deletedAssistant.conversation_id })).error, null);
 sql(`update public.organization_members set active=false where organization_id='${org}' and user_id='${revokedUser}'; update public.assets set name='Synthetic deliberate loss' where id='${asset}';`);
 assert.equal((await admin.storage.from('repair-evidence').remove([item.object_key])).error, null);
 const restoreStarted = performance.now();
@@ -379,6 +402,8 @@ console.log(JSON.stringify({ recovery_permission_comparison: permissionDifferenc
 assertPermissionsEqual(originalPermissions, restoredPermissions);
 assertPermissionsEqual(originalDefaults, restoredDefaults);
 sql(`update public.organization_members set active=false,version=version+1 where organization_id='${org}' and user_id='${revokedUser}';`);
+// Reapply post-snapshot transcript deletion and expiry before opening restored access.
+sql(`delete from private.assistant_conversations where id='${deletedAssistant.conversation_id}'; select private.assistant_cleanup();`);
 // Full schema recreation invalidates Auth's pooled prepared results; reconcile revocations before reconnecting.
 const authBinding = () => authRestartTarget(JSON.parse(execute(['inspect', 'supabase_auth_opspilot-t1'], undefined, 10000)), JSON.parse(execute(['network', 'inspect', network], undefined, 10000))[0], network);
 const authContainer = authBinding();
@@ -434,6 +459,11 @@ for (const [kind, before] of reportSnapshots) {
   const response = await owner.rpc('get_report', { ctx: { organization_id: org }, kind, range: reportRange }); assert.equal(response.error, null);
   const { generated_at: _generatedAt, ...facts } = response.data; assert.deepEqual(facts, before);
 }
+assert.deepEqual((await owner.rpc('assistant_history', { organization_id: org, conversation_id: retainedAssistant.conversation_id })).data, assistantBefore.data);
+assert.equal((await owner.rpc('assistant_admit', { organization_id: org, request_id: retainedAssistant.request_id, conversation_id: null, mode: 'operations' })).error?.message, 'AI_REQUEST_REUSED');
+assert.equal((await owner.rpc('assistant_history', { organization_id: org, conversation_id: deletedAssistant.conversation_id })).error?.message, 'FORBIDDEN');
+assert.equal((await revoked.rpc('assistant_history', { organization_id: org, conversation_id: revokedAssistant.conversation_id })).error?.message, 'FORBIDDEN');
+assert.equal(sql(`select count(*) from private.ai_runs where id='${deletedAssistant.run_id}' and conversation_id is null;`).trim(), '1');
 const recoveredAvailability = await owner.rpc('get_report', { ctx: { organization_id: org }, kind: 'asset_availability', range: reportRange }); assert.equal(recoveredAvailability.error, null);
 assert.equal(recoveredAvailability.data.summary.history_complete, false); assert.equal(recoveredAvailability.data.summary.downtime_seconds, null);
 assert.equal((await revoked.rpc('get_report', { ctx: { organization_id: org }, kind: 'work_orders', range: reportRange })).error?.message, 'FORBIDDEN');
@@ -468,4 +498,4 @@ sql(`update public.attachments set created_at=now()-interval '25 hours' where id
 await reconcileAttachments(admin);
 assert.equal((await admin.from('attachments').select('status,cleanup_completed_at').eq('id', stale.data.data.id).single()).data.status, 'rejected');
 assert.equal((await admin.from('attachments').select('status').eq('id', item.id).single()).data.status, 'ready');
-console.log(JSON.stringify({ rehearsal: 'synthetic-job-owned-loopback', database_auth_receipts_restored: true, maintenance_history_cursors_receipts_restored: true, source_configuration_checksum: configChecksum, storage_objects_verified: objectSnapshot.length, current_revocation_reconciled: true, snapshot_to_incident_ms: Math.round(restoreStarted - checkpoint), observed_rpo_ms: 0, observed_rto_ms: Math.round(performance.now() - restoreStarted), total_ms: Math.round(performance.now() - started), boundary: 'RPO zero for pre-checkpoint fixture facts; no private/hosted or business acceptance' }));
+console.log(JSON.stringify({ rehearsal: 'synthetic-job-owned-loopback', database_auth_receipts_restored: true, maintenance_history_cursors_receipts_restored: true, assistant_history_admission_deletion_restored: true, source_configuration_checksum: configChecksum, storage_objects_verified: objectSnapshot.length, current_revocation_reconciled: true, snapshot_to_incident_ms: Math.round(restoreStarted - checkpoint), observed_rpo_ms: 0, observed_rto_ms: Math.round(performance.now() - restoreStarted), total_ms: Math.round(performance.now() - started), boundary: 'RPO zero for pre-checkpoint fixture facts; no private/hosted or business acceptance' }));
