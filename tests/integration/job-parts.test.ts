@@ -175,3 +175,102 @@ it('rejects UUID identity duplicates at every direct RPC boundary before resolvi
   expect(await read()).toEqual(before);
   expect(await balance()).toMatchObject({ on_hand: '10.000', reserved: '0.000' });
 });
+
+it('records explicit shortage blocks, notifies inventory, and requires coordinator resume after receipt and issue', async () => {
+  const ctx = (version: number) => ({ organization_id: org, request_id: randomUUID(), expected_version: version });
+  let state = await requested('12.000');
+  let result = await people.technician.client.rpc('transition_work_order', { ctx: ctx(state.version), id: job, target: 'in_progress' }); expect(result.error).toBeNull();
+  state = await read();
+  const blockArgs = { ctx: ctx(state.version), id: job, target: 'blocked', reason: 'Awaiting requested parts' };
+  const blocked = await people.technician.client.rpc('transition_work_order', blockArgs); expect(blocked.error).toBeNull();
+  expect((await people.technician.client.rpc('transition_work_order', blockArgs)).data).toEqual(blocked.data);
+  const notices = await people.inventory.client.from('notifications').select('*').eq('organization_id', org).eq('category', 'blocked_parts');
+  expect(notices.error).toBeNull(); expect(notices.data).toHaveLength(1); expect(notices.data![0].source_id).toBe(job);
+  expect(sql(`select changes#>>'{parts_shortages,0,shortage}' from public.work_order_events where organization_id='${org}' and status='blocked';`)).toBe('12.000');
+  state = await read();
+  expect((await people.manager.client.rpc('transition_work_order', { ctx: ctx(state.version), id: job, target: 'in_progress', reason: 'Too soon' })).error?.message).toBe('INVALID_TRANSITION');
+  await receiveStock(people.inventory.client, org, { ...reserved('2.000').lines[0] }, randomUUID());
+  expect((await read()).status).toBe('blocked');
+  state = await reserve('12.000');
+  state = await issueReservedStock(people.inventory.client, org, movement(state.reservations[0].id, '12.000'), randomUUID(), state.version);
+  expect(state.status).toBe('blocked'); expect(state.parts[0].shortage).toBe('0.000');
+  expect((await people.technician.client.rpc('transition_work_order', { ctx: ctx(state.version), id: job, target: 'in_progress', reason: 'Cannot authorize own resume' })).error?.message).toBe('FORBIDDEN');
+  result = await people.manager.client.rpc('transition_work_order', { ctx: ctx(state.version), id: job, target: 'in_progress', reason: 'Parts physically issued; resume authorized' }); expect(result.error).toBeNull();
+  expect((await read()).status).toBe('in_progress');
+  expect(sql(`select count(*) from public.asset_releases where organization_id='${org}';`)).toBe('0');
+  sql(`update public.organization_settings set evidence_required=false where organization_id='${org}';`);
+  const declared = await people.technician.client.rpc('declare_work_order_performers', { ctx: ctx((await read()).version), id: job, user_ids: [people.technician.id, people.manager.id] }); expect(declared.error).toBeNull();
+  const submitted = await people.technician.client.rpc('submit_work_order', { ctx: ctx((await read()).version), id: job, acknowledgment: 'All actual synthetic performers recorded' }); expect(submitted.error).toBeNull();
+  await enrollMfa(people.supervisor.client);
+  const reviewed = await people.supervisor.client.rpc('review_work_order', { ctx: ctx((await read()).version), id: job, decision: 'approved', reason: 'Independent synthetic review' }); expect(reviewed.error).toBeNull();
+  expect((await read()).status).toBe('completed');
+  expect(sql(`select count(*) from public.asset_releases where organization_id='${org}';`)).toBe('0');
+  await enrollMfa(people.owner.client);
+  const assetId = sql(`select asset_id from public.work_orders where id='${job}';`);
+  const assetVersion = Number(sql(`select version from public.assets where id='${assetId}';`));
+  const released = await people.owner.client.rpc('release_asset', { ctx: { organization_id: org, request_id: randomUUID(), expected_version: assetVersion }, asset_id: assetId, acknowledgment: 'Independent synthetic release checks complete' }); expect(released.error).toBeNull();
+  expect(sql(`select availability from public.assets where id='${assetId}';`)).toBe('operational');
+});
+
+it('deduplicates exact threshold crossings per location and recipient until restocked above', async () => {
+  await savePart(people.owner.client, org, { id: part, code: 'KG', name: 'Synthetic part', unit: 'kg', reorder_threshold: '9.000' }, randomUUID(), 1);
+  const second = await saveStockLocation(people.owner.client, org, { code: 'LOW2', name: 'Independent location' }, randomUUID());
+  const receiptArgs = { part_id: part, location_id: second.id, quantity: '9.000', unit: 'kg' }; const request = randomUUID();
+  await receiveStock(people.owner.client, org, receiptArgs, request);
+  await receiveStock(people.owner.client, org, receiptArgs, request);
+  const count = () => sql(`select count(*) from public.notifications where organization_id='${org}' and category='low_stock';`);
+  expect(count()).toBe('4');
+  await requested('2.000'); let state = await reserve('1.000');
+  expect(count()).toBe('8'); // Equality at the first shelf is another independent crossing.
+  state = await issueReservedStock(people.inventory.client, org, movement(state.reservations[0].id), randomUUID(), state.version);
+  expect(count()).toBe('8');
+  await receiveStock(people.owner.client, org, { ...receiptArgs, location_id: location, quantity: '1.000' }, randomUUID());
+  expect(count()).toBe('8');
+  await reserve('1.000'); expect(count()).toBe('12');
+  const ownerRows = await people.owner.client.from('notifications').select('*').eq('organization_id', org).eq('category', 'low_stock');
+  expect(ownerRows.data).toHaveLength(3);
+  expect(new Set(ownerRows.data!.map((row) => row.event_id)).size).toBe(3);
+  expect((await people.technician.client.from('notifications').select('*').eq('organization_id', org).eq('category', 'low_stock')).data).toEqual([]);
+  expect((await people.outsider.client.from('notifications').select('*').eq('organization_id', org)).data).toEqual([]);
+  expect((await admin.schema('public').from('inventory_balances').select('*')).error?.code).toBe('42501');
+});
+
+it('blocks affected stock/cancellation on authoritative discrepancies but preserves authorized receipts and unaffected locations', async () => {
+  await requested('4.000'); let state = await reserve('2.000'); const reservation = state.reservations[0].id;
+  const request = randomUUID(); const version = state.version;
+  state = await issueReservedStock(people.inventory.client, org, movement(reservation), request, version);
+  sql(`update public.inventory_balances set on_hand=on_hand+1 where organization_id='${org}' and location_id='${location}';`);
+  expect((await read()).reconciliation_state).toBe('discrepancy');
+  expect(await issueReservedStock(people.inventory.client, org, movement(reservation), request, version)).toEqual(state);
+  await expect(issueReservedStock(people.inventory.client, org, movement(reservation), randomUUID(), state.version)).rejects.toThrow('CONFLICT');
+  await expect(returnStock(people.owner.client, org, movement(reservation), randomUUID(), state.version)).rejects.toThrow('CONFLICT');
+  await expect(releaseReservation(people.manager.client, org, movement(reservation), randomUUID(), state.version)).rejects.toThrow('CONFLICT');
+  await expect(reserveParts(people.manager.client, org, reserved(), randomUUID(), state.version)).rejects.toThrow('CONFLICT');
+  await expect(receiveStock(people.owner.client, org, reserved().lines[0], randomUUID())).rejects.toThrow('CONFLICT');
+  await enrollMfa(people.owner.client);
+  await expect(adjustStock(people.owner.client, org, { ...reserved().lines[0], direction: 'out', reason: 'Cannot mask discrepancy' }, randomUUID())).rejects.toThrow('CONFLICT');
+  const canceled = await people.manager.client.rpc('transition_work_order', { ctx: { organization_id: org, request_id: randomUUID(), expected_version: state.version }, id: job, target: 'canceled', reason: 'Cannot lose allocations' }); expect(canceled.error?.message).toBe('CONFLICT');
+  expect((await read()).version).toBe(state.version);
+  const other = await saveStockLocation(people.owner.client, org, { code: 'GOOD', name: 'Unaffected shelf' }, randomUUID());
+  await receiveStock(people.owner.client, org, { ...reserved().lines[0], location_id: other.id }, randomUUID());
+  sql(`update public.inventory_balances set on_hand=on_hand-1 where organization_id='${org}' and location_id='${location}';`);
+  expect((await read()).reconciliation_state).toBe('consistent');
+  // A cached issued total can disagree even when balance and reserved totals match.
+  sql(`update public.stock_reservations set issued=issued+0.100,released=released-0 where id='${reservation}';update public.inventory_balances set reserved=reserved-0.100 where organization_id='${org}' and location_id='${location}';`);
+  expect((await read()).reconciliation_state).toBe('discrepancy');
+  await expect(returnStock(people.owner.client, org, movement(reservation), randomUUID(), state.version)).rejects.toThrow('CONFLICT');
+  sql(`update public.organization_members set active=false where organization_id='${org}' and user_id='${people.inventory.id}';`);
+  await expect(issueReservedStock(people.inventory.client, org, movement(reservation), request, version)).rejects.toThrow('FORBIDDEN');
+});
+
+
+it('allows explicit coordinator resume with reserved but unissued demand under the frozen shortage formula', async () => {
+  await requested('1.000');
+  const transition = async (target: string, reason?: string) => people.manager.client.rpc('transition_work_order', { ctx: { organization_id: org, request_id: randomUUID(), expected_version: (await read()).version }, id: job, target, reason });
+  expect((await transition('in_progress')).error).toBeNull();
+  expect((await transition('blocked', 'Awaiting allocation')).error).toBeNull();
+  await reserve();
+  expect((await read()).parts[0]).toMatchObject({ reserved: '1.000', issued: '0.000', shortage: '0.000' });
+  expect((await transition('in_progress', 'Allocation available; explicit coordinator decision')).error).toBeNull();
+  expect((await read()).parts[0].issued).toBe('0.000');
+});
