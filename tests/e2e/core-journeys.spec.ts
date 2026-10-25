@@ -1,7 +1,7 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { createClient } from '@supabase/supabase-js';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { readIsolatedServiceConfig } from './service-config';
 import { prepareWorkspacePage } from './workspace-fixture';
 
@@ -97,6 +97,17 @@ async function enrollTOTP(page: Page, name: string) {
   await page.getByRole('button', { name: 'Verify authenticator' }).click();
 }
 
+async function onboardingProgress(testInfo: TestInfo, progress: string[], label: string) {
+  progress.push(label);
+  const recentProgress = progress.slice(-4).join('\n');
+  const index = String(progress.length).padStart(2, '0');
+  console.info(`[onboarding-progress] ${label}`);
+  await testInfo.attach(`onboarding-progress-${index}.txt`, {
+    body: recentProgress,
+    contentType: 'text/plain',
+  });
+}
+
 test('asset header action remains selectable beside its empty-state action', async ({ page }) => {
   await prepareWorkspacePage(page);
   await page.route(/\/rest\/v1\/assets(?:\?.*)?$/, async (route) => {
@@ -115,17 +126,21 @@ test('asset header action remains selectable beside its empty-state action', asy
   await expect(page.getByRole('region', { name: 'Register an asset' })).toBeVisible();
 });
 
-test('owner onboards with native TOTP, creates maintenance records and invites a verified recipient', async ({ page }) => {
+test('owner onboards with native TOTP, creates maintenance records and invites a verified recipient', async ({ page }, testInfo) => {
   test.skip(!isolated, 'This journey runs only against the job-owned loopback Supabase and Mailpit services.');
+  const progress: string[] = [];
   const owner = await makeConfirmedUser('por23-owner');
   const recipientEmail = `por23-recipient-${randomUUID()}@example.test`;
+  await onboardingProgress(testInfo, progress, 'Bootstrap synthetic owner');
   allowWorkspaceBootstrap(owner);
 
+  await onboardingProgress(testInfo, progress, 'Owner sign-in');
   await page.goto('/');
   await page.getByLabel('Email').fill(owner.email);
   await page.getByLabel('Password').fill(owner.password);
   await page.getByRole('button', { name: 'Sign in' }).click();
 
+  await onboardingProgress(testInfo, progress, 'Primary authenticator enrollment and verification');
   await expect(page.getByRole('heading', { name: 'Authenticator verification' })).toBeVisible();
   await page.getByLabel('Authenticator name').fill('OpsPilot primary authenticator');
   await page.getByRole('button', { name: 'Set up an authenticator' }).click();
@@ -134,6 +149,7 @@ test('owner onboards with native TOTP, creates maintenance records and invites a
   await page.getByLabel('Six-digit authenticator code').fill(totp(firstSecret));
   await page.getByRole('button', { name: 'Verify authenticator' }).click();
 
+  await onboardingProgress(testInfo, progress, 'Workspace creation and dashboard readback');
   await expect(page.getByRole('heading', { name: 'Create your workspace' })).toBeVisible();
   await page.getByLabel('Workspace name').fill(`Synthetic workspace ${randomUUID().slice(0, 8)}`);
   await page.getByLabel('Time zone').fill('Asia/Manila');
@@ -142,6 +158,7 @@ test('owner onboards with native TOTP, creates maintenance records and invites a
   await expect(page.getByRole('heading', { name: 'Operations at a glance' })).toBeVisible();
 
   const primaryNavigation = page.getByRole('navigation', { name: 'Primary navigation' });
+  await onboardingProgress(testInfo, progress, 'Asset registration and authorized readback');
   await primaryNavigation.getByRole('link', { name: 'Assets', exact: true }).click();
   const assetsHeader = page.locator('header.page-heading').filter({ has: page.getByRole('heading', { name: 'Assets', exact: true }) });
   await assetsHeader.getByRole('button', { name: 'Register asset', exact: true }).click();
@@ -153,6 +170,7 @@ test('owner onboards with native TOTP, creates maintenance records and invites a
   await expect(page.getByRole('heading', { name: 'Synthetic pump' })).toBeVisible();
   await expect(page.getByText('out of service', { exact: true }).first()).toBeVisible();
 
+  await onboardingProgress(testInfo, progress, 'Maintenance request submission');
   await primaryNavigation.getByRole('link', { name: 'Requests', exact: true }).click();
   const requestsHeader = page.locator('header.page-heading').filter({ has: page.getByRole('heading', { name: 'Maintenance requests', exact: true }) });
   await requestsHeader.getByRole('button', { name: /New request$/ }).click();
@@ -163,9 +181,13 @@ test('owner onboards with native TOTP, creates maintenance records and invites a
   await requestForm.getByRole('button', { name: 'Save and submit', exact: true }).click();
   const requestDetails = page.getByRole('region', { name: 'Selected request details' });
   await expect(requestDetails.getByText('submitted', { exact: true })).toBeVisible();
+
+  await onboardingProgress(testInfo, progress, 'Request conversion to draft work order');
   await requestDetails.getByText('Review and route request', { exact: true }).click();
   await requestDetails.getByRole('button', { name: 'Convert to draft work order', exact: true }).click();
   await expect(page.getByText('Draft work order created:')).toBeVisible();
+
+  await onboardingProgress(testInfo, progress, 'Converted work-order readback');
   await primaryNavigation.getByRole('link', { name: 'Work orders', exact: true }).click();
   const convertedDraft = page.getByRole('button', { name: /WO-0001.*Synthetic vibration report/ });
   await expect(convertedDraft).toBeVisible();
@@ -175,6 +197,7 @@ test('owner onboards with native TOTP, creates maintenance records and invites a
   await expect(convertedDraftDetails.getByText('draft', { exact: true })).toBeVisible();
   await expect(convertedDraftDetails.getByText('Assignment and repair progress have not been recorded.')).toBeVisible();
 
+  await onboardingProgress(testInfo, progress, 'Backup authenticator enrollment and verification');
   await page.getByRole('link', { name: 'Account security' }).click();
   await expect(page.getByRole('heading', { name: 'Authenticator verification' })).toBeVisible();
   await page.getByLabel('Backup authenticator name').fill('OpsPilot backup authenticator');
@@ -185,6 +208,7 @@ test('owner onboards with native TOTP, creates maintenance records and invites a
   await page.getByRole('button', { name: 'Verify authenticator' }).click();
   await expect(page.getByText('Two verified authenticator factors are configured.')).toBeVisible();
 
+  await onboardingProgress(testInfo, progress, 'Teammate invitation request');
   await primaryNavigation.getByRole('link', { name: 'Team', exact: true }).click();
   await page.getByRole('tab', { name: 'Members', exact: true }).click();
   const invitationForm = page.getByRole('region', { name: 'Invite a teammate' });
@@ -193,13 +217,17 @@ test('owner onboards with native TOTP, creates maintenance records and invites a
   await invitationForm.getByRole('button', { name: 'Request invitation', exact: true }).click();
   await expect(page.getByText(`Invitation delivery was requested for ${recipientEmail}.`)).toBeVisible();
 
+  await onboardingProgress(testInfo, progress, 'Mailpit email polling and local redirect validation');
   const invitationUrl = await invitationRedirect(recipientEmail);
+  await onboardingProgress(testInfo, progress, 'Recipient invitation acceptance');
   await page.goto(invitationUrl);
   await expect(page).toHaveURL(`${appOrigin}/invite`);
   await expect(page.getByRole('heading', { name: 'Accept workspace invitation' })).toBeVisible();
   await expect(page.getByText(`Continue as ${recipientEmail}.`)).toBeVisible();
   await page.getByRole('button', { name: `Accept as ${recipientEmail}` }).click();
   await expect(page.getByRole('heading', { name: 'Invitation accepted' })).toBeVisible();
+
+  await onboardingProgress(testInfo, progress, 'Open recipient workspace and verify access readback');
   await page.getByRole('button', { name: 'Open workspace' }).click();
   await expect(page.getByRole('heading', { name: 'Operations at a glance' })).toBeVisible();
   await expect(page.getByRole('combobox', { name: 'Workspace' })).toHaveValue(/.+/);

@@ -250,6 +250,75 @@ test('an uncertain draft confirmation blocks pretyped follow-ups and preserves e
   await expect(page.getByRole('button', { name: 'Retry save draft' })).toBeEnabled();
 });
 
+test('a pending follow-up blocks confirmation of the older draft and preserves the displayed draft retry', async ({ page }) => {
+  await prepareWorkspacePage(page);
+  const assistantRequests: AssistantRequest[] = [];
+  const saveRequests: Record<string, unknown>[] = [];
+  let releaseFollowup!: () => void;
+  const heldFollowup = new Promise<void>((resolve) => { releaseFollowup = resolve; });
+  const created = {
+    id: createdWorkOrder, organization_id: fixtureOrganizationIds.alpha, number: 43, asset_id: assetPump, source_request_id: null,
+    title: 'Delayed follow-up draft', description: 'Reviewed delayed report.', category: 'inspection', priority: 'normal', due_at: null,
+    supervisor_id: fixtureUserId, status: 'draft', blocks_operation: false, created_by: fixtureUserId,
+    created_at: '2026-10-21T02:00:00.000Z', version: 1,
+  };
+  await page.route(`${origin}/functions/v1/assistant`, async (route) => {
+    const request = route.request().postDataJSON() as AssistantRequest;
+    assistantRequests.push(request);
+    if (request.prompt.includes('delayed follow-up')) await heldFollowup;
+    const result = resultFor(request);
+    if (result.draft && request.prompt.includes('delayed follow-up')) result.draft.title = 'Delayed follow-up draft';
+    return fulfill(route, 200, result);
+  });
+  await page.route(`${origin}/rest/v1/rpc/assistant_history`, async (route) => fulfill(route, 200, { items: [], next_cursor: null }));
+  await page.route(`${origin}/rest/v1/rpc/create_work_order`, async (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    saveRequests.push(body);
+    if (saveRequests.length === 1) return fulfill(route, 503, { message: 'Synthetic lost response after possible commit.' });
+    const context = body.ctx as { request_id: string };
+    return fulfill(route, 200, { data: created, version: 1, request_id: context.request_id });
+  });
+  await page.route(/\/rest\/v1\/work_orders(?:\?.*)?$/, async (route) => {
+    const url = new URL(route.request().url());
+    return fulfill(route, 200, url.searchParams.get('id') === `eq.${createdWorkOrder}` ? created : []);
+  });
+
+  await page.goto('/assistant');
+  await page.getByLabel('Assistant mode').selectOption('draft');
+  await page.getByLabel('Your question').fill('Create the first pump inspection draft.');
+  await page.getByRole('button', { name: 'Ask assistant' }).click();
+  await expect(page.getByRole('heading', { name: 'Suggested work-order draft' })).toBeVisible();
+  await page.getByLabel('Choose a current asset').selectOption(assetPump);
+
+  await page.getByLabel('Your question').fill('Create a delayed follow-up draft.');
+  await page.getByRole('button', { name: 'Ask assistant' }).click();
+  await expect.poll(() => assistantRequests.length).toBe(2);
+  const oldDraftForm = page.locator('.assistant-draft__form').first();
+  await oldDraftForm.evaluate((form: HTMLFormElement) => form.requestSubmit());
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+  expect(saveRequests).toHaveLength(0);
+  await expect(oldDraftForm.getByRole('button', { name: 'Create draft work order' })).toBeDisabled();
+  expect(assistantRequests).toHaveLength(2);
+
+  releaseFollowup();
+  const displayedDraft = page.locator('.assistant-draft__form').last();
+  await expect(displayedDraft.getByLabel('Draft title')).toHaveValue('Delayed follow-up draft');
+  await expect(displayedDraft.getByLabel('Choose a current asset')).toBeEnabled();
+  await displayedDraft.getByLabel('Choose a current asset').selectOption(assetPump);
+  await displayedDraft.getByLabel('Problem description').fill('Reviewed delayed report.');
+  await displayedDraft.getByRole('button', { name: 'Create draft work order' }).click();
+  await expect(displayedDraft.getByRole('button', { name: 'Retry save draft' })).toBeEnabled();
+  expect(saveRequests).toHaveLength(1);
+  const originalCreateBody = structuredClone(saveRequests[0]);
+  expect(originalCreateBody!.ctx).toEqual({ organization_id: fixtureOrganizationIds.alpha, request_id: assistantRequests[1]!.request_id });
+
+  await displayedDraft.getByRole('button', { name: 'Retry save draft' }).click();
+  await expect(page).toHaveURL(new RegExp(`/work-orders\\?workOrder=${createdWorkOrder}$`));
+  expect(saveRequests).toHaveLength(2);
+  expect(saveRequests[1]).toEqual(originalCreateBody);
+  expect(assistantRequests).toHaveLength(2);
+});
+
 test('mode and query choices follow the current role permissions', async ({ page }) => {
   await prepareWorkspacePage(page, [fixtureOrganizationIds.alpha], 'owner');
   await page.route(`${origin}/rest/v1/rpc/assistant_history`, async (route) => fulfill(route, 200, { items: [], next_cursor: null }));
