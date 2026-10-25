@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { expect, test, type Page, type Route } from '@playwright/test';
 import { prepareWorkspacePage } from './workspace-fixture';
 
@@ -96,6 +97,12 @@ test('shows safe source rows and downloads the selected report as CSV', async ({
   await page.getByRole('button', { name: 'Download CSV' }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toContain('opspilot-work_orders-');
+  const downloadPath = await download.path();
+  expect(downloadPath).not.toBeNull();
+  const downloadedBytes = await readFile(downloadPath!);
+  const utf8Bom = Buffer.from([0xef, 0xbb, 0xbf]);
+  expect(downloadedBytes.subarray(0, utf8Bom.length)).toEqual(utf8Bom);
+  expect(downloadedBytes.indexOf(utf8Bom, utf8Bom.length)).toBe(-1);
   await expect(page.getByRole('status').filter({ hasText: 'CSV downloaded.' })).toBeVisible();
 });
 

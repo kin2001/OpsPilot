@@ -72,7 +72,9 @@ function displayExportError(error: unknown): Promise<ExportError> {
 function downloadCsv(csv: string, response: Response | undefined, kind: ReportKind, range: { from: string; to: string }) {
   const disposition = response?.headers.get('content-disposition');
   const filename = disposition?.match(/filename="([a-z0-9-]+\.csv)"/i)?.[1] ?? `opspilot-${kind}-${range.from}-${range.to}.csv`;
-  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  // FunctionsClient reads CSV responses as text, whose UTF-8 decoder consumes the leading BOM.
+  const csvWithSingleBom = `\uFEFF${csv.replace(/^\uFEFF+/, '')}`;
+  const url = URL.createObjectURL(new Blob([csvWithSingleBom], { type: 'text/csv;charset=utf-8' }));
   const link = document.createElement('a');
   link.href = url;
   link.download = filename;

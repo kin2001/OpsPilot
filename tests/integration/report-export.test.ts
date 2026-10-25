@@ -56,8 +56,9 @@ it('denies low assurance, then exports the authorized cursor facts with live rol
   expect(response.status).toBe(200);
   expect(response.headers.get('content-type')).toContain('text/csv');
   expect(response.headers.get('cache-control')).toContain('no-store');
-  const csv = await response.text();
-  expect(csv.startsWith('\uFEFF')).toBe(true);
+  const responseBytes = new Uint8Array(await response.arrayBuffer());
+  expect(Array.from(responseBytes.subarray(0, 3))).toEqual([0xef, 0xbb, 0xbf]);
+  const csv = new TextDecoder('utf-8').decode(responseBytes);
   expect(csv).toContain('"Timezone","Asia/Manila"');
   expect(csv).toContain('"Currency","PHP"');
   for (const label of ['Report generated at', 'Export generated at']) {
