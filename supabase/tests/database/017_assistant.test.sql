@@ -103,7 +103,16 @@ insert into private.assistant_organizations(organization_id,enabled) values(pg_t
 insert into public.assets(id,organization_id,code,name,category,created_by) values(pg_temp.u(20001),pg_temp.u(20000),'DAILY41','Daily synthetic pump','pump',pg_temp.u(1));
 insert into public.work_orders(id,organization_id,number,asset_id,title,description,category,priority,supervisor_id,status,created_by,created_at,opened_at,due_at)
  select pg_temp.u(20010+n),pg_temp.u(20000),n+1,pg_temp.u(20001),'Carried-over synthetic work','Synthetic daily evidence','pump','normal',pg_temp.u(1),
- case when n=1 then 'blocked' else 'completed' end,pg_temp.u(1),now()-interval '10 days',now()-interval '10 days',case when n=1 then now()-interval '2 days' end from generate_series(0,2)n;
+ case when n=1 then 'blocked' else 'in_progress' end,pg_temp.u(1),now()-interval '10 days',now()-interval '10 days',case when n=1 then now()-interval '2 days' end from generate_series(0,2)n;
+-- As in reporting016, seed the immutable performer/submission facts before guarded completion.
+insert into public.work_order_performer_declarations(organization_id,work_order_id,user_id,declared_by,request_id,repair_revision,created_at)
+ select pg_temp.u(20000),pg_temp.u(n),pg_temp.u(2),pg_temp.u(2),gen_random_uuid(),1,now()-interval '6 days' from unnest(array[20010,20012])n;
+insert into public.work_order_submission_attestations(organization_id,work_order_id,actor_id,request_id,repair_revision,performer_ids,acknowledgment,created_at)
+ select pg_temp.u(20000),pg_temp.u(n),pg_temp.u(2),gen_random_uuid(),1,array[pg_temp.u(2)],'Synthetic historical daily performer attestation',now()-interval '5 days' from unnest(array[20010,20012])n;
+insert into public.work_order_participants(organization_id,work_order_id,user_id,source,recorded_at)
+ select organization_id,work_order_id,user_id,'declared_performer',created_at from public.work_order_performer_declarations where organization_id=pg_temp.u(20000);
+update public.work_orders set status='awaiting_review',submitted_revision=repair_revision where organization_id=pg_temp.u(20000) and id in (pg_temp.u(20010),pg_temp.u(20012));
+update public.work_orders set status='completed' where organization_id=pg_temp.u(20000) and id in (pg_temp.u(20010),pg_temp.u(20012));
 insert into public.work_order_reviews(organization_id,work_order_id,reviewer_id,repair_revision,decision,reason,created_at) values
  (pg_temp.u(20000),pg_temp.u(20010),pg_temp.u(1),1,'approved','Synthetic completion in range',date_trunc('day',now())+interval '1 hour'),
  (pg_temp.u(20000),pg_temp.u(20012),pg_temp.u(1),1,'approved','Synthetic completion outside range',now()-interval '2 days');

@@ -220,9 +220,18 @@ it('daily brief includes carried-over completions and backlog while preserving t
     insert into private.assistant_organizations(organization_id,enabled) values('${org}',true);
     insert into public.assets(id,organization_id,code,name,category,created_by) values('${asset}','${org}','DAILY41','Synthetic daily pump','pump','${owner.id}');
     insert into public.work_orders(id,organization_id,number,asset_id,title,description,category,priority,supervisor_id,status,created_by,created_at,opened_at,due_at) values
-    ('${completed}','${org}',1,'${asset}','Older completed work','Synthetic daily evidence','pump','normal','${owner.id}','completed','${owner.id}',now()-interval '10 days',now()-interval '10 days',null),
+    ('${completed}','${org}',1,'${asset}','Older completed work','Synthetic daily evidence','pump','normal','${owner.id}','in_progress','${owner.id}',now()-interval '10 days',now()-interval '10 days',null),
     ('${blocked}','${org}',2,'${asset}','Older blocked work','Synthetic current backlog','pump','normal','${owner.id}','blocked','${owner.id}',now()-interval '10 days',now()-interval '10 days',now()-interval '2 days'),
-    ('${outside}','${org}',3,'${asset}','Older completion outside range','Synthetic excluded evidence','pump','normal','${owner.id}','completed','${owner.id}',now()-interval '10 days',now()-interval '10 days',null);
+    ('${outside}','${org}',3,'${asset}','Older completion outside range','Synthetic excluded evidence','pump','normal','${owner.id}','in_progress','${owner.id}',now()-interval '10 days',now()-interval '10 days',null);
+    -- Preserve the same immutable performer/submission lineage as reporting016 before completion.
+    insert into public.work_order_performer_declarations(organization_id,work_order_id,user_id,declared_by,request_id,repair_revision,created_at)
+    select '${org}',id,'${tech.id}','${tech.id}',gen_random_uuid(),1,now()-interval '6 days' from public.work_orders where organization_id='${org}' and id in ('${completed}','${outside}');
+    insert into public.work_order_submission_attestations(organization_id,work_order_id,actor_id,request_id,repair_revision,performer_ids,acknowledgment,created_at)
+    select '${org}',id,'${tech.id}',gen_random_uuid(),1,array['${tech.id}'::uuid],'Synthetic historical daily performer attestation',now()-interval '5 days' from public.work_orders where organization_id='${org}' and id in ('${completed}','${outside}');
+    insert into public.work_order_participants(organization_id,work_order_id,user_id,source,recorded_at)
+    select organization_id,work_order_id,user_id,'declared_performer',created_at from public.work_order_performer_declarations where organization_id='${org}';
+    update public.work_orders set status='awaiting_review',submitted_revision=repair_revision where organization_id='${org}' and id in ('${completed}','${outside}');
+    update public.work_orders set status='completed' where organization_id='${org}' and id in ('${completed}','${outside}');
     insert into public.work_order_reviews(organization_id,work_order_id,reviewer_id,repair_revision,decision,reason,created_at) values
     ('${org}','${completed}','${owner.id}',1,'approved','Synthetic completion in range',date_trunc('day',now())+interval '1 hour'),
     ('${org}','${outside}','${owner.id}',1,'approved','Synthetic completion outside range',now()-interval '2 days');
