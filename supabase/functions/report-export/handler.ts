@@ -81,7 +81,7 @@ export async function handleReportExport(request: Request, config: Configuration
     const verifiedUser = await caller.auth.getUser(accessToken);
     if (timedOut()) return { ok: false, response: timeoutResponse() };
     if (verifiedUser.error) {
-      const unauthenticated = verifiedUser.error.status === 401 || verifiedUser.error.code === 'invalid_jwt';
+      const unauthenticated = verifiedUser.error.status === 401 || ['bad_jwt', 'invalid_jwt'].includes(verifiedUser.error.code ?? '');
       return { ok: false, response: error({ message: unauthenticated ? 'UNAUTHENTICATED' : 'DEPENDENCY_UNAVAILABLE' }, unauthenticated ? 401 : 503) };
     }
     // Auth validated the JWT with the identity provider before these signed claims are read.

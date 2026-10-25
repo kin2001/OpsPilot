@@ -99,6 +99,15 @@ it('maps Auth invalid_jwt errors to unauthenticated even when returned with stat
   expect(service.reportCalls()).toBe(0);
 });
 
+it('maps provider bad_jwt errors to unauthenticated even when returned with status 400', async () => {
+  const service = harness(() => workReport([1], null), { authStatus: 400, authCode: 'bad_jwt' });
+  const response = await service.callWithToken('@@@.e30.signature');
+  expect(response.status).toBe(401);
+  expect(await response.json()).toMatchObject({ code: 'UNAUTHENTICATED' });
+  expect(service.authCalls()).toBe(1);
+  expect(service.reportCalls()).toBe(0);
+});
+
 it('keeps Auth service failures classified as dependency errors', async () => {
   const service = harness(() => workReport([1], null), { authStatus: 503 });
   const response = await service.call();
