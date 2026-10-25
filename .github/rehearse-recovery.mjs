@@ -306,6 +306,12 @@ const stockBefore = await owner.rpc('list_inventory_balances', { organization_id
 const ledgerBefore = await owner.rpc('list_inventory_movements', { organization_id: org }); assert.equal(ledgerBefore.error, null);
 assert.equal(stockBefore.data.items[0].on_hand, '0.260'); assert.equal(stockBefore.data.items[0].reserved, '0.150'); assert.equal(stockBefore.data.items[0].available, '0.110');
 assert.equal(ledgerBefore.data.items.length, 4);
+const reportRange = { from: '2026-01-01', to: '2027-01-01' };
+const reportSnapshots = new Map();
+for (const kind of ['work_orders', 'pm_compliance', 'parts_consumption', 'maintenance_costs']) {
+  const response = await owner.rpc('get_report', { ctx: { organization_id: org }, kind, range: reportRange }); assert.equal(response.error, null);
+  const { generated_at: _generatedAt, ...facts } = response.data; reportSnapshots.set(kind, facts);
+}
 
 // Snapshot bytes, Auth, schema/data, receipts and non-secret source configuration. Nothing is written as a dump/artifact.
 const owners = () => sql("select md5(string_agg(n.nspname||'.'||c.relname||':'||c.relowner::text||':'||coalesce(c.relacl::text,''),'|' order by n.nspname,c.relname)) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname in ('public','auth','storage','cron') and c.relkind in ('r','v','m','S');").trim();
@@ -424,6 +430,13 @@ assert.equal((await owner.rpc('receive_stock', { ...stockArgs, ctx: { organizati
 assert.deepEqual((await owner.rpc('list_inventory_balances', { organization_id: org })).data, stockBefore.data);
 assert.deepEqual((await owner.rpc('list_inventory_movements', { organization_id: org })).data, ledgerBefore.data);
 assert.deepEqual((await owner.rpc('get_job_parts', { organization_id: org, work_order_id: job })).data, jobPartsBefore.data);
+for (const [kind, before] of reportSnapshots) {
+  const response = await owner.rpc('get_report', { ctx: { organization_id: org }, kind, range: reportRange }); assert.equal(response.error, null);
+  const { generated_at: _generatedAt, ...facts } = response.data; assert.deepEqual(facts, before);
+}
+const recoveredAvailability = await owner.rpc('get_report', { ctx: { organization_id: org }, kind: 'asset_availability', range: reportRange }); assert.equal(recoveredAvailability.error, null);
+assert.equal(recoveredAvailability.data.summary.history_complete, false); assert.equal(recoveredAvailability.data.summary.downtime_seconds, null);
+assert.equal((await revoked.rpc('get_report', { ctx: { organization_id: org }, kind: 'work_orders', range: reportRange })).error?.message, 'FORBIDDEN');
 assert.deepEqual((await owner.rpc('issue_reserved_stock', jobPartsIssue)).data, issuedParts.data);
 assert.deepEqual((await owner.rpc('return_stock', jobPartsReturn)).data, returnedParts.data);
 assert.equal((await revoked.rpc('request_parts', jobPartsRequest)).error?.message, 'FORBIDDEN');
