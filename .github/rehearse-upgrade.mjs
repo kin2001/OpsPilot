@@ -21,7 +21,13 @@ function assertServiceBinding(inventory, networkInfo, network, serviceName) {
   assert(/^[a-f0-9]{64}$/.test(inventory.Id), 'Immutable service identity unavailable');
   return inventory.Id;
 }
+function commandFailureStates(logs) {
+  return [...new Set([...logs.matchAll(/opspilot_command_failure action=[a-z_]+ state=([A-Z0-9]{5})\b/g)].map((match) => ['55000', '42702', '42703', '42P01', '42501', '23502', '23503', '23514', 'XX000'].includes(match[1]) ? match[1] : 'other'))];
+}
 if (process.argv[2] === '--readiness-self-test') {
+  const sensitive = 'synthetic-secret-DO-NOT-PRINT';
+  assert.deepEqual(commandFailureStates(`opspilot_command_failure action=save_part state=55000 ${sensitive}\nopspilot_command_failure action=save_part state=55000\nopspilot_command_failure action=save_part state=ABCDE`), ['55000', 'other']);
+  assert.deepEqual(commandFailureStates(sensitive), []);
   let probes = 0; let pauses = 0;
   await waitForAuth(async () => { probes++; if (probes === 1) throw new Error('Synthetic refusal'); return probes === 3; }, async () => { pauses++; });
   assert.equal(probes, 3); assert.equal(pauses, 2);
@@ -177,7 +183,13 @@ assert.equal(correctionRead.data.history.length, 2); assert.equal(correctionRead
 assert.equal(correctionRead.data.history[0].supersedes_id, null); assert.equal(correctionRead.data.submission.supersedes_id, oldSubmission.data.data.id);
 // Inventory is additive to the populated pre-inventory tenant; old inspection receipts remain unchanged.
 assert.equal((await correctionCaller.rpc('list_inventory_parts', { organization_id: correctionOrg.data.data.id })).data.items.length, 0);
-const stockPart = await correctionCaller.rpc('save_part', { ctx: correctionCtx(), fields: { code: 'UP35', name: 'Upgraded stock', unit: 'kg', reorder_threshold: '0.001' } }); assert.equal(stockPart.error, null);
+const stockPart = await correctionCaller.rpc('save_part', { ctx: correctionCtx(), fields: { code: 'UP35', name: 'Upgraded stock', unit: 'kg', reorder_threshold: '0.001' } });
+if (stockPart.error) {
+  assertOwned();
+  const logs = spawnSync('docker', ['logs', '--tail', '100', container], { encoding: 'utf8', timeout: 10000, maxBuffer: 128 * 1024 });
+  console.error(JSON.stringify({ upgrade_stock_diagnostic: { collection_complete: logs.status === 0, sqlstates: commandFailureStates(`${logs.stdout ?? ''}\n${logs.stderr ?? ''}`) } }));
+}
+assert.equal(stockPart.error, null);
 assert.equal(stockPart.data.data.archived_at, null);
 const stockLocation = await correctionCaller.rpc('save_stock_location', { ctx: correctionCtx(), fields: { code: 'UP35', name: 'Upgraded shelf' } }); assert.equal(stockLocation.error, null);
 const stockArgs = { ctx: correctionCtx(), fields: { part_id: stockPart.data.data.id, location_id: stockLocation.data.data.id, quantity: '0.001', unit: 'kg' } };
@@ -216,3 +228,44 @@ const parts = await jobTechnician.rpc('request_parts', { ctx: jobCtx(1), fields:
 const allocation = await jobOwner.rpc('reserve_parts', { ctx: jobCtx(parts.data.version), fields: { work_order_id: jobId, lines: [{ part_id: jobPart.data.data.id, location_id: jobLocation.data.data.id, quantity: '0.200', unit: 'kg' }] } }); assert.equal(allocation.error, null);
 assert.equal(allocation.data.data.parts[0].reserved, '0.200'); assert.equal(allocation.data.data.reconciliation_state, 'consistent');
 console.log(JSON.stringify({ populated_t1_upgrade: true, retained_receipt_replay: true, frozen_new_response: true, former_assignment_backfill: true, conservative_initial_history: true, genuine_legacy_schedule_replay: true, undated_schedule_denial_atomic: true, populated_plan_upgrade: true, additive_inventory_exact_receipts: true }));
+
+// Populated 26B facts and original receipts survive the additive guardrail migration.
+{
+// Populate the accepted 26A schema before applying job allocations; retain its receipt exactly.
+execute('npm', ['exec', '--no', '--', 'supabase', 'db', 'reset', '--local', '--version', '20261024000600', '--network-id', network]);
+assertOwned(); await requireAuthReady();
+const jobAdmin = createClient(url, service, options); const jobOwner = createClient(url, anon, options); const jobTechnician = createClient(url, anon, options);
+const jobPeople = [];
+for (const [role, client] of [['owner', jobOwner], ['technician', jobTechnician]]) {
+  const email = `job-upgrade-${role}-${randomUUID()}@example.test`; const password = `Synthetic-${randomUUID()}-Aa9!`;
+  const user = await jobAdmin.auth.admin.createUser({ email, password, email_confirm: true }); assert.equal(user.error, null);
+  assert.equal((await client.auth.signInWithPassword({ email, password })).error, null); jobPeople.push(user.data.user.id);
+}
+const jobOrg = randomUUID(); const jobAsset = randomUUID(); const jobId = randomUUID();
+sql(`insert into public.organizations(id,name,timezone,currency,created_by) values('${jobOrg}','Populated 26B upgrade','UTC','PHP','${jobPeople[0]}');
+ insert into public.organization_members(organization_id,user_id,role) values('${jobOrg}','${jobPeople[0]}','owner'),('${jobOrg}','${jobPeople[1]}','technician');
+ insert into public.assets(id,organization_id,code,name,category,created_by) values('${jobAsset}','${jobOrg}','UP36','Synthetic pump','pump','${jobPeople[0]}');
+ insert into public.work_orders(id,organization_id,number,asset_id,title,description,category,priority,supervisor_id,status,created_by) values('${jobId}','${jobOrg}',1,'${jobAsset}','Synthetic job','Populated job','pump','normal','${jobPeople[0]}','open','${jobPeople[0]}');
+ insert into public.work_order_assignments(organization_id,work_order_id,user_id) values('${jobOrg}','${jobId}','${jobPeople[1]}');`);
+const jobCtx = (version) => ({ organization_id: jobOrg, request_id: randomUUID(), ...(version ? { expected_version: version } : {}) });
+const jobPart = await jobOwner.rpc('save_part', { ctx: jobCtx(), fields: { code: 'UP36', name: 'Retained 26B stock', unit: 'kg', reorder_threshold: '0.300' } }); assert.equal(jobPart.error, null);
+const jobLocation = await jobOwner.rpc('save_stock_location', { ctx: jobCtx(), fields: { code: 'UP36', name: 'Retained shelf' } }); assert.equal(jobLocation.error, null);
+const oldStockArgs = { ctx: jobCtx(), fields: { part_id: jobPart.data.data.id, location_id: jobLocation.data.data.id, quantity: '0.300', unit: 'kg' } };
+const oldStock = await jobOwner.rpc('receive_stock', oldStockArgs); assert.equal(oldStock.error, null);
+const oldStockRows = await jobOwner.rpc('list_inventory_movements', { organization_id: jobOrg }); assert.equal(oldStockRows.error, null);
+const demandArgs={ctx:jobCtx(1),fields:{work_order_id:jobId,lines:[{part_id:jobPart.data.data.id,quantity:'0.200',unit:'kg'}]}};
+const demand=await jobTechnician.rpc('request_parts',demandArgs);assert.equal(demand.error,null);
+const allocationArgs={ctx:jobCtx(demand.data.version),fields:{work_order_id:jobId,lines:[{...demandArgs.fields.lines[0],location_id:jobLocation.data.data.id}]}};
+const allocation=await jobOwner.rpc('reserve_parts',allocationArgs);assert.equal(allocation.error,null);
+const issueArgs={ctx:jobCtx(allocation.data.version),fields:{work_order_id:jobId,lines:[{reservation_id:allocation.data.data.reservations[0].id,quantity:'0.100',unit:'kg'}]}};
+const issued=await jobOwner.rpc('issue_reserved_stock',issueArgs);assert.equal(issued.error,null);
+const before=await jobOwner.rpc('get_job_parts',{organization_id:jobOrg,work_order_id:jobId});assert.equal(before.error,null);
+assertOwned();execute('npm',['exec','--no','--','supabase','migration','up','--local','--network-id',network]);assertOwned();
+assert.deepEqual((await jobOwner.rpc('receive_stock',oldStockArgs)).data,oldStock.data);
+assert.deepEqual((await jobOwner.rpc('reserve_parts',allocationArgs)).data,allocation.data);
+assert.deepEqual((await jobOwner.rpc('issue_reserved_stock',issueArgs)).data,issued.data);
+assert.deepEqual((await jobOwner.rpc('get_job_parts',{organization_id:jobOrg,work_order_id:jobId})).data,before.data);
+assert.equal(sql(`select count(*) from public.notifications where organization_id='${jobOrg}' and category='low_stock';`).trim(),'0');
+assert.equal(sql(`select is_low from private.stock_low_state where organization_id='${jobOrg}';`).trim(),'t');
+console.log(JSON.stringify({populated_26b_guardrail_upgrade:true,original_receipts_and_job_projection_retained:true}));
+}
