@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { assistantMessage, assistantRequest, type AssistantRequest, type AssistantResult } from '../contracts/assistant';
 import { domainError } from '../lib/domain-errors';
 import { askAssistant, deleteAssistantConversation, getAssistantMessages, listAssistantConversations } from './assistant-client';
-import { createWorkOrder } from './commands';
+import { createWorkOrder, validateCreateWorkOrderFields } from './commands';
 import { useWorkspace } from './workspace';
 import { AppButton, ErrorNotice, Field, LoadingNotice, PageHeader, SelectField, TextAreaField } from './ui';
 import '../styles/assistant.css';
@@ -289,8 +289,9 @@ export function AssistantPage() {
 
   const ask = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (assistantBusy || !canUseAssistant) return;
+    if (assistantBusy || conversationLoading || createIntent || !canUseAssistant) return;
     setAssistantError('');
+    setHistoryError('');
     const request: AssistantRequest = {
       organization_id: organization.id,
       request_id: crypto.randomUUID(),
@@ -312,13 +313,29 @@ export function AssistantPage() {
     }
     setAssistantBusy(true);
     try {
+      if (conversationId && messageCursor) {
+        setConversationLoading(true);
+        try {
+          const page = await getAssistantMessages(client, organization.id, conversationId, messageCursor);
+          setMessages((current) => [...current, ...page.items]);
+          setMessageCursor(page.next_cursor);
+          if (page.next_cursor) {
+            setHistoryError('More saved messages remain. Load them before asking a follow-up; your question was not sent.');
+            return;
+          }
+        } catch {
+          setHistoryError('The remaining saved messages could not be loaded. Your follow-up was not sent; your question is still here.');
+          return;
+        } finally {
+          setConversationLoading(false);
+        }
+      }
       const result = await askAssistant(client, parsed.data);
       const createdAt = new Date().toISOString();
       const userMessage: AssistantMessage = { id: crypto.randomUUID(), created_at: createdAt, role: 'user', prompt, result: null };
       const responseMessage: AssistantMessage = { id: crypto.randomUUID(), created_at: new Date().toISOString(), role: 'assistant', prompt: null, result };
       setMessages((current) => [...current, userMessage, responseMessage]);
       setConversationId(result.conversation_id);
-      setMessageCursor(null);
       if (result.draft) setDraft(draftFrom(responseMessage));
       setPrompt('');
       void refreshConversations();
@@ -342,12 +359,33 @@ export function AssistantPage() {
   const saveDraft = async (event: FormEvent<HTMLFormElement>, message: AssistantMessage) => {
     event.preventDefault();
     if (createBusy || message.role !== 'assistant' || !message.result.draft || !draft || draft.messageId !== message.id) return;
-    const intent: CreateIntent = createIntent ?? {
-      messageId: message.id,
-      requestId: message.result.confirmation.request_id,
-      assetId: draft.assetId,
-      fields: { title: draft.title, problem: draft.problem, category: draft.category, priority: draft.priority, criticalReason: draft.criticalReason },
-    };
+    let intent = createIntent;
+    if (!intent) {
+      const validated = validateCreateWorkOrderFields({
+        title: draft.title,
+        description: draft.problem,
+        category: draft.category,
+        priority: draft.priority,
+        ...(draft.priority === 'critical' ? { critical_reason: draft.criticalReason } : {}),
+        supervisor_id: user.id,
+      });
+      if (!validated.success) {
+        setCreateError('Enter a nonblank title, problem description and category. Critical priority needs a reason. No work order was sent.');
+        return;
+      }
+      intent = {
+        messageId: message.id,
+        requestId: message.result.confirmation.request_id,
+        assetId: draft.assetId,
+        fields: {
+          title: validated.data.title,
+          problem: validated.data.description,
+          category: validated.data.category,
+          priority: validated.data.priority,
+          criticalReason: validated.data.critical_reason ?? '',
+        },
+      };
+    }
     if (!intent.assetId) { setCreateError('Choose a current asset before creating the draft.'); return; }
     setCreateIntent(intent);
     setCreateBusy(true);
@@ -467,7 +505,7 @@ export function AssistantPage() {
               <Field id="assistant-range-to" label="To (exclusive)" type="date" required disabled={assistantBusy || Boolean(createIntent)} value={to} onChange={(event) => setTo(event.target.value)} hint="Uses workspace calendar dates; the end date is not included." />
             </div>
             <TextAreaField id="assistant-prompt" label="Your question" required maxLength={4000} rows={3} disabled={assistantBusy || Boolean(createIntent)} value={prompt} onChange={(event) => setPrompt(event.target.value)} hint="Use only information relevant to your current work. Notes and prompts are treated as untrusted text." />
-            <div className="assistant-compose__actions"><AppButton type="submit" disabled={assistantBusy || !prompt.trim() || (showsAsset && (authorizedAssets.isPending || authorizedAssets.isError))}>{assistantBusy ? 'Checking authorized records…' : 'Ask assistant'}</AppButton><Link className="button button--secondary" to={fallbackPath}>Continue manually</Link></div>
+            <div className="assistant-compose__actions"><AppButton type="submit" disabled={assistantBusy || Boolean(createIntent) || conversationLoading || !prompt.trim() || (showsAsset && (authorizedAssets.isPending || authorizedAssets.isError))}>{assistantBusy ? 'Checking authorized records…' : 'Ask assistant'}</AppButton><Link className="button button--secondary" to={fallbackPath}>Continue manually</Link></div>
             <p className="assistant-compose__privacy">No AI feature can approve, release equipment, change stock, or manage membership. A suggested work order needs your review and explicit confirmation.</p>
           </form>
         </section>

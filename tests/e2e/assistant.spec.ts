@@ -158,6 +158,98 @@ test('drafts stay editable and confirmation retries the same ordinary work-order
   expect(durableCreations).toBe(1);
 });
 
+test('whitespace-only draft fields stay editable until corrected confirmation', async ({ page }) => {
+  await prepareWorkspacePage(page);
+  const assistantRequests: AssistantRequest[] = [];
+  const saveRequests: Record<string, unknown>[] = [];
+  const created = {
+    id: createdWorkOrder, organization_id: fixtureOrganizationIds.alpha, number: 43, asset_id: assetPump, source_request_id: null,
+    title: 'Reviewed seal inspection', description: 'Confirm the seal inspection.', category: 'inspection', priority: 'critical', due_at: null,
+    supervisor_id: fixtureUserId, status: 'draft', blocks_operation: false, created_by: fixtureUserId,
+    created_at: '2026-10-21T02:00:00.000Z', version: 1,
+  };
+  await page.route(`${origin}/functions/v1/assistant`, async (route) => {
+    const request = route.request().postDataJSON() as AssistantRequest;
+    assistantRequests.push(request);
+    return fulfill(route, 200, resultFor(request));
+  });
+  await page.route(`${origin}/rest/v1/rpc/assistant_history`, async (route) => fulfill(route, 200, { items: [], next_cursor: null }));
+  await page.route(`${origin}/rest/v1/rpc/create_work_order`, async (route) => {
+    saveRequests.push(route.request().postDataJSON() as Record<string, unknown>);
+    return fulfill(route, 200, { data: created, version: 1, request_id: assistantRequests[0]!.request_id });
+  });
+  await page.route(/\/rest\/v1\/work_orders(?:\?.*)?$/, async (route) => fulfill(route, 200, created));
+
+  await page.goto('/assistant');
+  await page.getByLabel('Assistant mode').selectOption('draft');
+  await page.getByLabel('Your question').fill('Prepare the seal inspection draft.');
+  await page.getByRole('button', { name: 'Ask assistant' }).click();
+  await expect(page.getByRole('heading', { name: 'Suggested work-order draft' })).toBeVisible();
+  await page.getByLabel('Choose a current asset').selectOption(assetPump);
+
+  for (const [label, invalid, corrected] of [
+    ['Draft title', '   ', 'Reviewed seal inspection'],
+    ['Problem description', '  \t ', 'Confirm the seal inspection.'],
+    ['Category', '   ', 'inspection'],
+  ]) {
+    await page.getByLabel(label).fill(invalid);
+    await page.getByRole('button', { name: 'Create draft work order' }).click();
+    await expect(page.getByRole('alert')).toContainText('No work order was sent.');
+    await expect(page.getByLabel(label)).toBeEnabled();
+    expect(saveRequests).toHaveLength(0);
+    await page.getByLabel(label).fill(corrected);
+  }
+  await page.getByLabel('Priority').selectOption('critical');
+  await page.getByLabel('Critical priority reason').fill('   ');
+  await page.getByRole('button', { name: 'Create draft work order' }).click();
+  await expect(page.getByRole('alert')).toContainText('No work order was sent.');
+  await expect(page.getByLabel('Critical priority reason')).toBeEnabled();
+  expect(saveRequests).toHaveLength(0);
+  await page.getByLabel('Critical priority reason').fill('Supervisor review confirms a critical safety risk.');
+  await page.getByRole('button', { name: 'Create draft work order' }).click();
+  await expect(page).toHaveURL(new RegExp(`/work-orders\\?workOrder=${createdWorkOrder}$`));
+  expect(saveRequests).toHaveLength(1);
+  expect(saveRequests[0]!.ctx).toEqual({ organization_id: fixtureOrganizationIds.alpha, request_id: assistantRequests[0]!.request_id });
+  expect(saveRequests[0]!.fields).toEqual({ title: 'Reviewed seal inspection', description: 'Confirm the seal inspection.', category: 'inspection', priority: 'critical', critical_reason: 'Supervisor review confirms a critical safety risk.', supervisor_id: fixtureUserId });
+});
+
+test('an uncertain draft confirmation blocks pretyped follow-ups and preserves exact retry', async ({ page }) => {
+  await prepareWorkspacePage(page);
+  const assistantRequests: AssistantRequest[] = [];
+  const saveRequests: Record<string, unknown>[] = [];
+  await page.route(`${origin}/functions/v1/assistant`, async (route) => {
+    const request = route.request().postDataJSON() as AssistantRequest;
+    assistantRequests.push(request);
+    return fulfill(route, 200, resultFor(request));
+  });
+  await page.route(`${origin}/rest/v1/rpc/assistant_history`, async (route) => fulfill(route, 200, { items: [], next_cursor: null }));
+  await page.route(`${origin}/rest/v1/rpc/create_work_order`, async (route) => {
+    saveRequests.push(route.request().postDataJSON() as Record<string, unknown>);
+    return fulfill(route, 503, { message: 'Synthetic lost response.' });
+  });
+
+  await page.goto('/assistant');
+  await page.getByLabel('Assistant mode').selectOption('draft');
+  await page.getByLabel('Your question').fill('Prepare the pump seal draft.');
+  await page.getByRole('button', { name: 'Ask assistant' }).click();
+  await page.getByLabel('Choose a current asset').selectOption(assetPump);
+  await page.getByLabel('Your question').fill('A second question typed before confirming the first draft.');
+  await page.getByRole('button', { name: 'Create draft work order' }).click();
+  await expect(page.getByRole('button', { name: 'Retry save draft' })).toBeEnabled();
+  await expect(page.getByLabel('Your question')).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Ask assistant', exact: true })).toBeDisabled();
+  await page.locator('.assistant-compose form').evaluate((form: HTMLFormElement) => form.requestSubmit());
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+  await expect(page.getByRole('button', { name: 'Ask assistant', exact: true })).toBeDisabled();
+  expect(assistantRequests).toHaveLength(1);
+
+  await page.getByRole('button', { name: 'Retry save draft' }).click();
+  await expect.poll(() => saveRequests.length).toBe(2);
+  expect(saveRequests[1]).toEqual(saveRequests[0]);
+  expect(assistantRequests).toHaveLength(1);
+  await expect(page.getByRole('button', { name: 'Retry save draft' })).toBeEnabled();
+});
+
 test('mode and query choices follow the current role permissions', async ({ page }) => {
   await prepareWorkspacePage(page, [fixtureOrganizationIds.alpha], 'owner');
   await page.route(`${origin}/rest/v1/rpc/assistant_history`, async (route) => fulfill(route, 200, { items: [], next_cursor: null }));
@@ -273,6 +365,59 @@ test('organization changes clear the prior conversation and allow deletion of th
   await page.getByRole('button', { name: 'Delete conversation' }).click();
   await expect(page.getByText('Beta-only maintenance question.')).toHaveCount(0);
   expect(deletions).toEqual([{ organization_id: fixtureOrganizationIds.beta, conversation_id: conversationBeta }]);
+});
+
+test('a follow-up loads the remaining saved messages before extending a partial conversation', async ({ page }) => {
+  await prepareWorkspacePage(page);
+  const savedRequest: AssistantRequest = {
+    organization_id: fixtureOrganizationIds.alpha,
+    request_id: '47ad4b3d-a4fb-4f79-9139-52b03b50e960',
+    conversation_id: conversationAlpha,
+    mode: 'operations',
+    prompt: 'Saved history fixture.',
+    query: { kind: 'blocked_work_orders', range },
+  };
+  const savedMessages = Array.from({ length: 26 }, (_, index) => {
+    const id = `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`;
+    const created_at = new Date(Date.UTC(2026, 9, 25, 0, 0, index)).toISOString();
+    return index % 2 === 0
+      ? { id, created_at, role: 'user', prompt: `Historical question ${Math.floor(index / 2)}.`, result: null }
+      : { id, created_at, role: 'assistant', prompt: null, result: { ...resultFor(savedRequest), answer: `Historical answer ${Math.floor(index / 2)}.` } };
+  });
+  const cursor = savedMessages[24]!.id;
+  const historyRequests: Record<string, unknown>[] = [];
+  const assistantRequests: AssistantRequest[] = [];
+  await page.route(`${origin}/rest/v1/rpc/assistant_history`, async (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    if (!body.conversation_id) return fulfill(route, 200, { items: [{ id: conversationAlpha, created_at: '2026-10-25T00:00:00.000Z' }], next_cursor: null });
+    historyRequests.push(body);
+    return body.after_id === cursor
+      ? fulfill(route, 200, { items: savedMessages.slice(25), next_cursor: null })
+      : fulfill(route, 200, { items: savedMessages.slice(0, 25), next_cursor: cursor });
+  });
+  await page.route(`${origin}/functions/v1/assistant`, async (route) => {
+    const request = route.request().postDataJSON() as AssistantRequest;
+    assistantRequests.push(request);
+    return fulfill(route, 200, resultFor(request));
+  });
+
+  await page.goto('/assistant');
+  await page.getByRole('button', { name: /Open conversation created/ }).click();
+  await expect(page.getByRole('button', { name: 'Load newer messages' })).toBeVisible();
+  await expect(page.getByText('Historical question 12.', { exact: true })).toBeVisible();
+  await page.getByLabel('Your question').fill('Follow up while saved history is partially loaded.');
+  await page.getByRole('button', { name: 'Ask assistant' }).click();
+
+  await expect(page.getByText('Historical answer 12.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Synthetic result. Review the database facts and cited records below.').last()).toBeVisible();
+  await expect(page.locator('.assistant-message')).toHaveCount(28);
+  await expect(page.getByRole('button', { name: 'Load newer messages' })).toHaveCount(0);
+  expect(historyRequests).toContainEqual({ organization_id: fixtureOrganizationIds.alpha, conversation_id: conversationAlpha, after_id: cursor });
+  expect(assistantRequests).toHaveLength(1);
+  const rows = page.locator('.assistant-message');
+  await expect(rows.nth(24)).toContainText('Historical question 12.');
+  await expect(rows.nth(25)).toContainText('Historical answer 12.');
+  await expect(rows.nth(26)).toContainText('Follow up while saved history is partially loaded.');
 });
 
 test('quota, refusal, timeout, and bad output preserve prompts without automatic retries', async ({ page }) => {
