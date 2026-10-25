@@ -121,6 +121,10 @@ export function convertRequest(client: SupabaseClient<Database>, organizationId:
   return parseRpc(client.rpc('convert_request', { ctx: contextFor(organizationId, commandId), id: requestId, work_order_fields: parsedFields as Json }), workOrderSchema, commandId);
 }
 
+export function validateCreateWorkOrderFields(fields: z.input<typeof createWorkOrderFields>) {
+  return createWorkOrderFields.safeParse(fields);
+}
+
 export function createWorkOrder(client: SupabaseClient<Database>, organizationId: string, assetId: string, fields: z.input<typeof createWorkOrderFields>, requestId: string) {
   const parsedFields = createWorkOrderFields.parse(fields);
   return parseRpc(client.rpc('create_work_order', { ctx: contextFor(organizationId, requestId), asset_id: z.uuid().parse(assetId), fields: parsedFields as Json }), workOrderSchema, requestId);
