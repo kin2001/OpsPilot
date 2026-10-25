@@ -60,7 +60,11 @@ create temporary table historic as select to_jsonb(r) revision from public.maint
 select lives_ok($$select public.save_maintenance_plan(pg_temp.ctx(1),pg_temp.fields()||jsonb_build_object('id',(select result->'data'->>'id' from saved),'cadence','week'))$$,'First edit creates protected segment');
 create temporary table protected as select to_jsonb(s) segment from public.maintenance_segments s where protected_through is not null;
 update public.organizations set timezone='Pacific/Kiritimati' where id='10000029-0000-4000-8000-000000000001';
-select is(private.maintenance_preview('10000029-0000-4000-8000-000000000001',pg_temp.fields()||jsonb_build_object('id',(select result->'data'->>'id' from saved)),'2026-10-24 10:30Z')->>'protected_through','2026-10-25','Reverse date-line edit also protects the later NEW local day');
+create temporary table reverse_date_line_preview as select private.maintenance_preview('10000029-0000-4000-8000-000000000001',pg_temp.fields()||jsonb_build_object('id',(select result->'data'->>'id' from saved)),'2026-10-24 10:30Z') result;
+select is((select result->>'new_local_date' from reverse_date_line_preview),'2026-10-25','Reverse date-line edit evaluates the NEW local day at the fixed preview time');
+select is((select result->>'protected_through' from reverse_date_line_preview),
+ (select greatest(date '2026-10-25',max(protected_through))::text from public.maintenance_segments where organization_id='10000029-0000-4000-8000-000000000001' and plan_id=(select (result->'data'->>'id')::uuid from saved)),
+ 'Reverse date-line edit preserves existing protection and the later NEW local day');
 update public.organizations set timezone='America/Adak' where id='10000029-0000-4000-8000-000000000001';
 select lives_ok($$select public.save_maintenance_plan(pg_temp.ctx(2),pg_temp.fields()||jsonb_build_object('id',(select result->'data'->>'id' from saved),'cadence','month','status','paused'))$$,'Repeated edit and pause create a new future segment');
 select is((select to_jsonb(s) from public.maintenance_segments s where s.revision_id=(select (segment->>'revision_id')::uuid from protected)),(select segment from protected),'Repeated edit preserves already protected cursor and boundary');

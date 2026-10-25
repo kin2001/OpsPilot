@@ -58,7 +58,7 @@ it('requires AAL2 before any report facts are read', async () => {
   const service = harness(() => workReport([1], null));
   const response = await service.call('aal1');
   expect(response.status).toBe(403);
-  expect(await response.json()).toMatchObject({ code: 'FORBIDDEN' });
+  expect(await response.json()).toMatchObject({ code: 'MFA_REQUIRED' });
   expect(service.reportCalls()).toBe(0);
 });
 

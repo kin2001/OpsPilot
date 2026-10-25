@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { reportRange, type ReportKind } from '../contracts/reporting';
 import { AppButton, ErrorNotice, PageHeader, SuccessNotice } from './ui';
 import { useWorkspace } from './workspace';
@@ -51,18 +52,21 @@ function tableValue(value: string | number | boolean | null, column: string, tim
   return String(value);
 }
 
-function displayExportError(error: unknown) {
+type ExportError = { message: string; requiresMfa: boolean };
+
+function displayExportError(error: unknown): Promise<ExportError> {
   if (error && typeof error === 'object' && 'context' in error && error.context instanceof Response) {
     return error.context.clone().json().then((body: unknown) => {
       const code = body && typeof body === 'object' && 'code' in body ? body.code : undefined;
-      if (code === 'EXPORT_LIMIT') return 'This report contains more than 10,000 rows. Narrow the date range and retry.';
-      if (code === 'EXPORT_TIMEOUT') return 'This report took too long. Narrow the date range and retry.';
-      if (code === 'FORBIDDEN') return 'Your workspace role can no longer export this report.';
-      if (code === 'UNAUTHENTICATED') return 'Your session expired. Sign in again, then retry the export.';
-      return 'The CSV could not be created. Please retry the export.';
-    }).catch(() => 'The CSV could not be created. Please retry the export.');
+      if (code === 'EXPORT_LIMIT') return { message: 'This report contains more than 10,000 rows. Narrow the date range and retry.', requiresMfa: false };
+      if (code === 'EXPORT_TIMEOUT') return { message: 'This report took too long. Narrow the date range and retry.', requiresMfa: false };
+      if (code === 'MFA_REQUIRED') return { message: 'This export requires fresh authenticator verification.', requiresMfa: true };
+      if (code === 'FORBIDDEN') return { message: 'Your workspace role can no longer export this report.', requiresMfa: false };
+      if (code === 'UNAUTHENTICATED') return { message: 'Your session expired. Sign in again, then retry the export.', requiresMfa: false };
+      return { message: 'The CSV could not be created. Please retry the export.', requiresMfa: false };
+    }).catch(() => ({ message: 'The CSV could not be created. Please retry the export.', requiresMfa: false }));
   }
-  return Promise.resolve('The CSV could not be created. Check your connection and retry the export.');
+  return Promise.resolve({ message: 'The CSV could not be created. Check your connection and retry the export.', requiresMfa: false });
 }
 
 function downloadCsv(csv: string, response: Response | undefined, kind: ReportKind, range: { from: string; to: string }) {
@@ -93,7 +97,7 @@ export function ReportsPage() {
   const [after, setAfter] = useState<string | undefined>();
   const [previousCursors, setPreviousCursors] = useState<(string | undefined)[]>([]);
   const [exportBusy, setExportBusy] = useState(false);
-  const [exportError, setExportError] = useState('');
+  const [exportError, setExportError] = useState<ExportError | null>(null);
   const [exportNotice, setExportNotice] = useState('');
 
   const query = useQuery({
@@ -120,13 +124,13 @@ export function ReportsPage() {
     setApplied({ ...filters, from: parsed.data.from, to: parsed.data.to });
     setAfter(undefined);
     setPreviousCursors([]);
-    setExportError('');
+    setExportError(null);
     setExportNotice('');
   };
 
   const exportReport = async () => {
     setExportBusy(true);
-    setExportError('');
+    setExportError(null);
     setExportNotice('');
     try {
       const result = await client.functions.invoke<string>('report-export', {
@@ -140,7 +144,7 @@ export function ReportsPage() {
       downloadCsv(result.data, result.response, applied.kind, { from: applied.from, to: applied.to });
       setExportNotice('CSV downloaded. It contains all rows retrieved for these filters.');
     } catch {
-      setExportError('The CSV could not be created. Check your connection and retry the export.');
+      setExportError({ message: 'The CSV could not be created. Check your connection and retry the export.', requiresMfa: false });
     } finally {
       setExportBusy(false);
     }
@@ -262,7 +266,10 @@ export function ReportsPage() {
       </section>
     </>}
 
-    {exportError && <div className="reports-export-message"><ErrorNotice>{exportError}</ErrorNotice></div>}
+    {exportError && <div className="reports-export-message">
+      <ErrorNotice>{exportError.message}</ErrorNotice>
+      {exportError.requiresMfa && <Link to="/settings/security">Open account security to verify</Link>}
+    </div>}
     {exportNotice && <div className="reports-export-message"><SuccessNotice>{exportNotice}</SuccessNotice></div>}
   </div>;
 }

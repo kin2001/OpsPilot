@@ -99,6 +99,24 @@ test('shows safe source rows and downloads the selected report as CSV', async ({
   await expect(page.getByRole('status').filter({ hasText: 'CSV downloaded.' })).toBeVisible();
 });
 
+test('keeps report reads available and offers account security when export requires MFA', async ({ page }) => {
+  await prepareWorkspacePage(page);
+  await mockReports(page);
+  await page.route('http://127.0.0.1:54321/functions/v1/report-export', async (route) => {
+    if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, body: '' });
+    await route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ code: 'MFA_REQUIRED', message: 'Step-up verification required.' }) });
+  });
+  await page.goto('/reports');
+  await expect(page.getByRole('heading', { name: 'Completed work orders by day' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Download CSV' }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'This export requires fresh authenticator verification.' })).toBeVisible();
+  const securityLink = page.getByRole('link', { name: 'Open account security to verify' });
+  await expect(securityLink).toHaveAttribute('href', '/settings/security');
+  await securityLink.click();
+  await expect(page.getByRole('heading', { name: 'Authenticator verification' })).toBeVisible();
+});
+
 test('limits inventory members to the parts report', async ({ page }) => {
   await prepareWorkspacePage(page, undefined, 'inventory');
   await mockReports(page);
@@ -117,14 +135,15 @@ test('keeps Reports out of navigation for technicians and denies a direct route'
 });
 
 test('keeps report filters and source rows inside a narrow viewport', async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({ width: 320, height: 844 });
   await prepareWorkspacePage(page);
   await mockReports(page, { rows: true });
   await page.goto('/reports');
   await expect(page.getByRole('heading', { name: 'Reports' })).toBeVisible();
   await expect(page.getByLabel('Start date')).toBeVisible();
+  await expect(page.getByRole('table', { name: 'Completed work orders by day text equivalent' })).toHaveCount(1);
   await expect(page.getByRole('table').getByRole('columnheader', { name: 'Work order ID' })).toBeVisible();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
   const sourceRows = page.getByRole('region', { name: 'Work orders source rows' });
   await sourceRows.focus();
   await expect(sourceRows).toBeFocused();

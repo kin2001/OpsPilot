@@ -29,7 +29,7 @@ export async function handleReportExport(request: Request, config: Configuration
     const statusByCode: Record<string, number> = { UNAUTHENTICATED: 401, FORBIDDEN: 403, VALIDATION: 422, DEPENDENCY_UNAVAILABLE: 503 };
     return Response.json(safe, { status: status ?? statusByCode[safe.code] ?? 503, headers });
   };
-  const specialError = (code: 'EXPORT_LIMIT' | 'EXPORT_TIMEOUT', message: string, status: number) =>
+  const specialError = (code: 'EXPORT_LIMIT' | 'EXPORT_TIMEOUT' | 'MFA_REQUIRED', message: string, status: number) =>
     Response.json({ code, message, retryable: code === 'EXPORT_TIMEOUT' }, { status, headers });
 
   if (!config.apiUrl || !config.publishableKey || !config.appOrigin) return error({ message: 'DEPENDENCY_UNAVAILABLE' }, 503);
@@ -68,7 +68,9 @@ export async function handleReportExport(request: Request, config: Configuration
     const assurance = await caller.auth.mfa.getAuthenticatorAssuranceLevel(authorization.slice(7));
     if (timedOut()) return { ok: false, response: timeoutResponse() };
     if (assurance.error) return { ok: false, response: error({ message: assurance.error.status === 401 ? 'UNAUTHENTICATED' : 'DEPENDENCY_UNAVAILABLE' }, assurance.error.status === 401 ? 401 : 503) };
-    if (assurance.data.currentLevel !== 'aal2') return { ok: false, response: error({ message: 'FORBIDDEN' }, 403) };
+    if (assurance.data.currentLevel !== 'aal2') {
+      return { ok: false, response: specialError('MFA_REQUIRED', 'Fresh authenticator verification is required to export this CSV.', 403) };
+    }
 
     const result = await caller.rpc('get_report', {
       ctx: input.ctx,

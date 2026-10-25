@@ -44,13 +44,15 @@ it('denies low assurance, then exports the authorized cursor facts with live rol
   let session = (await caller.auth.getSession()).data.session!;
   const lowAssurance = await exportReport(session.access_token, organizationId, 'asset_availability', range);
   expect(lowAssurance.status).toBe(403);
-  expect(await lowAssurance.json()).toMatchObject({ code: 'FORBIDDEN' });
+  expect(await lowAssurance.json()).toMatchObject({ code: 'MFA_REQUIRED' });
 
   await enrollMfa(caller);
   session = (await caller.auth.getSession()).data.session!;
   const firstPage = await getReport(caller, organizationId, 'asset_availability', range, { page_size: 100 });
   expect(firstPage.items).toHaveLength(26);
+  const exportRequestedAt = Date.now();
   const response = await exportReport(session.access_token, organizationId, 'asset_availability', range);
+  const exportResponseAt = Date.now();
   expect(response.status).toBe(200);
   expect(response.headers.get('content-type')).toContain('text/csv');
   expect(response.headers.get('cache-control')).toContain('no-store');
@@ -58,7 +60,14 @@ it('denies low assurance, then exports the authorized cursor facts with live rol
   expect(csv.startsWith('\uFEFF')).toBe(true);
   expect(csv).toContain('"Timezone","Asia/Manila"');
   expect(csv).toContain('"Currency","PHP"');
-  expect(csv).toContain(`"Report generated at","${firstPage.generated_at}"`);
+  for (const label of ['Report generated at', 'Export generated at']) {
+    const timestamp = csv.match(new RegExp(`"${label}","([^"]+)"`))?.[1];
+    expect(timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/);
+    const generatedAt = Date.parse(timestamp!);
+    expect(Number.isNaN(generatedAt)).toBe(false);
+    expect(generatedAt).toBeGreaterThanOrEqual(exportRequestedAt);
+    expect(generatedAt).toBeLessThanOrEqual(exportResponseAt);
+  }
   expect(csv).toContain('"\'=SUM(1,2)"');
   const exportedIds = firstPage.items.filter((item) => csv.split('\r\n').some((line) => line.startsWith(`"${item.id}"`)));
   expect(exportedIds).toHaveLength(firstPage.items.length);
