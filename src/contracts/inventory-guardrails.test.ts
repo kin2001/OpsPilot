@@ -20,7 +20,7 @@ it('guards new stock mutations while preserving durable replay and frozen errors
   expect(guardrails).toContain("raise exception using message='CONFLICT'");
 });
 it('reconciles ledger and linked issues/returns and persists independent notice cycles', () => {
-  for (const source of ['sum(case when m.direction=', 'r.issued<>', 'r.returned<>', 'b.id is null', 'private.stock_low_state', 'b.available<=p.reorder_threshold', "'low_stock',b.id", "'blocked_parts',new.work_order_id", "'parts_shortages'"]) expect(guardrails).toContain(source);
+  for (const source of ['sum(case when m.direction=', 'r.issued<>', 'r.returned<>', 'b.id is null', 'private.stock_low_state', 'balance.available<=p.reorder_threshold', "'low_stock',b.id", "'blocked_parts',new.work_order_id", "'parts_shortages'"]) expect(guardrails).toContain(source);
 });
 
 it('finds every guarded patch once in its accepted predecessor and keeps the public projection frozen', () => {
@@ -35,4 +35,16 @@ it('finds every guarded patch once in its accepted predecessor and keeps the pub
   expect(readAfter).not.toBe(readBefore);
   expect(readAfter.split("'reconciliation_state'")[0]).toBe(readBefore.split("'reconciliation_state'")[0]);
   expect(readAfter).toContain('from public.work_orders w where w.organization_id=org and w.id=job');
+});
+
+it('retains the threshold of an open low cycle across suppression and threshold edits', () => {
+  expect(guardrails).toContain('threshold_at_low numeric(14,3)');
+  expect(guardrails).toContain('b.available>cycle.threshold_at_low');
+  expect(guardrails).toContain('if b.archived_at is not null or b.reorder_threshold is null then continue;end if;');
+});
+
+it('keeps the notice loop record distinct from its SQL relation alias before any balance exists', () => {
+  const producer = guardrails.split('create function private.stock_notices')[1].split('create function private.job_shortages')[0];
+  expect(producer.includes('for b in select balance.*')).toBe(true);
+  expect(producer.includes('for b in select b.*')).toBe(false);
 });

@@ -36,7 +36,8 @@ begin
 end $$;
 
 create table private.stock_low_state (
- organization_id uuid not null,part_id uuid not null,location_id uuid not null,is_low boolean not null,event_id uuid not null default gen_random_uuid(),
+ organization_id uuid not null,part_id uuid not null,location_id uuid not null,is_low boolean not null,threshold_at_low numeric(14,3),event_id uuid not null default gen_random_uuid(),
+ check(not is_low or threshold_at_low is not null),
  primary key(organization_id,part_id,location_id),
  foreign key(organization_id,part_id,location_id) references public.inventory_balances(organization_id,part_id,location_id)
 );
@@ -44,28 +45,35 @@ alter table private.stock_low_state enable row level security;
 alter table private.stock_low_state force row level security;
 revoke all on private.stock_low_state from public,anon,authenticated,service_role;
 -- Establish the upgrade baseline without notifying historical low stock.
-insert into private.stock_low_state(organization_id,part_id,location_id,is_low)
- select b.organization_id,b.part_id,b.location_id,coalesce(p.archived_at is null and b.available<=p.reorder_threshold,false)
+insert into private.stock_low_state(organization_id,part_id,location_id,is_low,threshold_at_low)
+ select b.organization_id,b.part_id,b.location_id,coalesce(b.available<=p.reorder_threshold,false),case when b.available<=p.reorder_threshold then p.reorder_threshold end
  from public.inventory_balances b join public.parts p on p.organization_id=b.organization_id and p.id=b.part_id;
 
 create function private.stock_notices(org uuid,target_part uuid) returns void
 language plpgsql security definer set search_path='' as $$
-declare b record;previous boolean;event uuid;
+declare b record;cycle private.stock_low_state;event uuid;
 begin
- for b in select b.*,coalesce(p.archived_at is null and b.available<=p.reorder_threshold,false) low
-  from public.inventory_balances b join public.parts p on p.organization_id=b.organization_id and p.id=b.part_id
-  where b.organization_id=org and b.part_id=target_part order by b.part_id,b.location_id loop
+ for b in select balance.*,p.archived_at,p.reorder_threshold,coalesce(balance.available<=p.reorder_threshold,false) low
+  from public.inventory_balances balance join public.parts p on p.organization_id=balance.organization_id and p.id=balance.part_id
+  where balance.organization_id=org and balance.part_id=target_part order by balance.part_id,balance.location_id loop
   -- A discrepant location cannot supply a trustworthy threshold fact.
   if not private.stock_consistent(org,target_part,b.location_id) then continue;end if;
-  select is_low into previous from private.stock_low_state where organization_id=org and part_id=target_part and location_id=b.location_id;
-  if b.low and not coalesce(previous,false) then
+  select * into cycle from private.stock_low_state where organization_id=org and part_id=target_part and location_id=b.location_id;
+  if coalesce(cycle.is_low,false) then
+   -- Configuration changes cannot erase an open cycle; only quantity recovery can rearm it.
+   if b.available>cycle.threshold_at_low then
+    update private.stock_low_state set is_low=false,threshold_at_low=null where organization_id=org and part_id=target_part and location_id=b.location_id;
+   else continue;end if;
+  end if;
+  if b.archived_at is not null or b.reorder_threshold is null then continue;end if;
+  if b.low then
    event:=gen_random_uuid();
    insert into public.notifications(organization_id,recipient_user_id,event_id,category,source_id)
     select org,m.user_id,event,'low_stock',b.id from public.organization_members m
     where m.organization_id=org and m.active and private.auth_user_active(m.user_id) and m.role in ('owner','manager','supervisor','inventory') on conflict do nothing;
   else event:=null;end if;
-  insert into private.stock_low_state(organization_id,part_id,location_id,is_low,event_id) values(org,target_part,b.location_id,b.low,coalesce(event,gen_random_uuid()))
-   on conflict(organization_id,part_id,location_id) do update set is_low=excluded.is_low,event_id=coalesce(event,stock_low_state.event_id);
+  insert into private.stock_low_state(organization_id,part_id,location_id,is_low,threshold_at_low,event_id) values(org,target_part,b.location_id,b.low,case when b.low then b.reorder_threshold end,coalesce(event,gen_random_uuid()))
+   on conflict(organization_id,part_id,location_id) do update set is_low=excluded.is_low,threshold_at_low=excluded.threshold_at_low,event_id=coalesce(event,stock_low_state.event_id);
  end loop;
 end $$;
 

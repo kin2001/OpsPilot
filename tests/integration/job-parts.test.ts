@@ -274,3 +274,22 @@ it('allows explicit coordinator resume with reserved but unissued demand under t
   expect((await transition('in_progress', 'Allocation available; explicit coordinator decision')).error).toBeNull();
   expect((await read()).parts[0].issued).toBe('0.000');
 });
+
+it('does not rearm a low cycle by archive, threshold disable or threshold edits without stock recovery', async () => {
+  let version = 1;
+  const edit = async (threshold: string | null, archived = false) => {
+    await savePart(people.owner.client, org, { id: part, code: 'KG', name: 'Synthetic part', unit: 'kg', reorder_threshold: threshold, archived }, randomUUID(), version);
+    version++;
+  };
+  const count = () => sql(`select count(*) from public.notifications where organization_id='${org}' and category='low_stock';`);
+  await edit('10.000'); expect(count()).toBe('4');
+  await edit('10.000', true); await edit('10.000'); expect(count()).toBe('4');
+  await edit(null); await edit('10.000'); expect(count()).toBe('4');
+  await edit('9.000'); await edit('10.000'); expect(count()).toBe('4');
+  await receiveStock(people.owner.client, org, reserved().lines[0], randomUUID());
+  await requested(); await reserve(); expect(count()).toBe('8');
+  await edit(null);
+  await receiveStock(people.owner.client, org, reserved().lines[0], randomUUID());
+  await edit('10.000'); expect(count()).toBe('8');
+  await requested(); await reserve(); expect(count()).toBe('12');
+});

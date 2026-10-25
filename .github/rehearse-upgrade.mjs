@@ -21,7 +21,13 @@ function assertServiceBinding(inventory, networkInfo, network, serviceName) {
   assert(/^[a-f0-9]{64}$/.test(inventory.Id), 'Immutable service identity unavailable');
   return inventory.Id;
 }
+function commandFailureStates(logs) {
+  return [...new Set([...logs.matchAll(/opspilot_command_failure action=[a-z_]+ state=([A-Z0-9]{5})\b/g)].map((match) => ['55000', '42702', '42703', '42P01', '42501', '23502', '23503', '23514', 'XX000'].includes(match[1]) ? match[1] : 'other'))];
+}
 if (process.argv[2] === '--readiness-self-test') {
+  const sensitive = 'synthetic-secret-DO-NOT-PRINT';
+  assert.deepEqual(commandFailureStates(`opspilot_command_failure action=save_part state=55000 ${sensitive}\nopspilot_command_failure action=save_part state=55000\nopspilot_command_failure action=save_part state=ABCDE`), ['55000', 'other']);
+  assert.deepEqual(commandFailureStates(sensitive), []);
   let probes = 0; let pauses = 0;
   await waitForAuth(async () => { probes++; if (probes === 1) throw new Error('Synthetic refusal'); return probes === 3; }, async () => { pauses++; });
   assert.equal(probes, 3); assert.equal(pauses, 2);
@@ -177,7 +183,13 @@ assert.equal(correctionRead.data.history.length, 2); assert.equal(correctionRead
 assert.equal(correctionRead.data.history[0].supersedes_id, null); assert.equal(correctionRead.data.submission.supersedes_id, oldSubmission.data.data.id);
 // Inventory is additive to the populated pre-inventory tenant; old inspection receipts remain unchanged.
 assert.equal((await correctionCaller.rpc('list_inventory_parts', { organization_id: correctionOrg.data.data.id })).data.items.length, 0);
-const stockPart = await correctionCaller.rpc('save_part', { ctx: correctionCtx(), fields: { code: 'UP35', name: 'Upgraded stock', unit: 'kg', reorder_threshold: '0.001' } }); assert.equal(stockPart.error, null);
+const stockPart = await correctionCaller.rpc('save_part', { ctx: correctionCtx(), fields: { code: 'UP35', name: 'Upgraded stock', unit: 'kg', reorder_threshold: '0.001' } });
+if (stockPart.error) {
+  assertOwned();
+  const logs = spawnSync('docker', ['logs', '--tail', '100', container], { encoding: 'utf8', timeout: 10000, maxBuffer: 128 * 1024 });
+  console.error(JSON.stringify({ upgrade_stock_diagnostic: { collection_complete: logs.status === 0, sqlstates: commandFailureStates(`${logs.stdout ?? ''}\n${logs.stderr ?? ''}`) } }));
+}
+assert.equal(stockPart.error, null);
 assert.equal(stockPart.data.data.archived_at, null);
 const stockLocation = await correctionCaller.rpc('save_stock_location', { ctx: correctionCtx(), fields: { code: 'UP35', name: 'Upgraded shelf' } }); assert.equal(stockLocation.error, null);
 const stockArgs = { ctx: correctionCtx(), fields: { part_id: stockPart.data.data.id, location_id: stockLocation.data.data.id, quantity: '0.001', unit: 'kg' } };

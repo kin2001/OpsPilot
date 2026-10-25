@@ -18,6 +18,7 @@ do $$begin perform set_config('request.jwt.claim.sub','00000037-0000-4000-8000-0
 select throws_ok($$select public.request_parts(pg_temp.ctx(1),'{"work_order_id":"30000037-0000-4000-8000-000000000001","lines":[{"part_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","quantity":"1","unit":"kg"},{"part_id":"AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA","quantity":"1","unit":"kg"}]}')$$,'P0001','VALIDATION','Direct request rejects case-variant part identity before lookup');
 do $$begin perform set_config('request.jwt.claim.sub','00000037-0000-4000-8000-000000000001',true);perform set_config('request.jwt.claims','{"aal":"aal2"}',true);end$$;
 select ok(private.stock_consistent('10000037-0000-4000-8000-000000000001','40000037-0000-4000-8000-000000000001'),'Absent zero stock is consistent');
+select lives_ok($select public.save_part(pg_temp.ctx(null),'{"code":"EMPTY37","name":"No balances yet","unit":"kg","reorder_threshold":"10"}')$,'Part creation runs its producer safely against an empty balance set');
 create temp table shelf as select public.save_stock_location(pg_temp.ctx(null),'{"code":"G37","name":"Synthetic guard shelf"}') result;
 create function pg_temp.stock(qty text) returns jsonb language sql as $$select jsonb_build_object('part_id','40000037-0000-4000-8000-000000000001','location_id',(select result#>>'{data,id}' from shelf),'quantity',qty,'unit','kg')$$;
 create temp table receipt as select pg_temp.ctx(null) ctx,pg_temp.stock('10') fields;
@@ -27,6 +28,17 @@ do $$begin perform set_config('request.jwt.claim.sub','00000037-0000-4000-8000-0
 select ok(private.stock_consistent('10000037-0000-4000-8000-000000000001','40000037-0000-4000-8000-000000000001'),'Posted receipt reconciles');
 select public.save_part(pg_temp.ctx(1),'{"id":"40000037-0000-4000-8000-000000000001","code":"KG","name":"Synthetic stock","unit":"kg","reorder_threshold":"10"}');
 select is((select count(*)::integer from public.notifications where category='low_stock' and organization_id='10000037-0000-4000-8000-000000000001'),2,'Equality emits one event for each authorized recipient');
+create function pg_temp.configure(version integer,threshold text,archived boolean default false) returns jsonb language sql as $select public.save_part(pg_temp.ctx(version),jsonb_build_object('id','40000037-0000-4000-8000-000000000001','code','KG','name','Synthetic stock','unit','kg','reorder_threshold',threshold,'archived',archived))$;
+select pg_temp.configure(2,'10',true);
+select pg_temp.configure(3,'10');
+select is((select count(*)::integer from public.notifications where category='low_stock' and organization_id='10000037-0000-4000-8000-000000000001'),2,'Archive and reactivate retain the open cycle');
+select pg_temp.configure(4,null);
+select pg_temp.configure(5,'10');
+select is((select count(*)::integer from public.notifications where category='low_stock' and organization_id='10000037-0000-4000-8000-000000000001'),2,'Disable and re-enable threshold retain the open cycle');
+select pg_temp.configure(6,'9');
+select pg_temp.configure(7,'10');
+select is((select count(*)::integer from public.notifications where category='low_stock' and organization_id='10000037-0000-4000-8000-000000000001'),2,'Threshold edits alone do not erase the original cycle');
+select is((select threshold_at_low::text from private.stock_low_state where organization_id='10000037-0000-4000-8000-000000000001'),'10.000','Original low threshold remains the recovery boundary');
 select public.receive_stock(pg_temp.ctx(null),pg_temp.stock('1'));
 select public.adjust_stock(pg_temp.ctx(null),pg_temp.stock('1')||'{"direction":"out","reason":"Synthetic threshold crossing"}');
 select is((select count(*)::integer from public.notifications where category='low_stock' and organization_id='10000037-0000-4000-8000-000000000001'),4,'Restock above then crossing starts a new cycle');
