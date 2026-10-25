@@ -263,12 +263,23 @@ const allocation=await jobOwner.rpc('reserve_parts',allocationArgs);assert.equal
 const issueArgs={ctx:jobCtx(allocation.data.version),fields:{work_order_id:jobId,lines:[{reservation_id:allocation.data.data.reservations[0].id,quantity:'0.100',unit:'kg'}]}};
 const issued=await jobOwner.rpc('issue_reserved_stock',issueArgs);assert.equal(issued.error,null);
 const before=await jobOwner.rpc('get_job_parts',{organization_id:jobOrg,work_order_id:jobId});assert.equal(before.error,null);
+const reportSources = () => sql(`select md5(string_agg(fact::text,'|' order by fact::text)) from (${[
+ 'public.assets','public.work_orders','public.work_order_reviews','public.work_order_events','public.audit_logs','public.inventory_movements','public.job_stock_movements','public.maintenance_occurrences',
+].map((table) => `select jsonb_build_object('table','${table}','data',to_jsonb(t)) fact from ${table} t where organization_id='${jobOrg}'`).join(' union all ')}) facts;`).trim();
+const reportSourcesBefore = reportSources();
 assertOwned();execute('npm',['exec','--no','--','supabase','migration','up','--local','--network-id',network]);assertOwned();
+assert.equal(reportSources(),reportSourcesBefore,'Report migration must preserve populated authoritative facts');
+const reportRange = { from: '2026-01-01', to: '2027-01-01' };
+for (const kind of ['work_orders','asset_availability','pm_compliance','technician_assignments','parts_consumption','maintenance_costs']) {
+ const report = await jobOwner.rpc('get_report',{ctx:{organization_id:jobOrg},kind,range:reportRange});assert.equal(report.error,null);
+ assert.equal(report.data.kind,kind);assert.equal(report.data.schema_version,1);assert(report.data.items.length<=25);
+ if(kind==='maintenance_costs')assert.equal(report.data.summary.entered_estimate,null);
+}
 assert.deepEqual((await jobOwner.rpc('receive_stock',oldStockArgs)).data,oldStock.data);
 assert.deepEqual((await jobOwner.rpc('reserve_parts',allocationArgs)).data,allocation.data);
 assert.deepEqual((await jobOwner.rpc('issue_reserved_stock',issueArgs)).data,issued.data);
 assert.deepEqual((await jobOwner.rpc('get_job_parts',{organization_id:jobOrg,work_order_id:jobId})).data,before.data);
 assert.equal(sql(`select count(*) from public.notifications where organization_id='${jobOrg}' and category='low_stock';`).trim(),'0');
 assert.equal(sql(`select is_low from private.stock_low_state where organization_id='${jobOrg}';`).trim(),'t');
-console.log(JSON.stringify({populated_26b_guardrail_upgrade:true,original_receipts_and_job_projection_retained:true}));
+console.log(JSON.stringify({populated_26b_guardrail_upgrade:true,original_receipts_and_job_projection_retained:true,report_sources_preserved:true,all_report_kinds_after_upgrade:true}));
 }

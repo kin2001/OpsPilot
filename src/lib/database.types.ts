@@ -1014,6 +1014,9 @@ isOneToOne: true
 "get_job_parts":
 { Args: { "organization_id": string,"work_order_id": string }; Returns: Json
                            },
+"get_report":
+{ Args: { "ctx": Json,"cursor"?: Json,"kind": string,"range": Json }; Returns: Json
+                           },
 "get_team":
 { Args: { "organization_id": string }; Returns: Json
                            },
