@@ -600,8 +600,9 @@ table.sr-only { width: 1px; min-width: 1px; max-width: 1px; table-layout: fixed;
   .button-row .button--quiet { flex: 0 1 auto; }
   .security-factor { align-items: flex-start; flex-direction: column; }
 }
+/* Zero transition duration keeps inherited visibility from delaying keyboard focus. */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: 0s !important; }
 }
 @media print {
   body * { visibility: hidden !important; }

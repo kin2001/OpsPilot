@@ -156,3 +156,47 @@ test('owner navigation follows the twelve-page reference order', async ({ page }
   const navigation = page.getByRole('navigation', { name: 'Primary navigation' });
   await expect(navigation.getByRole('link')).toHaveText(['Dashboard', 'Requests', 'Work orders', 'Assets', 'Maintenance', 'Inspections', 'Inventory', 'Team', 'Reports', 'Assistant', 'Notifications']);
 });
+
+test('reduced-motion mobile navigation enters focus and supports Escape on repeated opens', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize({ width: 320, height: 568 });
+  await prepareVisualWorkspace(page);
+  await page.goto('/assets');
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+  await expect(page.locator('main .loading-state')).toHaveCount(0);
+  for (let round = 0; round < 2; round++) {
+    await page.getByRole('button', { name: 'Open navigation' }).click();
+    await expect(page.getByRole('button', { name: 'Close navigation' })).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog', { name: 'Workspace navigation' })).toBeHidden();
+    await expect(page.getByRole('button', { name: 'Open navigation' })).toBeFocused();
+  }
+});
+
+test('notification tab focus survives a pending filter read and its response', async ({ page }) => {
+  await prepareVisualWorkspace(page);
+  await page.goto('/notifications');
+  await expect(page.locator('main .loading-state')).toHaveCount(0);
+  const tabs = page.getByRole('tablist', { name: 'Notification categories' });
+  await expect(tabs.getByRole('tab', { name: 'All', exact: true })).toBeVisible();
+  let releaseRead = () => {};
+  let pending = false;
+  const responseGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+  await page.route('http://127.0.0.1:54321/rest/v1/notifications**', async (route) => {
+    if (route.request().method() === 'OPTIONS' || new URL(route.request().url()).searchParams.get('read_at') !== 'is.null') return route.fallback();
+    pending = true;
+    await responseGate;
+    await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+  });
+  await tabs.getByRole('tab', { name: 'All', exact: true }).focus();
+  await page.keyboard.press('ArrowLeft');
+  try {
+    await expect.poll(() => pending).toBeTruthy();
+    await expect(tabs.getByRole('tab', { name: 'Unread', exact: true })).toBeFocused();
+  } finally { releaseRead(); }
+  await expect(page.locator('main .loading-state')).toHaveCount(0);
+  await expect(tabs.getByRole('tab', { name: 'Unread', exact: true })).toBeFocused();
+  await page.keyboard.press('ArrowRight');
+  await expect(tabs.getByRole('tab', { name: 'All', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(tabs.getByRole('tab', { name: 'All', exact: true })).toBeFocused();
+});
