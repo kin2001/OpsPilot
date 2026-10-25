@@ -219,11 +219,13 @@ type NotificationSource =
 
 function notificationTarget(item: z.output<typeof notificationRecord>) {
   if (!z.uuid().safeParse(item.source_id).success) return null;
+  if (item.category === 'blocked_parts') return `/inventory?workOrder=${encodeURIComponent(item.source_id)}`;
   if (item.category === 'assignment' || ['update_work_order', 'transition_work_order', 'add_work_order_task', 'review_work_order', 'attachment_ready'].includes(item.category)) return `/work-orders?workOrder=${encodeURIComponent(item.source_id)}`;
   if (item.category.startsWith('request.')) return `/requests?request=${encodeURIComponent(item.source_id)}`;
   return null;
 }
 function notificationSourceKind(item: z.output<typeof notificationRecord>): 'work-order' | 'request' | null {
+  if (item.category === 'blocked_parts') return null;
   if (item.category.startsWith('request.')) return 'request';
   return notificationTarget(item) ? 'work-order' : null;
 }
@@ -376,7 +378,7 @@ export function NotificationsPage() {
               </>}
             </section>
             {errors[selected.id] && <ErrorNotice>{errors[selected.id]}</ErrorNotice>}
-            <div className="compact-actions">{notificationTarget(selected) ? <Link className="button button--secondary" to={notificationTarget(selected)!}>Open current record</Link> : <span className="field-hint">This event has no supported in-app target.</span>}{(!selected.read_at || requests.current.has(requestKeyFor(selected.id))) && <AppButton variant="quiet" disabled={busyId === selected.id} onClick={() => void markRead(selected)}>{busyId === selected.id ? 'Saving…' : requests.current.has(requestKeyFor(selected.id)) ? 'Retry mark as read' : 'Mark as read'}</AppButton>}</div>
+            <div className="compact-actions">{notificationTarget(selected) ? <Link className="button button--secondary" to={notificationTarget(selected)!}>{selected.category === 'blocked_parts' ? 'Review linked inventory fulfillment' : 'Open current record'}</Link> : <span className="field-hint">This event has no supported in-app target.</span>}{(!selected.read_at || requests.current.has(requestKeyFor(selected.id))) && <AppButton variant="quiet" disabled={busyId === selected.id} onClick={() => void markRead(selected)}>{busyId === selected.id ? 'Saving…' : requests.current.has(requestKeyFor(selected.id)) ? 'Retry mark as read' : 'Mark as read'}</AppButton>}</div>
           </> : <p className="field-hint">Select a notification to inspect the delivered event.</p>}
         </section>
       </div>

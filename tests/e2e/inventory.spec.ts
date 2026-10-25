@@ -61,15 +61,19 @@ async function seedServicePage(page: Page, person: ServicePerson) {
   await page.goto(appOrigin);
 }
 
-async function prepareInventoryPage(page: Page, role = 'owner') {
+async function prepareInventoryPage(page: Page, role = 'owner', options: { loseFirstReserveReply?: boolean; loseFirstIssueReply?: boolean } = {}) {
   await prepareWorkspacePage(page, [fixtureOrganizationIds.alpha], role);
   const requests: Record<string, unknown>[] = [];
   let available = '1.500';
   let jobParts: MockJobParts = {
     id: workOrderId, number: 42, status: 'blocked', version: 4,
-    parts: [{ part_id: partId, unit: 'each', requested: '4.000', reserved: '0.000', issued: '0.000', returned: '0.000', shortage: '1.500' }],
-    reservations: [], reconciliation_state: 'consistent',
+    parts: [{ part_id: partId, unit: 'each', requested: '4.000', reserved: '2.500', issued: '0.000', returned: '0.000', shortage: '1.500' }],
+    reservations: [{ id: '79000000-0000-4000-8000-000000000006', part_id: partId, location_id: locationId, unit: 'each', reserved: '2.500', issued: '0.000', returned: '0.000', released: '0.000' }], reconciliation_state: 'consistent',
   };
+  let jobPartsReads = 0;
+  let reserveAttempts = 0;
+  let durableJobCommands = 0;
+  const durableRequestIds = new Set<string>();
   await page.route('http://127.0.0.1:54321/rest/v1/rpc/**', async (route) => {
     if (route.request().method() === 'OPTIONS') return route.fallback();
     const request = route.request();
@@ -79,7 +83,13 @@ async function prepareInventoryPage(page: Page, role = 'owner') {
     if (name === 'list_stock_locations') return reply(route, 200, { items: [{ id: locationId, organization_id: fixtureOrganizationIds.alpha, code: 'WH-1', name: 'Main warehouse', created_by: fixtureUserId, created_at: '2026-10-21T00:00:00Z', version: 1 }], next_cursor: null });
     if (name === 'list_inventory_balances') return reply(route, 200, { items: [{ id: '79000000-0000-4000-8000-000000000004', organization_id: fixtureOrganizationIds.alpha, part_id: partId, location_id: locationId, on_hand: '2.500', reserved: '1.000', available, }], next_cursor: null });
     if (name === 'list_inventory_movements') return reply(route, 200, { items: [], next_cursor: null });
-    if (name === 'get_job_parts') return reply(route, 200, jobParts);
+    if (name === 'get_job_parts') {
+      jobPartsReads += 1;
+      const requestedWorkOrderId = body?.work_order_id as string | undefined;
+      return requestedWorkOrderId && requestedWorkOrderId !== workOrderId
+        ? reply(route, 200, { ...jobParts, id: requestedWorkOrderId, number: 84, version: 9 })
+        : reply(route, 200, jobParts);
+    }
     if (name === 'receive_stock') {
       requests.push(body ?? {});
       if (requests.length === 1) return reply(route, 503, { message: 'DEPENDENCY_UNAVAILABLE' });
@@ -91,13 +101,62 @@ async function prepareInventoryPage(page: Page, role = 'owner') {
     }
     if (name === 'reserve_parts') {
       requests.push(body ?? {});
-      jobParts = { ...jobParts, version: jobParts.version + 1, parts: [{ ...jobParts.parts[0], reserved: '2.500', shortage: '1.500' }], reservations: [{ id: '79000000-0000-4000-8000-000000000006', part_id: partId, location_id: locationId, unit: 'each', reserved: '2.500', issued: '0.000', returned: '0.000', released: '0.000' }] };
+      reserveAttempts += 1;
+      if (reserveAttempts === 1) {
+        const ctx = body?.ctx as Record<string, unknown>;
+        if (!durableRequestIds.has(String(ctx.request_id))) { durableRequestIds.add(String(ctx.request_id)); durableJobCommands += 1; }
+        jobParts = { ...jobParts, version: jobParts.version + 1, parts: [{ ...jobParts.parts[0], reserved: '3.500', shortage: '0.500' }], reservations: [{ ...jobParts.reservations[0]!, reserved: '3.500' }] };
+        if (options.loseFirstReserveReply) return reply(route, 503, { message: 'DEPENDENCY_UNAVAILABLE' });
+      }
       const ctx = body?.ctx as Record<string, unknown>;
+      return reply(route, 200, { data: jobParts, version: jobParts.version, request_id: ctx.request_id });
+    }
+    if (name === 'issue_reserved_stock') {
+      requests.push(body ?? {});
+      const ctx = body?.ctx as Record<string, unknown>;
+      if (!durableRequestIds.has(String(ctx.request_id))) {
+        durableRequestIds.add(String(ctx.request_id));
+        durableJobCommands += 1;
+        const quantity = (body?.fields as { lines?: { quantity?: string }[] } | undefined)?.lines?.[0]?.quantity ?? '0.000';
+        jobParts = { ...jobParts, version: jobParts.version + 1,
+          parts: [{ ...jobParts.parts[0]!, issued: quantity }],
+          reservations: [{ ...jobParts.reservations[0]!, issued: quantity }] };
+        if (options.loseFirstIssueReply) return reply(route, 503, { message: 'DEPENDENCY_UNAVAILABLE' });
+      }
       return reply(route, 200, { data: jobParts, version: jobParts.version, request_id: ctx.request_id });
     }
     return route.fallback();
   });
-  return { requests };
+  return { requests, getJobPartsReads: () => jobPartsReads, getDurableJobCommands: () => durableJobCommands };
+}
+
+async function preparePagedInventoryCatalog(page: Page) {
+  await prepareWorkspacePage(page, [fixtureOrganizationIds.alpha], 'owner');
+  const rows = Array.from({ length: 26 }, (_, index) => ({
+    id: `79000000-0000-4000-8000-${String(index + 100).padStart(12, '0')}`,
+    organization_id: fixtureOrganizationIds.alpha,
+    code: `P-${String(index + 1).padStart(2, '0')}`,
+    name: index === 25 ? 'Later active part' : `Archived part ${index + 1}`,
+    unit: 'each', reorder_threshold: null, archived_at: index === 25 ? null : '2026-10-20T00:00:00Z',
+    created_by: fixtureUserId, created_at: '2026-10-21T00:00:00Z', version: 1,
+  }));
+  let partPages = 0;
+  await page.route('http://127.0.0.1:54321/rest/v1/rpc/**', async (route) => {
+    if (route.request().method() === 'OPTIONS') return route.fallback();
+    const request = route.request();
+    const name = new URL(request.url()).pathname.split('/').at(-1);
+    const body = request.postDataJSON() as Record<string, any> | null;
+    if (name === 'list_inventory_parts') {
+      partPages += 1;
+      const next = body?.cursor ? null : rows[24]!.id;
+      return reply(route, 200, { items: body?.cursor ? rows.slice(25) : rows.slice(0, 25), next_cursor: next });
+    }
+    if (name === 'list_stock_locations') return reply(route, 200, { items: [{ id: locationId, organization_id: fixtureOrganizationIds.alpha, code: 'WH-1', name: 'Main warehouse', created_by: fixtureUserId, created_at: '2026-10-21T00:00:00Z', version: 1 }], next_cursor: null });
+    if (name === 'list_inventory_balances') return reply(route, 200, { items: [], next_cursor: null });
+    if (name === 'list_inventory_movements') return reply(route, 200, { items: [], next_cursor: null });
+    return route.fallback();
+  });
+  return { rows, activePartId: rows[25]!.id, getPartPages: () => partPages };
 }
 
 async function prepareWorkOrderPartsPage(page: Page, role: 'technician' | 'manager' = 'technician', status: 'blocked' | 'in_progress' = 'in_progress', shortage = '0.000') {
@@ -187,6 +246,106 @@ test('uncertain receipt retry preserves exact fields and the original request id
   expect(fixture.requests).toHaveLength(2);
   expect(fixture.requests[0]).toEqual(fixture.requests[1]);
   expect(fixture.requests[0]).toMatchObject({ fields: { quantity: '0.500', source: 'PO-TEST-42' } });
+});
+
+test('uncertain job-stock retry replays the frozen context after refetch and linked-job switch', async ({ page }) => {
+  const fixture = await prepareInventoryPage(page, 'owner', { loseFirstIssueReply: true });
+  const otherWorkOrderId = '79000000-0000-4000-8000-000000000008';
+  await page.goto(`/inventory?workOrder=${workOrderId}`);
+  const reservation = page.locator('.inventory-reservation').filter({ has: page.getByRole('button', { name: 'Issue stock', exact: true }) });
+  await reservation.getByLabel('Quantity', { exact: true }).fill('1.000');
+  await reservation.getByRole('button', { name: 'Issue stock', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Confirmation is uncertain');
+  expect(fixture.requests).toHaveLength(1);
+
+  const refreshLinkedStock = page.getByRole('button', { name: 'Refresh linked stock', exact: true });
+  await expect(refreshLinkedStock).toBeVisible();
+  await refreshLinkedStock.click();
+  await expect.poll(() => fixture.getJobPartsReads()).toBeGreaterThan(1);
+
+  await page.evaluate((nextWorkOrderId) => {
+    window.history.pushState({}, '', `/inventory?workOrder=${encodeURIComponent(nextWorkOrderId)}`);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }, otherWorkOrderId);
+  await expect(page.getByRole('heading', { name: 'WO-0084 parts' })).toBeVisible();
+  const pending = page.getByRole('region', { name: 'Pending inventory command' });
+  await expect(pending).toContainText('WO-0042');
+  await pending.getByRole('button', { name: 'Retry exact issue for WO-0042', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('Stock issued to the work order.');
+  await expect.poll(() => fixture.getDurableJobCommands()).toBe(1);
+  expect(fixture.requests).toHaveLength(2);
+  expect(JSON.stringify(fixture.requests[0])).toBe(JSON.stringify(fixture.requests[1]));
+  expect(fixture.requests[0]).toMatchObject({
+    ctx: { expected_version: 4 },
+    fields: { work_order_id: workOrderId, lines: [{ reservation_id: '79000000-0000-4000-8000-000000000006', quantity: '1.000', unit: 'each' }] },
+  });
+});
+
+test('inventory catalog paging remains available when the loaded page contains only archived parts', async ({ page }) => {
+  const fixture = await preparePagedInventoryCatalog(page);
+  await page.goto('/inventory');
+  await expect(page.getByText('No matching parts are in the loaded catalog.', { exact: false })).toBeVisible();
+  const loadMore = page.getByRole('button', { name: 'Load more parts', exact: true });
+  await expect(loadMore).toBeVisible();
+  await loadMore.click();
+  await expect(page.getByRole('row', { name: /Later active part/ })).toBeVisible();
+  expect(fixture.getPartPages()).toBe(2);
+});
+
+test('inventory catalog paging remains available when search matches only the next page', async ({ page }) => {
+  const fixture = await preparePagedInventoryCatalog(page);
+  await page.goto('/inventory');
+  await page.getByLabel('Search parts', { exact: true }).fill('Later active');
+  await expect(page.getByText(/No matching parts are in the loaded catalog/)).toBeVisible();
+  const loadMore = page.getByRole('button', { name: 'Load more parts', exact: true });
+  await expect(loadMore).toBeVisible();
+  await loadMore.click();
+  await expect(page.getByRole('row', { name: /Later active part/ })).toBeVisible();
+  await page.getByRole('button', { name: 'Receive stock', exact: true }).click();
+  const receiveForm = page.locator('form.inventory-form');
+  await expect(receiveForm.getByLabel('Part', { exact: true })).toHaveValue(fixture.activePartId);
+  await receiveForm.getByLabel('Part', { exact: true }).selectOption(fixture.activePartId);
+  await expect(page.getByLabel('Search parts', { exact: true })).toHaveValue('Later active');
+  expect(fixture.getPartPages()).toBe(2);
+});
+
+test('inventory officer follows a blocked-parts notification to minimal linked fulfillment', async ({ page }) => {
+  const fixture = await prepareInventoryPage(page, 'inventory');
+  const notificationId = '79000000-0000-4000-8000-000000000009';
+  const eventId = '79000000-0000-4000-8000-000000000010';
+  let workOrderReads = 0;
+  await page.route('http://127.0.0.1:54321/rest/v1/notifications**', async (route) => reply(route, 200, [{
+    id: notificationId, organization_id: fixtureOrganizationIds.alpha, recipient_user_id: fixtureUserId,
+    event_id: eventId, category: 'blocked_parts', source_id: workOrderId, created_at: '2026-10-21T01:00:00Z', read_at: null,
+  }]));
+  await page.route('http://127.0.0.1:54321/rest/v1/work_orders**', async (route) => {
+    workOrderReads += 1;
+    return reply(route, 200, []);
+  });
+  const privateWorkOrderReads: string[] = [];
+  await page.route('http://127.0.0.1:54321/rest/v1/**', async (route) => {
+    const resource = new URL(route.request().url()).pathname.split('/').at(-1);
+    if (['work_orders', 'work_order_events', 'work_order_assignments', 'attachments', 'work_order_reviews'].includes(resource ?? '')) privateWorkOrderReads.push(resource!);
+    await route.fallback();
+  });
+  await page.goto('/notifications');
+  await page.getByRole('button', { name: /blocked parts/i }).click();
+  const fulfillmentLink = page.getByRole('link', { name: 'Review linked inventory fulfillment', exact: true });
+  await expect(fulfillmentLink).toBeVisible();
+  await fulfillmentLink.click();
+  await expect(page).toHaveURL(`/inventory?workOrder=${workOrderId}`);
+  await expect(page.getByRole('heading', { name: 'WO-0042 parts' })).toBeVisible();
+  await expect(page.getByRole('table', { name: 'Requested, reserved, consumed, returned, and short quantities' })).toContainText('1.500');
+  await expect(page.getByRole('button', { name: 'Reserve parts', exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Open authorized work order' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /^(Complete work order|Release work order|Release asset)$/ })).toHaveCount(0);
+  const reservationForm = page.locator('.inventory-job-form');
+  await reservationForm.getByLabel('Quantity', { exact: true }).fill('1.000');
+  await reservationForm.getByRole('button', { name: 'Reserve parts', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('Parts reserved. Work order status was not changed.');
+  expect(fixture.requests[0]).toMatchObject({ fields: { work_order_id: workOrderId } });
+  expect(workOrderReads).toBe(0);
+  expect(privateWorkOrderReads).toEqual([]);
 });
 
 test('manager receives minimal job-parts context and may reserve without posting stock', async ({ page }) => {
@@ -290,6 +449,12 @@ test('loopback inventory shortage journey replays the exact request and resumes 
   const managerPage = await browser.newPage();
   const inventoryPage = await browser.newPage();
   await Promise.all([seedServicePage(technicianPage, technician), seedServicePage(managerPage, manager), seedServicePage(inventoryPage, inventory)]);
+  const protectedInventoryReads: string[] = [];
+  await inventoryPage.route(`${config.url}/rest/v1/**`, async (route) => {
+    const resource = new URL(route.request().url()).pathname.split('/').at(-1);
+    if (['work_orders', 'work_order_events', 'work_order_assignments', 'attachments', 'work_order_reviews'].includes(resource ?? '')) protectedInventoryReads.push(resource!);
+    await route.continue();
+  });
 
   const requestPayloads: unknown[] = [];
   await technicianPage.route(`${config.url}/rest/v1/rpc/request_parts`, async (route) => {
@@ -309,7 +474,14 @@ test('loopback inventory shortage journey replays the exact request and resumes 
   await technicianDetail.getByRole('button', { name: 'Request parts', exact: true }).click();
   await expect(technicianPage.getByText(/The outcome of a previous action is uncertain/)).toBeVisible();
   await technicianPage.getByRole('button', { name: 'Retry pending action', exact: true }).click();
-  await expect(technicianDetail.getByText('2.000', { exact: true })).toBeVisible();
+  const partsTable = technicianDetail.getByRole('table', { name: 'Exact work-order part quantities' });
+  const partsRow = partsTable.getByRole('row').filter({ hasText: 'P38-FLTR' });
+  const requestedColumn = await partsTable.getByRole('row').first().getByRole('columnheader').evaluateAll((headers) => headers.findIndex((header) => header.textContent?.trim() === 'Requested'));
+  const shortageColumn = await partsTable.getByRole('row').first().getByRole('columnheader').evaluateAll((headers) => headers.findIndex((header) => header.textContent?.trim() === 'Short'));
+  expect(requestedColumn).toBeGreaterThan(0);
+  expect(shortageColumn).toBeGreaterThan(0);
+  await expect(partsRow.locator('td').nth(requestedColumn - 1)).toHaveText('2.000');
+  await expect(partsRow.locator('td').nth(shortageColumn - 1)).toHaveText('2.000');
   expect(requestPayloads).toHaveLength(2);
   expect(requestPayloads[0]).toEqual(requestPayloads[1]);
   expect(requestPayloads[0]).toMatchObject({ fields: { work_order_id: workOrderId, lines: [{ part_id: part.id, quantity: '2.000', unit: 'each' }] } });
@@ -318,39 +490,52 @@ test('loopback inventory shortage journey replays the exact request and resumes 
   const technicianStatus = technicianDetail.locator(':scope > .record-header .state-badge');
   await expect(technicianStatus).toHaveText('blocked');
 
-  await inventoryPage.goto(`/inventory?workOrder=${workOrderId}`);
+  await inventoryPage.goto('/notifications');
+  await inventoryPage.getByRole('button', { name: /blocked parts/i }).click();
+  await inventoryPage.getByRole('link', { name: 'Review linked inventory fulfillment', exact: true }).click();
+  await expect(inventoryPage).toHaveURL(new RegExp(`/inventory\\?workOrder=${workOrderId}$`));
+  await expect(inventoryPage.getByRole('heading', { name: 'WO-0038 parts', exact: true })).toBeVisible();
+  await expect(inventoryPage.getByRole('link', { name: 'Open authorized work order' })).toHaveCount(0);
+  await expect(inventoryPage.getByRole('button', { name: 'Complete work order' })).toHaveCount(0);
+  expect(protectedInventoryReads).toEqual([]);
   await inventoryPage.getByRole('button', { name: 'Receive stock', exact: true }).click();
-  await inventoryPage.getByLabel('Part', { exact: true }).selectOption(part.id);
-  await inventoryPage.getByLabel('Location', { exact: true }).selectOption(location.id);
-  await inventoryPage.getByLabel('Quantity', { exact: true }).fill('2.500');
-  await inventoryPage.getByLabel('Source', { exact: true }).fill('Synthetic browser receipt');
-  await inventoryPage.getByRole('button', { name: 'Record receipt', exact: true }).click();
+  const receiptForm = inventoryPage.locator('form.inventory-form');
+  await receiptForm.getByLabel('Part', { exact: true }).selectOption(part.id);
+  await receiptForm.getByLabel('Location', { exact: true }).selectOption(location.id);
+  await receiptForm.getByLabel('Quantity', { exact: true }).fill('2.500');
+  await receiptForm.getByLabel('Source', { exact: true }).fill('Synthetic browser receipt');
+  await receiptForm.getByRole('button', { name: 'Record receipt', exact: true }).click();
   await expect(inventoryPage.getByText('Stock receipt recorded.', { exact: true })).toBeVisible();
   await expect(inventoryPage.getByText('Status: blocked', { exact: true })).toBeVisible();
 
   await managerPage.goto(`/inventory?workOrder=${workOrderId}`);
-  await managerPage.getByLabel('Quantity', { exact: true }).fill('2.000');
-  await managerPage.getByRole('button', { name: 'Reserve parts', exact: true }).click();
+  const managerReservationForm = managerPage.locator('form.inventory-job-form');
+  await managerReservationForm.getByLabel('Quantity', { exact: true }).fill('2.000');
+  await managerReservationForm.getByRole('button', { name: 'Reserve parts', exact: true }).click();
   await expect(managerPage.getByText('Parts reserved. Work order status was not changed.', { exact: true })).toBeVisible();
   await expect(managerPage.getByText('Status: blocked', { exact: true })).toBeVisible();
 
   await inventoryPage.goto(`/inventory?workOrder=${workOrderId}`);
-  await inventoryPage.getByLabel('Quantity', { exact: true }).fill('2.000');
-  await inventoryPage.getByRole('button', { name: 'Issue stock', exact: true }).click();
+  const issueForm = inventoryPage.locator('.inventory-reservation').filter({ has: inventoryPage.getByRole('button', { name: 'Issue stock', exact: true }) });
+  await issueForm.getByLabel('Quantity', { exact: true }).fill('2.000');
+  await issueForm.getByRole('button', { name: 'Issue stock', exact: true }).click();
   await expect(inventoryPage.getByText('Stock issued to the work order.', { exact: true })).toBeVisible();
   await expect(inventoryPage.getByText('Status: blocked', { exact: true })).toBeVisible();
 
-  await inventoryPage.getByLabel('Quantity', { exact: true }).fill('0.500');
-  await inventoryPage.getByRole('button', { name: 'Return stock', exact: true }).click();
+  const returnForm = inventoryPage.locator('.inventory-reservation').filter({ has: inventoryPage.getByRole('button', { name: 'Return stock', exact: true }) });
+  await returnForm.getByLabel('Quantity', { exact: true }).fill('0.500');
+  await returnForm.getByRole('button', { name: 'Return stock', exact: true }).click();
   await expect(inventoryPage.getByText('Returned stock recorded.', { exact: true })).toBeVisible();
   await expect(inventoryPage.getByText('Status: blocked', { exact: true })).toBeVisible();
   await managerPage.goto(`/inventory?workOrder=${workOrderId}`);
-  await managerPage.getByLabel('Quantity', { exact: true }).fill('0.500');
-  await managerPage.getByRole('button', { name: 'Reserve parts', exact: true }).click();
+  const secondManagerReservationForm = managerPage.locator('form.inventory-job-form');
+  await secondManagerReservationForm.getByLabel('Quantity', { exact: true }).fill('0.500');
+  await secondManagerReservationForm.getByRole('button', { name: 'Reserve parts', exact: true }).click();
   await expect(managerPage.getByText('Parts reserved. Work order status was not changed.', { exact: true })).toBeVisible();
   await inventoryPage.goto(`/inventory?workOrder=${workOrderId}`);
-  await inventoryPage.getByLabel('Quantity', { exact: true }).fill('0.500');
-  await inventoryPage.getByRole('button', { name: 'Issue stock', exact: true }).click();
+  const secondIssueForm = inventoryPage.locator('.inventory-reservation').filter({ has: inventoryPage.getByRole('button', { name: 'Issue stock', exact: true }) });
+  await secondIssueForm.getByLabel('Quantity', { exact: true }).fill('0.500');
+  await secondIssueForm.getByRole('button', { name: 'Issue stock', exact: true }).click();
   await expect(inventoryPage.getByText('Stock issued to the work order.', { exact: true })).toBeVisible();
   await expect(inventoryPage.getByText('Status: blocked', { exact: true })).toBeVisible();
 
@@ -363,5 +548,6 @@ test('loopback inventory shortage journey replays the exact request and resumes 
   await expect(resumeButton).toBeEnabled();
   await resumeButton.click();
   await expect(managerStatus).toHaveText('in progress');
+  expect(protectedInventoryReads).toEqual([]);
   await Promise.all([technicianPage.close(), managerPage.close(), inventoryPage.close()]);
 });

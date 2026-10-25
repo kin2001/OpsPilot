@@ -12,7 +12,10 @@ import '../styles/inventory.css';
 const pageSize = 25;
 const decimalPattern = '(?:0|[1-9][0-9]{0,10})(?:\\.[0-9]{1,3})?';
 type InventoryForm = 'part' | 'location' | 'receipt' | 'adjustment' | null;
-type Intent = { key: string; requestId: string; fields: unknown };
+type CommandKey = 'part' | 'location' | 'receipt' | 'adjustment' | 'reserve' | 'release' | 'issue' | 'return';
+type IntentContext = { organizationId: string; workOrderId?: string; workOrderNumber?: number; expectedVersion?: number };
+type ExecuteCommand = (fields: unknown, requestId: string) => Promise<unknown>;
+type Intent = { key: CommandKey; requestId: string; fields: unknown; execute: ExecuteCommand; recorded: string; context: IntentContext };
 type Part = Awaited<ReturnType<typeof listInventoryParts>>['items'][number];
 type StockLocation = Awaited<ReturnType<typeof listStockLocations>>['items'][number];
 type Balance = Awaited<ReturnType<typeof listInventoryBalances>>['items'][number];
@@ -84,6 +87,8 @@ export function InventoryPage() {
   const jobPartsQuery = useQuery({
     queryKey: ['work-order-parts', user.id, organization.id, workOrderId],
     enabled: Boolean(workOrderId),
+    staleTime: 0,
+    refetchOnWindowFocus: true,
     queryFn: ({ signal }) => getJobParts(client, organization.id, workOrderId, signal),
   });
 
@@ -104,31 +109,41 @@ export function InventoryPage() {
   }).length;
   const outOfStockCount = balances.filter((balance) => decimalMilli(balance.available) === 0n).length;
 
-  const invalidate = async () => Promise.all([
-    queryClient.invalidateQueries({ queryKey: ['inventory-parts', user.id, organization.id] }),
-    queryClient.invalidateQueries({ queryKey: ['inventory-locations', user.id, organization.id] }),
-    queryClient.invalidateQueries({ queryKey: ['inventory-balances', user.id, organization.id] }),
-    queryClient.invalidateQueries({ queryKey: ['inventory-movements', user.id, organization.id] }),
-    queryClient.invalidateQueries({ queryKey: ['work-order-parts', user.id, organization.id, workOrderId] }),
-  ]);
+  const invalidate = async (command: Intent) => {
+    const organizationIds = [...new Set([command.context.organizationId, organization.id])];
+    const tasks = organizationIds.flatMap((organizationId) => [
+      queryClient.invalidateQueries({ queryKey: ['inventory-parts', user.id, organizationId] }),
+      queryClient.invalidateQueries({ queryKey: ['inventory-locations', user.id, organizationId] }),
+      queryClient.invalidateQueries({ queryKey: ['inventory-balances', user.id, organizationId] }),
+      queryClient.invalidateQueries({ queryKey: ['inventory-movements', user.id, organizationId] }),
+    ]);
+    if (command.context.workOrderId) tasks.push(queryClient.invalidateQueries({ queryKey: ['work-order-parts', user.id, command.context.organizationId, command.context.workOrderId] }));
+    if (workOrderId && (command.context.workOrderId !== workOrderId || command.context.organizationId !== organization.id)) tasks.push(queryClient.invalidateQueries({ queryKey: ['work-order-parts', user.id, organization.id, workOrderId] }));
+    return Promise.all(tasks);
+  };
 
-  const run = async (key: string, fields: unknown, execute: (fields: unknown, requestId: string) => Promise<unknown>, recorded: string) => {
+  const run = async (key: CommandKey, fields: unknown, execute: ExecuteCommand, recorded: string, context: Omit<IntentContext, 'organizationId'> = {}) => {
     const existing = intent?.key === key ? intent : null;
     if (intent && !existing) return;
-    const current = existing ?? { key, requestId: crypto.randomUUID(), fields };
+    const current: Intent = existing ?? { key, requestId: crypto.randomUUID(), fields, execute, recorded, context: { organizationId: organization.id, ...context } };
     if (!existing) setIntent(current);
     setBusyKey(key); setError(''); setSuccess('');
     try {
-      await execute(current.fields, current.requestId);
-      setIntent(null); setSuccess(recorded); setForm(null);
-      await invalidate();
+      await current.execute(current.fields, current.requestId);
+      setIntent(null); setSuccess(current.recorded); setForm(null);
+      await invalidate(current);
     } catch (cause) {
       const code = domainError(cause).code;
       setError(`${domainError(cause).message}${ambiguous(code) ? ' Confirmation is uncertain. Retry the exact command; its request identity and values are preserved.' : code === 'CONFLICT' ? ' Stock changed or needs reconciliation. Refresh the inventory and review before making a new attempt.' : ''}`);
       if (!ambiguous(code)) setIntent(null);
-      if (code === 'CONFLICT') await invalidate();
+      if (code === 'CONFLICT') await invalidate(current);
     } finally { setBusyKey(''); }
   };
+  const retryPendingIntent = () => {
+    if (!intent) return;
+    void run(intent.key, intent.fields, intent.execute, intent.recorded, intent.context);
+  };
+  const retryCurrentJobCommand = (key: CommandKey) => Boolean(intent && intent.key === key && intent.context.organizationId === organization.id && intent.context.workOrderId === workOrderId);
 
   const submitPart = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -171,14 +186,16 @@ export function InventoryPage() {
     event.preventDefault();
     if (!jobParts || !requestablePart) return;
     const fields: ReservePartsFields = { work_order_id: workOrderId, lines: [{ part_id: requestablePart.part_id, location_id: selectedLocation, quantity: jobDraft.quantity, unit: requestablePart.unit }] };
-    void run('reserve', fields, (input, requestId) => reserveParts(client, organization.id, input as ReservePartsFields, requestId, jobParts.version), 'Parts reserved. Work order status was not changed.');
+    const expectedVersion = jobParts.version;
+    void run('reserve', fields, (input, requestId) => reserveParts(client, organization.id, input as ReservePartsFields, requestId, expectedVersion), 'Parts reserved. Work order status was not changed.', { workOrderId, workOrderNumber: jobParts.number, expectedVersion });
   };
   const runReservationAction = (action: 'release' | 'issue' | 'return') => {
     if (!jobParts || !selectedReservation) return;
     const fields: ReservationPartsFields = { work_order_id: workOrderId, lines: [{ reservation_id: selectedReservation.id, quantity: jobQuantity, unit: selectedReservation.unit }] };
     const execute = action === 'release' ? releaseReservation : action === 'issue' ? issueReservedStock : returnStock;
     const recorded = action === 'release' ? 'Reservation released.' : action === 'issue' ? 'Stock issued to the work order.' : 'Returned stock recorded.';
-    void run(action, fields, (input, requestId) => execute(client, organization.id, input as ReservationPartsFields, requestId, jobParts.version), recorded);
+    const expectedVersion = jobParts.version;
+    void run(action, fields, (input, requestId) => execute(client, organization.id, input as ReservationPartsFields, requestId, expectedVersion), recorded, { workOrderId, workOrderNumber: jobParts.number, expectedVersion });
   };
   const clickReservationAction = (event: MouseEvent<HTMLButtonElement>, action: 'release' | 'return') => {
     if (event.currentTarget.form?.reportValidity()) runReservationAction(action);
@@ -187,6 +204,8 @@ export function InventoryPage() {
     event.preventDefault();
     runReservationAction('issue');
   };
+  const pendingJobCommand = intent?.context.workOrderId && (intent.context.workOrderId !== workOrderId || intent.context.organizationId !== organization.id) ? intent : null;
+  const pendingCommandNames: Record<CommandKey, string> = { part: 'part save', location: 'location save', receipt: 'receipt', adjustment: 'adjustment', reserve: 'reservation', release: 'release', issue: 'issue', return: 'return' };
 
   const toggleForm = (next: InventoryForm) => { if (!intent && !busyKey) { setForm(form === next ? null : next); setError(''); setSuccess(''); } };
   const actions = canWriteStock ? <div className="inventory-actions">
@@ -199,6 +218,10 @@ export function InventoryPage() {
   return <div className="inventory-page">
     <PageHeader eyebrow="Inventory" title="Spare parts inventory" description="Track exact stock by location and review every recorded movement." action={actions} />
     {error && <ErrorNotice>{error}</ErrorNotice>}{success && <SuccessNotice>{success}</SuccessNotice>}
+    {pendingJobCommand && <section className="panel inventory-pending-command" role="region" aria-label="Pending inventory command" aria-live="polite">
+      <div><p className="page-kicker">Uncertain linked stock action</p><h2>WO-{String(pendingJobCommand.context.workOrderNumber).padStart(4, '0')} command is awaiting confirmation</h2><p>Retry resends the original work order, version, quantity and request identity.</p></div>
+      <AppButton disabled={Boolean(busyKey) || pendingJobCommand.context.organizationId !== organization.id} onClick={retryPendingIntent}>Retry exact {pendingCommandNames[pendingJobCommand.key]} for WO-{String(pendingJobCommand.context.workOrderNumber).padStart(4, '0')}</AppButton>
+    </section>}
     <section className="inventory-summary" aria-label="Inventory summary">
       <div><strong>{parts.length}</strong><span>Parts loaded</span></div>
       <div><strong>{lowStockCount}</strong><span>Low stock locations</span></div>
@@ -249,7 +272,7 @@ export function InventoryPage() {
 
     {workOrderId && <section className="panel inventory-job" aria-labelledby="inventory-job-title">
       {jobPartsQuery.isPending ? <LoadingNotice label="Loading linked work order parts…" /> : jobPartsQuery.isError ? <><h2 id="inventory-job-title">Linked work order parts</h2><ErrorNotice>Work order parts could not be confirmed in this workspace. Check the link and current access, then retry.</ErrorNotice><AppButton variant="secondary" onClick={() => void jobPartsQuery.refetch()}>Retry job parts</AppButton></> : jobParts && <>
-        <div className="inventory-panel-head"><div><p className="page-kicker">Linked work order</p><h2 id="inventory-job-title">WO-{String(jobParts.number).padStart(4, '0')} parts</h2><p>Status: {jobParts.status.replaceAll('_', ' ')}</p></div>{['owner', 'manager', 'supervisor'].includes(role) && <Link className="button button--secondary" to={`/work-orders?workOrder=${encodeURIComponent(workOrderId)}`}>Open authorized work order</Link>}</div>
+        <div className="inventory-panel-head"><div><p className="page-kicker">Linked work order</p><h2 id="inventory-job-title">WO-{String(jobParts.number).padStart(4, '0')} parts</h2><p>Status: {jobParts.status.replaceAll('_', ' ')}</p></div><div className="button-row"><AppButton variant="secondary" disabled={Boolean(busyKey) || jobPartsQuery.isFetching} onClick={() => void jobPartsQuery.refetch()}>{jobPartsQuery.isFetching ? 'Refreshing…' : 'Refresh linked stock'}</AppButton>{['owner', 'manager', 'supervisor'].includes(role) && <Link className="button button--secondary" to={`/work-orders?workOrder=${encodeURIComponent(workOrderId)}`}>Open authorized work order</Link>}</div></div>
         {jobParts.reconciliation_state === 'discrepancy' && <ErrorNotice>Stock records disagree for this work order. Reconcile the movement history before changing reservations, issuing or returning stock, or resuming work.</ErrorNotice>}
         {jobParts.parts.some((part) => decimalMilli(part.shortage) > 0n) && <p className="info-callout">A parts shortage remains. Receiving or issuing stock does not resume this work order; an authorized coordinator must resume it through Work orders after the shortage and reconciliation are clear.</p>}
         {jobParts.parts.length ? <div className="inventory-table-wrap"><table className="inventory-table"><caption>Requested, reserved, consumed, returned, and short quantities</caption><thead><tr><th scope="col">Part ID</th><th scope="col">Unit</th><th scope="col">Requested</th><th scope="col">Short</th><th scope="col">Reserved</th><th scope="col">Consumed</th><th scope="col">Returned</th></tr></thead><tbody>{jobParts.parts.map((part) => <tr key={part.part_id}><th scope="row" data-label="Part ID"><span className="monospace">{part.part_id}</span></th><td data-label="Unit">{part.unit}</td><td data-label="Requested">{part.requested}</td><td data-label="Short">{part.shortage}</td><td data-label="Reserved">{part.reserved}</td><td data-label="Consumed">{part.issued}</td><td data-label="Returned">{part.returned}</td></tr>)}</tbody></table></div> : <p className="empty-state">No parts have been requested for this work order.</p>}
@@ -260,15 +283,15 @@ export function InventoryPage() {
             <Field id="reserve-quantity" label="Quantity" required inputMode="decimal" pattern={decimalPattern} value={jobDraft.quantity} onChange={(event) => setJobDraft((current) => ({ ...current, quantity: event.target.value }))} hint={`Unit: ${requestablePart?.unit ?? 'select a part'}`} />
           </fieldset>
           {locationsQuery.isError && <ErrorNotice>Stock locations could not be confirmed. Retry before reserving.</ErrorNotice>}
-          <div className="button-row"><AppButton type="submit" disabled={Boolean(busyKey) || Boolean(intent && intent.key !== 'reserve') || jobParts.reconciliation_state === 'discrepancy' || locationsQuery.isPending || locationsQuery.isError || !locations.length}>{intent?.key === 'reserve' ? 'Retry exact reservation' : 'Reserve parts'}</AppButton></div>
+          <div className="button-row"><AppButton type="submit" disabled={Boolean(busyKey) || Boolean(intent && !retryCurrentJobCommand('reserve')) || jobParts.reconciliation_state === 'discrepancy' || locationsQuery.isPending || locationsQuery.isError || !locations.length}>{retryCurrentJobCommand('reserve') ? 'Retry exact reservation' : 'Reserve parts'}</AppButton></div>
         </form>}
         {jobParts.reservations.length > 0 && <div className="inventory-reservations"><h3>Reservation history</h3>{jobParts.reservations.map((reservation) => <form className="inventory-reservation" key={reservation.id} onSubmit={submitReservationAction}>
           <p><strong>{partById.get(reservation.part_id)?.name ?? reservation.part_id}</strong> · {locationById.get(reservation.location_id)?.name ?? 'Location'} · {reservation.unit}</p>
           <dl><div><dt>Reserved</dt><dd>{reservation.reserved}</dd></div><div><dt>Consumed</dt><dd>{reservation.issued}</dd></div><div><dt>Returned</dt><dd>{reservation.returned}</dd></div><div><dt>Released</dt><dd>{reservation.released}</dd></div></dl>
           <Field id={`job-quantity-${reservation.id}`} label="Quantity" required inputMode="decimal" pattern={decimalPattern} disabled={Boolean(busyKey) || Boolean(intent)} value={jobDraft.reservation_id === reservation.id ? jobQuantity : ''} onChange={(event) => { setJobDraft((current) => ({ ...current, reservation_id: reservation.id })); setJobQuantity(event.target.value); }} />
           <div className="button-row">
-            {canReserve && <AppButton type="button" variant="secondary" disabled={Boolean(busyKey) || Boolean(intent && intent.key !== 'release') || jobParts.reconciliation_state === 'discrepancy'} onClick={(event) => clickReservationAction(event, 'release')}>{intent?.key === 'release' ? 'Retry exact release' : 'Release reserved'}</AppButton>}
-            {canHandleJobStock && <><AppButton type="submit" disabled={Boolean(busyKey) || Boolean(intent && intent.key !== 'issue') || jobParts.reconciliation_state === 'discrepancy'}>{intent?.key === 'issue' ? 'Retry exact issue' : 'Issue stock'}</AppButton><AppButton type="button" variant="secondary" disabled={Boolean(busyKey) || Boolean(intent && intent.key !== 'return') || jobParts.reconciliation_state === 'discrepancy'} onClick={(event) => clickReservationAction(event, 'return')}>{intent?.key === 'return' ? 'Retry exact return' : 'Return stock'}</AppButton></>}
+            {canReserve && <AppButton type="button" variant="secondary" disabled={Boolean(busyKey) || Boolean(intent && !retryCurrentJobCommand('release')) || jobParts.reconciliation_state === 'discrepancy'} onClick={(event) => clickReservationAction(event, 'release')}>{retryCurrentJobCommand('release') ? 'Retry exact release' : 'Release reserved'}</AppButton>}
+            {canHandleJobStock && <><AppButton type="submit" disabled={Boolean(busyKey) || Boolean(intent && !retryCurrentJobCommand('issue')) || jobParts.reconciliation_state === 'discrepancy'}>{retryCurrentJobCommand('issue') ? 'Retry exact issue' : 'Issue stock'}</AppButton><AppButton type="button" variant="secondary" disabled={Boolean(busyKey) || Boolean(intent && !retryCurrentJobCommand('return')) || jobParts.reconciliation_state === 'discrepancy'} onClick={(event) => clickReservationAction(event, 'return')}>{retryCurrentJobCommand('return') ? 'Retry exact return' : 'Return stock'}</AppButton></>}
           </div>
         </form>)}</div>}
       </>}
@@ -284,8 +307,8 @@ export function InventoryPage() {
             return <tr key={`${part.id}:${balance?.location_id ?? 'none'}`}><th scope="row" data-label="Part">{part.name}{part.archived_at && <span className="inventory-archived">Archived</span>}</th><td data-label="SKU">{part.code}</td><td data-label="Location">{balance ? locationById.get(balance.location_id)?.name ?? 'Location unavailable' : 'No balance'}</td><td data-label="On hand">{balance?.on_hand ?? '—'} {balance ? part.unit : ''}</td><td data-label="Reserved">{balance?.reserved ?? '—'} {balance ? part.unit : ''}</td><td data-label="Available">{balance?.available ?? '—'} {balance ? part.unit : ''}</td><td data-label="Reorder at">{part.reorder_threshold ?? '—'} {part.reorder_threshold ? part.unit : ''}</td><td data-label="Status"><span className={`inventory-status inventory-status--${status.toLowerCase().replaceAll(' ', '-')}`}><span aria-hidden="true" />{status}</span></td></tr>;
           });
         })}</tbody></table></div>
-        {(partsQuery.hasNextPage || balancesQuery.hasNextPage) && <div className="button-row">{partsQuery.hasNextPage && <AppButton variant="secondary" disabled={partsQuery.isFetchingNextPage} onClick={() => void partsQuery.fetchNextPage()}>{partsQuery.isFetchingNextPage ? 'Loading…' : 'Load more parts'}</AppButton>}{balancesQuery.hasNextPage && <AppButton variant="secondary" disabled={balancesQuery.isFetchingNextPage} onClick={() => void balancesQuery.fetchNextPage()}>{balancesQuery.isFetchingNextPage ? 'Loading…' : 'Load more balances'}</AppButton>}</div>}
-      </> : <p className="empty-state">No matching parts are in the loaded catalog. Clear search or load more parts.</p>}
+      </> : <p className="empty-state">No matching parts are in the loaded catalog. {partsQuery.hasNextPage ? 'Load more parts or clear search.' : 'Clear search or add an active part.'}</p>}
+      {(partsQuery.hasNextPage || balancesQuery.hasNextPage) && <div className="button-row">{partsQuery.hasNextPage && <AppButton variant="secondary" disabled={partsQuery.isFetchingNextPage} onClick={() => void partsQuery.fetchNextPage()}>{partsQuery.isFetchingNextPage ? 'Loading…' : 'Load more parts'}</AppButton>}{balancesQuery.hasNextPage && <AppButton variant="secondary" disabled={balancesQuery.isFetchingNextPage} onClick={() => void balancesQuery.fetchNextPage()}>{balancesQuery.isFetchingNextPage ? 'Loading…' : 'Load more balances'}</AppButton>}</div>}
     </section>
 
     <section className="panel inventory-locations" aria-labelledby="inventory-locations-title">
