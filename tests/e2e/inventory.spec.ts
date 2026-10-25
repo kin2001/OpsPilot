@@ -30,6 +30,12 @@ function reply(route: Route, status: number, value: unknown) {
   }, body: JSON.stringify(value) });
 }
 
+async function tableColumnIndex(table: ReturnType<Page['getByRole']>, name: string) {
+  const header = table.getByRole('columnheader', { name, exact: true });
+  await expect(header).toBeVisible();
+  return header.evaluate((element) => (element as HTMLTableCellElement).cellIndex);
+}
+
 type ServicePerson = { id: string; session: Session; client: SupabaseClient<Database> };
 
 function serviceSql(statement: string) {
@@ -159,7 +165,13 @@ async function preparePagedInventoryCatalog(page: Page) {
   return { rows, activePartId: rows[25]!.id, getPartPages: () => partPages };
 }
 
-async function prepareWorkOrderPartsPage(page: Page, role: 'technician' | 'manager' = 'technician', status: 'blocked' | 'in_progress' = 'in_progress', shortage = '0.000') {
+async function prepareWorkOrderPartsPage(
+  page: Page,
+  role: 'technician' | 'manager' = 'technician',
+  status: 'blocked' | 'in_progress' = 'in_progress',
+  shortage = '0.000',
+  options: { delayJobPartsRefetch?: boolean } = {},
+) {
   await prepareWorkspacePage(page, [fixtureOrganizationIds.alpha], role);
   const order = {
     id: workOrderId, organization_id: fixtureOrganizationIds.alpha, number: 42,
@@ -171,6 +183,11 @@ async function prepareWorkOrderPartsPage(page: Page, role: 'technician' | 'manag
   };
   let jobParts: MockJobParts = { id: workOrderId, number: 42, status, version: 4, parts: shortage === '0.000' ? [] : [{ part_id: partId, unit: 'each', requested: '4.000', reserved: '0.000', issued: '0.000', returned: '0.000', shortage }], reservations: [], reconciliation_state: 'consistent' };
   const requests: Record<string, unknown>[] = [];
+  let jobPartsReads = 0;
+  let delayNextJobPartsRead = false;
+  let releaseDelayedJobParts: (() => void) | null = null;
+  let signalDelayedJobParts: (() => void) | null = null;
+  const delayedJobPartsRead = new Promise<void>((resolve) => { signalDelayedJobParts = resolve; });
   await page.route('http://127.0.0.1:54321/rest/v1/work_orders**', async (route) => {
     const url = new URL(route.request().url());
     if (url.searchParams.has('id')) return reply(route, 200, order);
@@ -182,13 +199,22 @@ async function prepareWorkOrderPartsPage(page: Page, role: 'technician' | 'manag
     const request = route.request();
     const name = new URL(request.url()).pathname.split('/').at(-1);
     const body = request.postDataJSON() as Record<string, any> | null;
-    if (name === 'get_job_parts') return reply(route, 200, jobParts);
+    if (name === 'get_job_parts') {
+      jobPartsReads += 1;
+      if (delayNextJobPartsRead) {
+        delayNextJobPartsRead = false;
+        signalDelayedJobParts?.();
+        await new Promise<void>((resolve) => { releaseDelayedJobParts = resolve; });
+      }
+      return reply(route, 200, jobParts);
+    }
     if (name === 'list_requestable_job_parts') return reply(route, 200, { items: [{ id: partId, code: 'OF-204', name: 'Oil filter', unit: 'each' }], next_cursor: null });
     if (name === 'request_parts') {
       requests.push(body ?? {});
       if (requests.length === 1) return reply(route, 503, { message: 'DEPENDENCY_UNAVAILABLE' });
       jobParts = { id: workOrderId, number: 42, status: 'blocked', version: 5, parts: [{ part_id: partId, unit: 'each', requested: '4.000', reserved: '0.000', issued: '0.000', returned: '0.000', shortage: '1.500' }], reservations: [], reconciliation_state: 'consistent' };
       order.status = 'blocked'; order.version = 5;
+      delayNextJobPartsRead = Boolean(options.delayJobPartsRefetch);
       const ctx = body?.ctx as Record<string, unknown>;
       return reply(route, 200, { data: jobParts, version: jobParts.version, request_id: ctx?.request_id });
     }
@@ -201,7 +227,11 @@ async function prepareWorkOrderPartsPage(page: Page, role: 'technician' | 'manag
     }
     return route.fallback();
   });
-  return { requests };
+  return {
+    requests,
+    waitForDelayedJobPartsRead: () => delayedJobPartsRead,
+    releaseDelayedJobPartsRead: () => releaseDelayedJobParts?.(),
+  };
 }
 
 test('workspace navigation opens inventory and shows exact low-stock balances', async ({ page }) => {
@@ -374,16 +404,28 @@ test('inventory officer sees linked quantities without reading private work-orde
 });
 
 test('assigned technician requests a catalog part with exact quantity and sees the shortage', async ({ page }) => {
-  const fixture = await prepareWorkOrderPartsPage(page);
+  const fixture = await prepareWorkOrderPartsPage(page, 'technician', 'in_progress', '0.000', { delayJobPartsRefetch: true });
   await page.goto(`/work-orders?workOrder=${workOrderId}`);
-  await expect(page.getByRole('heading', { name: 'Parts for this work order' })).toBeVisible();
-  await page.getByLabel('Requested part').selectOption(partId);
-  await page.getByLabel('Requested quantity').fill('4.000');
-  await page.getByRole('button', { name: 'Request parts', exact: true }).click();
+  const technicianDetail = page.getByRole('region', { name: 'Selected work order details' });
+  await expect(technicianDetail.getByRole('heading', { name: 'Parts for this work order' })).toBeVisible();
+  await technicianDetail.getByLabel('Requested part').selectOption(partId);
+  await technicianDetail.getByLabel('Requested quantity').fill('4.000');
+  await technicianDetail.getByRole('button', { name: 'Request parts', exact: true }).click();
   await expect(page.getByText(/The outcome of a previous action is uncertain/)).toBeVisible();
-  await expect(page.getByLabel('Requested quantity')).toHaveValue('4.000');
-  await page.getByRole('button', { name: 'Retry exact parts request', exact: true }).click();
-  await expect(page.getByText('1.500', { exact: true })).toBeVisible();
+  await expect(technicianDetail.getByLabel('Requested quantity')).toHaveValue('4.000');
+  await technicianDetail.getByRole('button', { name: 'Retry exact parts request', exact: true }).click();
+  const partsTable = technicianDetail.getByRole('table', { name: 'Exact work-order part quantities' });
+  await fixture.waitForDelayedJobPartsRead();
+  expect(await partsTable.count(), 'the pre-refetch snapshot has no parts table while its query response is held').toBe(0);
+  const immediateRequestedColumn = await partsTable.getByRole('row').first().getByRole('columnheader').evaluateAll((headers) => headers.findIndex((header) => header.textContent?.trim() === 'Requested'));
+  expect(immediateRequestedColumn, 'the former non-waiting evaluateAll lookup sees no header during the held refetch').toBe(-1);
+  fixture.releaseDelayedJobPartsRead();
+  const requestedColumn = await tableColumnIndex(partsTable, 'Requested');
+  const shortageColumn = await tableColumnIndex(partsTable, 'Short');
+  const partsRow = partsTable.getByRole('row').filter({ hasText: 'OF-204' });
+  await expect(partsRow).toBeVisible();
+  await expect(partsRow.locator('td').nth(requestedColumn - 1)).toHaveText('4.000');
+  await expect(partsRow.locator('td').nth(shortageColumn - 1)).toHaveText('1.500');
   expect(fixture.requests).toHaveLength(2);
   expect(fixture.requests[0]).toEqual(fixture.requests[1]);
   expect(fixture.requests[0]).toMatchObject({ fields: { work_order_id: workOrderId, lines: [{ part_id: partId, quantity: '4.000', unit: 'each' }] }, ctx: { expected_version: 4 } });
@@ -475,16 +517,15 @@ test('loopback inventory shortage journey replays the exact request and resumes 
   await expect(technicianPage.getByText(/The outcome of a previous action is uncertain/)).toBeVisible();
   await technicianPage.getByRole('button', { name: 'Retry pending action', exact: true }).click();
   const partsTable = technicianDetail.getByRole('table', { name: 'Exact work-order part quantities' });
+  const requestedColumn = await tableColumnIndex(partsTable, 'Requested');
+  const shortageColumn = await tableColumnIndex(partsTable, 'Short');
   const partsRow = partsTable.getByRole('row').filter({ hasText: 'P38-FLTR' });
-  const requestedColumn = await partsTable.getByRole('row').first().getByRole('columnheader').evaluateAll((headers) => headers.findIndex((header) => header.textContent?.trim() === 'Requested'));
-  const shortageColumn = await partsTable.getByRole('row').first().getByRole('columnheader').evaluateAll((headers) => headers.findIndex((header) => header.textContent?.trim() === 'Short'));
-  expect(requestedColumn).toBeGreaterThan(0);
-  expect(shortageColumn).toBeGreaterThan(0);
+  await expect(partsRow).toBeVisible();
   await expect(partsRow.locator('td').nth(requestedColumn - 1)).toHaveText('2.000');
   await expect(partsRow.locator('td').nth(shortageColumn - 1)).toHaveText('2.000');
   expect(requestPayloads).toHaveLength(2);
   expect(requestPayloads[0]).toEqual(requestPayloads[1]);
-  expect(requestPayloads[0]).toMatchObject({ fields: { work_order_id: workOrderId, lines: [{ part_id: part.id, quantity: '2.000', unit: 'each' }] } });
+  expect(requestPayloads[0]).toMatchObject({ ctx: { expected_version: 2 }, fields: { work_order_id: workOrderId, lines: [{ part_id: part.id, quantity: '2.000', unit: 'each' }] } });
   await technicianDetail.getByLabel('Block or resume reason').fill('Waiting for the requested synthetic filter.');
   await technicianDetail.getByRole('button', { name: 'Block work with reason', exact: true }).click();
   const technicianStatus = technicianDetail.locator(':scope > .record-header .state-badge');
