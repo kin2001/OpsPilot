@@ -21,8 +21,17 @@ insert into public.audit_logs(organization_id,actor_id,action,entity_id,request_
  ('2026-10-01T02:00:00Z','under_maintenance'),('2026-10-01T04:00:00Z','operational'))e(at_time,status);
 insert into public.work_orders(id,organization_id,number,asset_id,title,description,category,priority,supervisor_id,status,created_by,created_at,opened_at,repair_revision)
  select pg_temp.u(300+n),pg_temp.u(100),n,pg_temp.u(200),'Synthetic job '||n,'Report fixture','pump','normal',pg_temp.u(1),
- case n when 2 then 'in_progress' when 7 then 'canceled' when 8 then 'scheduled' else 'completed' end,pg_temp.u(1),'2026-10-01T00:00:00Z',
+ case n when 7 then 'canceled' when 8 then 'scheduled' else 'in_progress' end,pg_temp.u(1),'2026-10-01T00:00:00Z',
  case when n=4 then null else '2026-10-01T00:00:00Z'::timestamptz end,case when n=1 then 2 else 1 end from generate_series(1,8)n;
+-- Seed historical submission facts before entering guarded completed state; the owner reviewer is not a performer.
+insert into public.work_order_performer_declarations(organization_id,work_order_id,user_id,declared_by,request_id,repair_revision,created_at)
+ select pg_temp.u(100),pg_temp.u(300+n),pg_temp.u(2),pg_temp.u(2),gen_random_uuid(),case when n=1 then 2 else 1 end,'2026-10-01T00:30:00Z' from unnest(array[1,3,4,5,6])n;
+insert into public.work_order_submission_attestations(organization_id,work_order_id,actor_id,request_id,repair_revision,performer_ids,acknowledgment,created_at)
+ select pg_temp.u(100),pg_temp.u(300+n),pg_temp.u(2),gen_random_uuid(),case when n=1 then 2 else 1 end,array[pg_temp.u(2)],'Synthetic historical performer attestation','2026-10-01T00:45:00Z' from unnest(array[1,3,4,5,6])n;
+insert into public.work_order_participants(organization_id,work_order_id,user_id,source,recorded_at)
+ select organization_id,work_order_id,user_id,'declared_performer',created_at from public.work_order_performer_declarations where organization_id=pg_temp.u(100);
+update public.work_orders set status='awaiting_review',submitted_revision=repair_revision where organization_id=pg_temp.u(100) and number in (1,3,4,5,6);
+update public.work_orders set status='completed' where organization_id=pg_temp.u(100) and number in (1,3,4,5,6);
 insert into public.work_order_reviews(organization_id,work_order_id,reviewer_id,repair_revision,decision,reason,created_at)
  select pg_temp.u(100),pg_temp.u(300+n),pg_temp.u(1),case when n=1 then 2 else 1 end,'approved','Fixture approval',at_time::timestamptz
  from (values(1,'2026-10-01T04:00:00Z'),(2,'2026-10-01T03:00:00Z'),(3,'2026-10-01T16:00:00Z'),
@@ -77,6 +86,21 @@ select is(pg_temp.report('maintenance_costs')#>'{summary,entered_estimate}','nul
 select is(pg_temp.report('maintenance_costs')->>'currency','PHP','Known tenant currency retained');
 select is(public.get_dashboard(pg_temp.u(100),'{"from":"2026-10-01","to":"2026-10-02"}')#>'{counts,completed}',pg_temp.report('work_orders')#>'{summary,completed}','Dashboard shares latest-approval definition');
 select is(public.get_dashboard(pg_temp.u(100),'{"from":"2026-10-01","to":"2026-10-02"}')->'downtime_seconds','null'::jsonb,'Dashboard shares unknown downtime');
+-- Independent active-fleet fixture: B is archived today, but historical event flags determine each denominator.
+insert into public.organizations(id,name,timezone,currency,created_by) values(pg_temp.u(103),'Active fleet history39','UTC','PHP',pg_temp.u(1));
+insert into public.organization_members(organization_id,user_id,role) values(pg_temp.u(103),pg_temp.u(1),'owner');
+insert into public.assets(id,organization_id,code,name,category,created_by,created_at,archived_at) values
+ (pg_temp.u(210),pg_temp.u(103),'ACTIVE','Active operational','pump',pg_temp.u(1),'2026-01-01T00:00:00Z',null),
+ (pg_temp.u(211),pg_temp.u(103),'ARCHIVED','Archived and reactivated history','pump',pg_temp.u(1),'2026-01-01T00:00:00Z','2026-10-03T00:00:00Z');
+insert into public.audit_logs(organization_id,actor_id,action,entity_id,request_id,changes,created_at)
+ select pg_temp.u(103),pg_temp.u(1),'asset.availability_changed',pg_temp.u(asset),gen_random_uuid(),
+ jsonb_build_object('occurred_at',at_time,'new_status','operational','active',active,'provenance','recorded_transition'),clock_timestamp()
+ from (values(210,'2026-09-30T00:00:00Z',true),(211,'2026-09-30T00:00:00Z',true),
+ (211,'2026-10-01T12:00:00Z',false),(211,'2026-10-02T00:00:00Z',true),(211,'2026-10-03T00:00:00Z',false))e(asset,at_time,active);
+create function pg_temp.fleet_days() returns jsonb language sql as $$select public.get_dashboard(pg_temp.u(103),'{"from":"2026-10-01","to":"2026-10-04"}')->'daily_availability'$$;
+select is(pg_temp.fleet_days(),'[{"date":"2026-10-01","known_assets":1,"available_assets":1},{"date":"2026-10-02","known_assets":2,"available_assets":2},{"date":"2026-10-03","known_assets":1,"available_assets":1}]'::jsonb,'Archived fleet member excluded, historical reactivation included; active fleet remains 100 percent');
+insert into public.assets(id,organization_id,code,name,category,created_by,created_at) values(pg_temp.u(212),pg_temp.u(103),'UNKNOWN','Unknown active history','pump',pg_temp.u(1),'2026-01-01T00:00:00Z');
+select is(pg_temp.fleet_days(),'[{"date":"2026-10-01","known_assets":1,"available_assets":null},{"date":"2026-10-02","known_assets":2,"available_assets":null},{"date":"2026-10-03","known_assets":1,"available_assets":null}]'::jsonb,'Unknown active coverage cannot be silently dropped from availability');
 select is(jsonb_array_length(pg_temp.report('work_orders','{"page_size":1}')->'items'),1,'Requested bounded first page');
 select is(pg_temp.report('work_orders',pg_temp.report('work_orders','{"page_size":1}')->'next_cursor')#>>'{items,0,id}',pg_temp.u(302)::text,'Stable UUID continuation has no duplicate');
 select throws_ok($$select pg_temp.report('work_orders','{"page_size":101}')$$,'P0001','VALIDATION','Oversized read denied');
@@ -101,7 +125,14 @@ select is(public.get_report(jsonb_build_object('organization_id',pg_temp.u(102))
 select is(public.get_report(jsonb_build_object('organization_id',pg_temp.u(102)),'asset_availability','{"from":"2026-10-01","to":"2026-10-02"}')#>>'{summary,downtime_seconds}','0','Known empty asset set is distinct from unknown history');
 select is(pg_temp.report('asset_availability','{}',jsonb_build_object('from',((now() at time zone 'Asia/Manila')::date+1)::text,'to',((now() at time zone 'Asia/Manila')::date+2)::text))#>'{items,0,downtime_seconds}','null'::jsonb,'Future availability is unknown even with historical baseline');
 insert into public.work_orders(id,organization_id,number,asset_id,title,description,category,priority,supervisor_id,status,created_by,created_at,opened_at)
- values(pg_temp.u(309),pg_temp.u(100),9,pg_temp.u(200),'Missing approval','Unknown completion history','pump','normal',pg_temp.u(1),'completed',pg_temp.u(1),'2026-10-01T00:00:00Z','2026-10-01T00:00:00Z');
+ values(pg_temp.u(309),pg_temp.u(100),9,pg_temp.u(200),'Missing approval','Unknown completion history','pump','normal',pg_temp.u(1),'in_progress',pg_temp.u(1),'2026-10-01T00:00:00Z','2026-10-01T00:00:00Z');
+insert into public.work_order_performer_declarations(organization_id,work_order_id,user_id,declared_by,request_id,repair_revision)
+ values(pg_temp.u(100),pg_temp.u(309),pg_temp.u(2),pg_temp.u(2),gen_random_uuid(),1);
+insert into public.work_order_submission_attestations(organization_id,work_order_id,actor_id,request_id,repair_revision,performer_ids,acknowledgment)
+ values(pg_temp.u(100),pg_temp.u(309),pg_temp.u(2),gen_random_uuid(),1,array[pg_temp.u(2)],'Synthetic attested completion with missing historical approval');
+insert into public.work_order_participants(organization_id,work_order_id,user_id,source) values(pg_temp.u(100),pg_temp.u(309),pg_temp.u(2),'declared_performer');
+update public.work_orders set status='awaiting_review',submitted_revision=repair_revision where id=pg_temp.u(309);
+update public.work_orders set status='completed' where id=pg_temp.u(309);
 insert into public.maintenance_plans(id,organization_id,asset_id,authorized_by,status,created_by) values(pg_temp.u(409),pg_temp.u(100),pg_temp.u(200),pg_temp.u(1),'paused',pg_temp.u(1));
 insert into public.maintenance_plan_revisions(id,organization_id,plan_id,revision,author_id,title,instructions,category,cadence,frequency,anchor_on,timezone,supervisor_id,assignee_ids,checklist)
  values(pg_temp.u(509),pg_temp.u(100),pg_temp.u(409),1,pg_temp.u(1),'Pinned unknown PM','Check pump','pump','day',1,'2026-10-01','Asia/Manila',pg_temp.u(1),array[pg_temp.u(2)],'["Check"]');

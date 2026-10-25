@@ -146,12 +146,15 @@ begin
   'active_assets',(select count(*) from public.assets where assets.organization_id=get_dashboard.organization_id and archived_at is null),
   'available_assets',(select count(*) from public.assets a where a.organization_id=get_dashboard.organization_id and a.archived_at is null and a.availability='operational'
    and not exists(select 1 from public.asset_holds h where h.organization_id=a.organization_id and h.asset_id=a.id and h.released_at is null and h.resolved_at is null)));
- select coalesce(jsonb_agg(jsonb_build_object('date',day::date,'known_assets',known,'available_assets',case when known=total then available end) order by day),'[]') into trend from (
-  select d.day,count(a.id) total,count(e.id) filter(where (d.day+interval '1 day') at time zone zone<=now() and e.changes->>'provenance'='recorded_transition') known,
-   count(e.id) filter(where (d.day+interval '1 day') at time zone zone<=now() and e.changes->>'provenance'='recorded_transition' and e.changes->>'new_status'='operational' and (e.changes->>'active')::boolean) available
+ select coalesce(jsonb_agg(jsonb_build_object('date',day::date,'known_assets',known,'available_assets',case when unknown_assets=0 then available end) order by day),'[]') into trend from (
+  select d.day,count(a.id) filter(where (d.day+interval '1 day') at time zone zone>now() or not coalesce(e.known,false)) unknown_assets,
+   count(e.id) filter(where (d.day+interval '1 day') at time zone zone<=now() and e.known and e.changes->'active'='true'::jsonb) known,
+   count(e.id) filter(where (d.day+interval '1 day') at time zone zone<=now() and e.known and e.changes->'active'='true'::jsonb and e.changes->>'new_status'='operational') available
   from generate_series(greatest((range->>'from')::date,(range->>'to')::date-7)::timestamp,((range->>'to')::date-1)::timestamp,interval '1 day')d(day)
   left join public.assets a on a.organization_id=get_dashboard.organization_id and a.created_at<(d.day+interval '1 day') at time zone zone
-  left join lateral(select l.id,l.changes from public.audit_logs l where l.organization_id=get_dashboard.organization_id and l.entity_id=a.id and l.action='asset.availability_changed'
+  left join lateral(select l.id,l.changes,l.changes->>'provenance'='recorded_transition' and jsonb_typeof(l.changes->'active')='boolean'
+   and (l.changes->'active'='false'::jsonb or l.changes->>'new_status' in ('operational','under_maintenance','out_of_service','pending_release')) known
+   from public.audit_logs l where l.organization_id=get_dashboard.organization_id and l.entity_id=a.id and l.action='asset.availability_changed'
    and (l.changes->>'occurred_at')::timestamptz<(d.day+interval '1 day') at time zone zone order by (l.changes->>'occurred_at')::timestamptz desc,l.id desc limit 1)e on true group by d.day
  ) daily;
  return jsonb_build_object('counts',counts,'daily_availability',trend,'downtime_seconds',report#>'{summary,downtime_seconds}',
