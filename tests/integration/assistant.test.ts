@@ -200,3 +200,43 @@ it('enforces caller scope, atomic concurrent admission, protected history and fa
     code: 'AI_DISABLED'
   });
 });
+
+it('daily brief includes carried-over completions and backlog while preserving technician scope', async () => {
+  // Independent tenant/actors; this regression must not reuse quota or assignment state from the other journey.
+  const org = randomUUID(), asset = randomUUID();
+  const completed = randomUUID(), blocked = randomUUID(), outside = randomUUID();
+  const people = [];
+  for (const role of ['owner', 'technician'] as const) {
+    const email = `daily41-${role}-${randomUUID()}@example.test`, password = `Synthetic-${randomUUID()}-Aa9!`;
+    const user = await admin.auth.admin.createUser({ email, password, email_confirm: true });
+    expect(user.error).toBeNull();
+    const caller = createClient<Database>(url, anon, options);
+    expect((await caller.auth.signInWithPassword({ email, password })).error).toBeNull();
+    people.push({ id: user.data.user!.id, caller, role });
+  }
+  const [owner, tech] = people;
+  sql(`insert into public.organizations(id,name,timezone,currency,created_by) values('${org}','Daily carried-over41','UTC','PHP','${owner.id}');
+    insert into public.organization_members(organization_id,user_id,role) values('${org}','${owner.id}','owner'),('${org}','${tech.id}','technician');
+    insert into private.assistant_organizations(organization_id,enabled) values('${org}',true);
+    insert into public.assets(id,organization_id,code,name,category,created_by) values('${asset}','${org}','DAILY41','Synthetic daily pump','pump','${owner.id}');
+    insert into public.work_orders(id,organization_id,number,asset_id,title,description,category,priority,supervisor_id,status,created_by,created_at,opened_at,due_at) values
+    ('${completed}','${org}',1,'${asset}','Older completed work','Synthetic daily evidence','pump','normal','${owner.id}','completed','${owner.id}',now()-interval '10 days',now()-interval '10 days',null),
+    ('${blocked}','${org}',2,'${asset}','Older blocked work','Synthetic current backlog','pump','normal','${owner.id}','blocked','${owner.id}',now()-interval '10 days',now()-interval '10 days',now()-interval '2 days'),
+    ('${outside}','${org}',3,'${asset}','Older completion outside range','Synthetic excluded evidence','pump','normal','${owner.id}','completed','${owner.id}',now()-interval '10 days',now()-interval '10 days',null);
+    insert into public.work_order_reviews(organization_id,work_order_id,reviewer_id,repair_revision,decision,reason,created_at) values
+    ('${org}','${completed}','${owner.id}',1,'approved','Synthetic completion in range',date_trunc('day',now())+interval '1 hour'),
+    ('${org}','${outside}','${owner.id}',1,'approved','Synthetic completion outside range',now()-interval '2 days');
+    insert into public.work_order_assignments(organization_id,work_order_id,user_id) values('${org}','${completed}','${tech.id}'),('${org}','${outside}','${tech.id}');`);
+  const range = { from: new Date().toISOString().slice(0, 10), to: new Date(Date.now() + 86400000).toISOString().slice(0, 10) };
+  const coordinatorRead = await owner.caller.rpc('assistant_retrieve', { organization_id: org, mode: 'daily_brief', query: { kind: 'daily_metrics', range } });
+  expect(coordinatorRead.error).toBeNull();
+  const coordinator = assistantFacts.parse(coordinatorRead.data);
+  expect(coordinator.facts).toEqual({ scope: 'current_authorized_work', matching_work_orders: 2, completed: 1, blocked: 1, overdue: 1, recurring_fault_counts: [] });
+  expect(new Set(coordinator.sources.map(source => source.id))).toEqual(new Set([completed, blocked]));
+  expect(coordinator.truncated).toBe(false);
+  const technicianRead = await tech.caller.rpc('assistant_retrieve', { organization_id: org, mode: 'daily_brief', query: { kind: 'daily_metrics', range } });
+  expect(technicianRead.error).toBeNull();
+  const technician = assistantFacts.parse(technicianRead.data);
+  expect(technician.facts).toEqual({ scope: 'retrieved_source_sample', matching_work_orders: 1, completed: 1, blocked: 0, overdue: 0, recurring_fault_counts: [] });
+  expect(technician.sources.map(source => source.id)).toEqual([completed]);
+});

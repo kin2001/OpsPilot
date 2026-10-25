@@ -95,6 +95,32 @@ insert into private.ai_runs(id,organization_id,user_id,request_id,conversation_i
 select throws_ok($$select public.assistant_finish(pg_temp.u(13000),pg_temp.u(4),'succeeded','Synthetic capacity',jsonb_build_object('schema_version',1,'mode','operations','run_id',pg_temp.u(13000),'conversation_id',pg_temp.u(10000),'source_ids','[]'::jsonb,'retrieval',jsonb_build_object('sources','[]'::jsonb)))$$,'P0001','AI_HISTORY_LIMIT','A fifty-first message cannot create a partial exchange');
 select is((select count(*)::integer from private.assistant_messages where conversation_id=pg_temp.u(10000)),49,'Capacity failure writes neither prompt nor answer');
 select ok(exists(select 1 from cron.job where jobname='opspilot-assistant-retention' and schedule='17 2 * * *'),'Daily retention job installed');
+-- L41-01: a daily brief follows completion time and current backlog, not only creation day.
+-- Dedicated tenant avoids the earlier 51-row truncation and quota scenarios.
+insert into public.organizations(id,name,timezone,currency,created_by) values(pg_temp.u(20000),'Daily carried-over41','UTC','PHP',pg_temp.u(1));
+insert into public.organization_members(organization_id,user_id,role) values(pg_temp.u(20000),pg_temp.u(1),'owner'),(pg_temp.u(20000),pg_temp.u(2),'technician');
+insert into private.assistant_organizations(organization_id,enabled) values(pg_temp.u(20000),true);
+insert into public.assets(id,organization_id,code,name,category,created_by) values(pg_temp.u(20001),pg_temp.u(20000),'DAILY41','Daily synthetic pump','pump',pg_temp.u(1));
+insert into public.work_orders(id,organization_id,number,asset_id,title,description,category,priority,supervisor_id,status,created_by,created_at,opened_at,due_at)
+ select pg_temp.u(20010+n),pg_temp.u(20000),n+1,pg_temp.u(20001),'Carried-over synthetic work','Synthetic daily evidence','pump','normal',pg_temp.u(1),
+ case when n=1 then 'blocked' else 'completed' end,pg_temp.u(1),now()-interval '10 days',now()-interval '10 days',case when n=1 then now()-interval '2 days' end from generate_series(0,2)n;
+insert into public.work_order_reviews(organization_id,work_order_id,reviewer_id,repair_revision,decision,reason,created_at) values
+ (pg_temp.u(20000),pg_temp.u(20010),pg_temp.u(1),1,'approved','Synthetic completion in range',date_trunc('day',now())+interval '1 hour'),
+ (pg_temp.u(20000),pg_temp.u(20012),pg_temp.u(1),1,'approved','Synthetic completion outside range',now()-interval '2 days');
+insert into public.work_order_assignments(organization_id,work_order_id,user_id) values(pg_temp.u(20000),pg_temp.u(20010),pg_temp.u(2)),(pg_temp.u(20000),pg_temp.u(20012),pg_temp.u(2));
+set local role authenticated;
+select set_config('request.jwt.claim.sub',pg_temp.u(1)::text,true);
+select is(public.assistant_retrieve(pg_temp.u(20000),'daily_brief',pg_temp.query('daily_metrics'))->'facts',
+ '{"scope":"current_authorized_work","matching_work_orders":2,"completed":1,"blocked":1,"overdue":1,"recurring_fault_counts":[]}'::jsonb,
+ 'Daily coordinator facts include an older completion in range and older current blocked/overdue work');
+select is(public.assistant_retrieve(pg_temp.u(20000),'daily_brief',pg_temp.query('daily_metrics'))->'sources'->0->>'id',pg_temp.u(20010)::text,'Older completed job is a grounded daily source');
+select is(public.assistant_retrieve(pg_temp.u(20000),'daily_brief',pg_temp.query('daily_metrics'))->'sources'->1->>'id',pg_temp.u(20011)::text,'Older active backlog is a grounded daily source');
+select set_config('request.jwt.claim.sub',pg_temp.u(2)::text,true);
+select is(public.assistant_retrieve(pg_temp.u(20000),'daily_brief',pg_temp.query('daily_metrics'))->'facts',
+ '{"scope":"retrieved_source_sample","matching_work_orders":1,"completed":1,"blocked":0,"overdue":0,"recurring_fault_counts":[]}'::jsonb,
+ 'Daily technician facts include assigned older completion only, excluding unassigned backlog and completion outside range');
+select is(jsonb_array_length(public.assistant_retrieve(pg_temp.u(20000),'daily_brief',pg_temp.query('daily_metrics'))->'sources'),1,'Technician daily sources retain current assigned scope');
+reset role;
 set local role anon;
 select throws_ok($$select pg_temp.admit(9)$$,'42501',null,'Anonymous admission denied');
 reset role;

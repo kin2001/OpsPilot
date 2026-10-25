@@ -115,6 +115,8 @@ begin
    when 'overdue_work' then w.status in ('open','scheduled','in_progress','blocked','awaiting_review') and w.due_at<now()
    when 'awaiting_parts' then exists(select 1 from public.work_order_parts p where p.organization_id=organization_id and p.work_order_id=w.id and p.requested>coalesce((select sum(r.quantity-r.released-r.returned) from public.stock_reservations r where r.organization_id=organization_id and r.work_order_id=w.id and r.part_id=p.part_id),0))
    when 'asset_history' then w.asset_id=asset and (category is null or w.category=category) and w.created_at>=start_at and w.created_at<end_at
+   when 'daily_metrics' then (w.created_at>=start_at and w.created_at<end_at) or (f.approved_at>=start_at and f.approved_at<end_at)
+    or (w.status in ('open','scheduled','in_progress','blocked','awaiting_review') and w.created_at<end_at)
    else w.created_at>=start_at and w.created_at<end_at end
  ), page as (select * from scoped order by id limit 50), groups as (
   select scoped.asset_id,scoped.category,count(*) recorded_work_orders from scoped group by scoped.asset_id,scoped.category order by scoped.asset_id,scoped.category limit 50
