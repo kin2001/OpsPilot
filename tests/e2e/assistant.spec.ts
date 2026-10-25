@@ -580,7 +580,7 @@ test('sidebar links and account actions stay keyboard reachable at desktop and n
   await page.goto('/assistant');
   await expect(page.getByRole('heading', { name: 'Operations assistant' })).toBeVisible();
   await page.getByRole('button', { name: 'Open navigation' }).click();
-  await expect(page.getByRole('complementary', { name: 'Workspace navigation' })).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, 0)');
+  await expect(page.getByRole('dialog', { name: 'Workspace navigation' })).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, 0)');
   await page.screenshot({ path: testInfo.outputPath('assistant-sidebar-320x780-initial.png') });
   await checkReachability();
   await page.screenshot({ path: testInfo.outputPath('assistant-sidebar-320x780-keyboard.png') });

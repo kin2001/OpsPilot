@@ -10,7 +10,7 @@ import { cursorFilter, type RecordCursor } from './record-query';
 import { PrivilegedArea } from './auth/security';
 import { MemberIdentifier, TeamWorkload } from './team-workload';
 import { useWorkspace } from './workspace';
-import { AppButton, ErrorNotice, Field, LoadingNotice, PageHeader, SuccessNotice } from './ui';
+import { TabList, AppButton, ErrorNotice, Field, LoadingNotice, PageHeader, SuccessNotice } from './ui';
 
 function parsedRpc<T extends z.ZodType>(data: Json | null, error: { message: string } | null, schema: T): z.output<T> {
   if (error) throw new Error(domainError(error).code);
@@ -347,9 +347,10 @@ export function NotificationsPage() {
   };
   return <>
     <PageHeader eyebrow="Inbox" title="Notifications" description="Events delivered to your signed-in account." />
+      <TabList className="category-tablist notification-category-tabs" aria-label="Notification categories"><button type="button" role="tab" aria-selected={categoryFilter === 'all' && readFilter === 'all'} onClick={() => { setCategoryFilter('all'); setReadFilter('all'); }}>All</button><button type="button" role="tab" aria-selected={categoryFilter === 'all' && readFilter === 'unread'} onClick={() => { setCategoryFilter('all'); setReadFilter('unread'); }}>Unread</button>{categories.map((category) => <button type="button" role="tab" key={category} aria-selected={categoryFilter === category && readFilter === 'all'} onClick={() => { setCategoryFilter(category); setReadFilter('all'); }}>{category.replaceAll('_', ' ')}</button>)}</TabList>
     {query.isPending ? <LoadingNotice label="Loading your notifications…" /> : query.isError ? <div className="empty-state"><ErrorNotice>Your notifications could not be loaded.</ErrorNotice><AppButton variant="secondary" onClick={() => void query.refetch()}>Retry</AppButton></div> : <>
       {success && <SuccessNotice>{success}</SuccessNotice>}
-      <div className="category-tablist notification-category-tabs" role="tablist" aria-label="Notification categories"><button type="button" role="tab" aria-selected={categoryFilter === 'all' && readFilter === 'all'} onClick={() => { setCategoryFilter('all'); setReadFilter('all'); }}>All</button><button type="button" role="tab" aria-selected={categoryFilter === 'all' && readFilter === 'unread'} onClick={() => { setCategoryFilter('all'); setReadFilter('unread'); }}>Unread</button>{categories.map((category) => <button type="button" role="tab" key={category} aria-selected={categoryFilter === category && readFilter === 'all'} onClick={() => { setCategoryFilter(category); setReadFilter('all'); }}>{category.replaceAll('_', ' ')}</button>)}</div>
+
       <div className="record-workspace notification-workspace" aria-label="Notification inbox">
         <section className="record-picker" aria-label="Your notifications">
           <div className="record-header notification-list-actions"><p className="field-hint">Delivered to your signed-in account</p><AppButton variant="quiet" disabled={query.isFetching} onClick={() => void query.refetch()}>{query.isFetching ? 'Refreshing…' : 'Refresh'}</AppButton></div>

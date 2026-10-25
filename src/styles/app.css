@@ -120,7 +120,7 @@ table.sr-only { width: 1px; min-width: 1px; max-width: 1px; table-layout: fixed;
 .form-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .field { display: grid; gap: 7px; min-width: 0; }
 .field label, .field-label { color: #39413d; font-size: .87rem; font-weight: 650; }
-.field input, .field select, .field textarea { width: 100%; min-height: 44px; padding: 10px 12px; color: var(--ink); border: 1px solid #aeb4af; border-radius: 4px; background: white; }
+.field input, .field select, .field textarea { min-width: 0; width: 100%; min-height: 44px; padding: 10px 12px; color: var(--ink); border: 1px solid #aeb4af; border-radius: 4px; background: white; }
 .field textarea { min-height: 118px; resize: vertical; line-height: 1.45; }
 .field input:hover, .field select:hover, .field textarea:hover { border-color: #77817b; }
 .field input[aria-invalid="true"], .field select[aria-invalid="true"], .field textarea[aria-invalid="true"] { border-color: var(--danger); }
@@ -600,8 +600,9 @@ table.sr-only { width: 1px; min-width: 1px; max-width: 1px; table-layout: fixed;
   .button-row .button--quiet { flex: 0 1 auto; }
   .security-factor { align-items: flex-start; flex-direction: column; }
 }
+/* Zero transition duration keeps inherited visibility from delaying keyboard focus. */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: 0s !important; }
 }
 @media print {
   body * { visibility: hidden !important; }
@@ -757,4 +758,12 @@ table.sr-only { width: 1px; min-width: 1px; max-width: 1px; table-layout: fixed;
   .work-order-card-footer { align-items: flex-start; flex-direction: column; }
   .work-order-card-footer .work-order-card-meta, .work-order-card-footer .work-order-card-date { max-width: 100%; text-align: left; }
   .work-order-card-footer .work-order-card-date { white-space: normal; }
+}
+
+/* The mobile rail is modal; hidden navigation must not remain focusable. */
+.mobile-nav-close { display: none; }
+@media (max-width: 680px) {
+  .side-rail { visibility: hidden; }
+  .side-rail[data-open="true"] { visibility: visible; }
+  .mobile-nav-close { display: block; flex: 0 0 auto; align-self: flex-end; min-height: 44px; margin-block: 8px; padding: 8px; color: var(--action-dark); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; }
 }

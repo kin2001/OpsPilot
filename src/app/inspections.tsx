@@ -7,7 +7,7 @@ import { attachmentRecord, teamResult } from '../contracts/operational';
 import { domainError } from '../lib/domain-errors';
 import { assignInspection, correctInspection, getInspection, listInspectionAssignments, listInspectionRevisions, listInspectionTemplates, publishInspectionTemplate, reserveInspectionAttachment, submitInspection } from './inspection-client';
 import { useWorkspace } from './workspace';
-import { AppButton, ErrorNotice, Field, LoadingNotice, PageHeader, SelectField, SuccessNotice, TextAreaField, failureCode, failureMessage } from './ui';
+import { TabList, AppButton, ErrorNotice, Field, LoadingNotice, PageHeader, SelectField, SuccessNotice, TextAreaField, failureCode, failureMessage } from './ui';
 import { recordFilter, recordPageSize, splitRecordPage, type RecordCursor } from './record-query';
 import { imageMetadataFor, PrivateImage, uploadPrivateImage } from './private-attachments';
 import '../styles/inspections.css';
@@ -386,10 +386,10 @@ export function InspectionsPage() {
       <div className="inspection-count" role="group" aria-label={`In progress: ${!outcomesKnown ? '—' : inProgressCount}`}><strong>{!outcomesKnown ? '—' : inProgressCount}</strong><span>In progress</span></div>
     </section>
     {unknownOutcomes > 0 && <p className="inspection-outcome-warning" role="status">{unknownOutcomes} outcome {unknownOutcomes === 1 ? 'could' : 'could'} not be verified; unknown records are excluded from Passed, Failed, and In progress.</p>}
-    <div className="inspection-tabs" role="tablist" aria-label="Inspection views">
+    <TabList className="inspection-tabs" aria-label="Inspection views">
       <button type="button" role="tab" id="inspection-list-tab" aria-selected={view === 'inspections'} aria-controls="inspection-list-panel" onClick={() => setView('inspections')}>Inspections</button>
       <button type="button" role="tab" id="inspection-template-tab" aria-selected={view === 'templates'} aria-controls="inspection-template-panel" onClick={() => setView('templates')}>Templates</button>
-    </div>
+    </TabList>
     {view === 'inspections' ? <div id="inspection-list-panel" role="tabpanel" aria-labelledby="inspection-list-tab" className="inspection-layout">
       <section className="inspection-panel inspection-results-panel" aria-labelledby="inspection-results-title">
         <div className="inspection-panel-heading"><div><h2 id="inspection-results-title">Inspection results</h2><p>{pageLabel}</p></div></div>
