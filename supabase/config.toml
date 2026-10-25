@@ -51,3 +51,7 @@ entrypoint = "./functions/organization-invite/index.ts"
 verify_jwt = false
 import_map = "./functions/attachment-upload/deno.json"
 entrypoint = "./functions/attachment-upload/index.ts"
+[functions.report-export]
+verify_jwt = false
+import_map = "./functions/report-export/deno.json"
+entrypoint = "./functions/report-export/index.ts"
