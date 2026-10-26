@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { build } from 'vite';
-import { demoTarget, demoHtml, demoPublicKey } from '../demo/isolation';
+import { demoTarget, demoHtml, demoPublicKey, demoDeclaration } from '../demo/isolation';
 import { partFields } from './contracts/inventory';
 import { handleInvitation } from '../supabase/functions/organization-invite/handler';
 
@@ -29,7 +30,7 @@ describe('isolated synthetic demo', () => {
     const anon = token({ iss: 'supabase-demo', role: 'anon' });
     expect(demoPublicKey(anon)).toBe(anon);
     for (const key of [undefined, '', 'sb_secret_privileged', 'sb_publishable_unknown_origin', token({ iss: 'supabase-demo', role: 'service_role' }), token({ iss: 'supabase', role: 'anon', ref: 'private-project' }), 'invalid.jwt.value']) {
-      expect(() => demoPublicKey(key)).toThrow('Use only the newly generated local instance ANON_KEY');
+      expect(() => demoPublicKey(key)).toThrow('Use only the declared synthetic target ANON_KEY');
     }
   });
   it('pins the local target and rejects hosted, credentialed and alternate endpoints', () => {
@@ -42,14 +43,26 @@ describe('isolated synthetic demo', () => {
     const html = demoHtml('<html><head></head><body><div id="root"></div></body></html>');
     expect(html).toContain('SYNTHETIC DEMO');
     expect(html).toContain('AI disabled');
-    expect(html).toContain("connect-src http://127.0.0.1:54321 ws://127.0.0.1:5173");
+    expect(html).toContain("connect-src http://127.0.0.1:54321;");
     expect(html).toContain('http-equiv="Content-Security-Policy"');
+  });
+  it('requires an explicit synthetic declaration and anonymous key matching a hosted project', () => {
+    const target = { classification: 'synthetic-only', apiUrl: 'https://abcdefghijklmnopqrst.supabase.co', appOrigin: 'https://demo.example.test' };
+    expect(demoDeclaration(target).projectRef).toBe('abcdefghijklmnopqrst');
+    for (const value of [null, { ...target, classification: 'private' }, { ...target, secret: 'never-copy' }, { ...target, apiUrl: 'https://user:password@abcdefghijklmnopqrst.supabase.co' }, { ...target, appOrigin: 'https://demo.example.test/path' }]) {
+      expect(() => demoDeclaration(value)).toThrow('Invalid synthetic target declaration');
+    }
+    const key = `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ iss: 'supabase', role: 'anon', ref: 'abcdefghijklmnopqrst' })).toString('base64url')}.synthetic`;
+    expect(demoPublicKey(key, 'abcdefghijklmnopqrst')).toBe(key);
+    expect(() => demoPublicKey(key, 'wrongprojectrefabcdefg')).toThrow();
+    expect(() => demoDeclaration(JSON.parse(readFileSync('demo/target.hosted.example.json', 'utf8')))).toThrow();
   });
   it('builds only the demo target/key despite ambient private VITE values', async () => {
     const previous = { ...process.env };
     try {
       const key = `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ iss: 'supabase-demo', role: 'anon' })).toString('base64url')}.synthetic`;
       process.env.DEMO_PUBLISHABLE_KEY = key;
+      delete process.env.DEMO_TARGET_FILE;
       process.env.VITE_SUPABASE_URL = 'https://private-target.invalid';
       process.env.VITE_SUPABASE_PUBLISHABLE_KEY = 'private-key-sentinel';
       await build({ configFile: resolve('demo/vite.config.ts'), logLevel: 'silent' });
@@ -58,11 +71,38 @@ describe('isolated synthetic demo', () => {
       const scripts = readdirSync(`${directory}/assets`).filter((file) => file.endsWith('.js')).map((file) => readFileSync(`${directory}/assets/${file}`, 'utf8')).join('\n');
       expect(html).toContain('SYNTHETIC DEMO');
       expect(html).toContain('Content-Security-Policy');
+      expect(readFileSync(`${directory}/_headers`, 'utf8')).toContain('connect-src http://127.0.0.1:54321;');
+      expect(readFileSync(`${directory}/_headers`, 'utf8')).not.toContain('*.supabase.co');
       expect(scripts).toContain('http://127.0.0.1:54321');
       expect(scripts).toContain(key);
       expect(scripts).not.toMatch(/private-target\.invalid|private-key-sentinel/);
     } finally {
-      for (const name of ['DEMO_PUBLISHABLE_KEY', 'VITE_SUPABASE_URL', 'VITE_SUPABASE_PUBLISHABLE_KEY']) {
+      for (const name of ['DEMO_PUBLISHABLE_KEY', 'DEMO_TARGET_FILE', 'VITE_SUPABASE_URL', 'VITE_SUPABASE_PUBLISHABLE_KEY']) {
+        if (previous[name] === undefined) delete process.env[name]; else process.env[name] = previous[name];
+      }
+    }
+  });
+  it('generates a hosted synthetic artifact and matching headers without contacting the invented target', async () => {
+    const previous = { ...process.env };
+    const file = `.cache/demo-target-test-${randomUUID()}.json`;
+    const target = { classification: 'synthetic-only', apiUrl: 'https://abcdefghijklmnopqrst.supabase.co', appOrigin: 'https://demo.example.test' };
+    mkdirSync('.cache', { recursive: true });
+    writeFileSync(file, JSON.stringify(target), { flag: 'wx' });
+    try {
+      process.env.DEMO_TARGET_FILE = file;
+      process.env.DEMO_PUBLISHABLE_KEY = `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ iss: 'supabase', role: 'anon', ref: 'abcdefghijklmnopqrst' })).toString('base64url')}.synthetic`;
+      await build({ configFile: resolve('demo/vite.config.ts'), build: { outDir: '.cache/demo-hosted-dist' }, logLevel: 'silent' });
+      const headers = readFileSync('.cache/demo-hosted-dist/_headers', 'utf8');
+      expect(headers).toContain(`connect-src ${target.apiUrl};`);
+      expect(headers).not.toContain('127.0.0.1');
+      expect(headers).not.toContain('*.supabase.co');
+      expect(readFileSync('.cache/demo-hosted-dist/index.html', 'utf8')).toContain(`connect-src ${target.apiUrl};`);
+      const scripts = readdirSync('.cache/demo-hosted-dist/assets').filter((name) => name.endsWith('.js')).map((name) => readFileSync(`.cache/demo-hosted-dist/assets/${name}`, 'utf8')).join('\n');
+      expect(scripts).toContain(target.apiUrl);
+      expect(scripts).not.toContain('http://127.0.0.1:54321');
+    } finally {
+      unlinkSync(file);
+      for (const name of ['DEMO_TARGET_FILE', 'DEMO_PUBLISHABLE_KEY']) {
         if (previous[name] === undefined) delete process.env[name]; else process.env[name] = previous[name];
       }
     }

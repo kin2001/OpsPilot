@@ -1,0 +1,5 @@
+{
+  "classification": "synthetic-only",
+  "apiUrl": "http://127.0.0.1:54321",
+  "appOrigin": "http://127.0.0.1:5173"
+}
