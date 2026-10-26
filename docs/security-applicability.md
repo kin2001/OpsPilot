@@ -1,4 +1,36 @@
-# OpsPilot security applicability — T1 baseline
+# OpsPilot security applicability
+
+## Full V2 / POR-44 assessment boundary
+
+The current backend evidence map is [readiness/backend-matrix.md](readiness/backend-matrix.md); recovery and intake decisions are [readiness/operational-controls.md](readiness/operational-controls.md). These supersede the historical T1-only descriptions below. Actual exact-candidate results belong in the delivery report; tests/source alone are not ASVS conformance or qualified security acceptance.
+
+The target remains applicable **OWASP ASVS 5.0.0 Level 2**, including Level 1 requirements. Chapter and selected requirement identifiers were checked against the [official v5.0.0 CSV](https://github.com/OWASP/ASVS/blob/v5.0.0/5.0/docs_en/OWASP_Application_Security_Verification_Standard_5.0.0_en.csv). The following is an applicability routing worksheet for qualified review, not an assertion that every requirement in a chapter passes. Unmapped individual requirements remain unassessed; a human reviewer must complete per-requirement findings before private admission.
+
+| Versioned requirement group | Application boundary and executable evidence | Open assessment / exclusion |
+| --- | --- | --- |
+| V1; V1.2.4, V1.3.6 | Typed RPC, bound parameters, fixed provider endpoints; safe React text; handler injection tests | Review every dynamic SQL anchor; LDAP/XPath/LaTeX/JNDI/memcache engines absent |
+| V2; V2.2.2, V2.3.1–4, V2.4.1 | SQL constraints, strict Edge schemas, locked atomic commands and durable receipts; all SQL/service suites; `018_operational_limits.test.sql` | Business/safety reviewers assess limits and release procedures |
+| V3; V3.2.2, V3.4.2–3 | Text rendering, fixed CORS, `public/_headers`, browser header tests | Actual host headers/TLS/redirects and browser/device evidence; SPA SDK bearer session requires XSS risk review |
+| V4 | Narrow JSON APIs, bounded bodies/cursors/ranges, Edge token checks; module integration/handler tests | Actual gateway deployment/abuse controls; no GraphQL/SOAP endpoint |
+| V5 | Private image magic/size/type/parent validation, current-JWT downloads; operational integration | PDF disabled; evidence/malware handling needs designated human policy |
+| V6 | Native verified Auth, MFA, recipient-bound invitations; `core.test.ts` and native MFA integration | Authorized hosted SMTP, account recovery, final-owner recovery and identity policy |
+| V7 | Session lifecycle/context clearing; current membership/Auth state rechecked, retained JWT tests | Sign-out does not promise immediate JWT invalidation; actual token expiry/hosted session settings |
+| V8; V8.3.1, V8.4.1 | RLS/RPC deny matrix, least role/tenant/record access, performer/release races | Immediate membership revocation is additionally required by product; named human security review |
+| V9; V9.2.2 | Edge delegates access-token validation to actual Auth, invalid/wrong-user tests | Hosted issuer/audience/key rotation and real expiry evidence |
+| V10 | Supabase SDK/Auth controls any native identity exchange | No custom OAuth server or social provider configured; inspect actual Auth configuration before declaring narrower exclusions |
+| V11 | Native crypto UUID/HMAC/digests; no custom cipher, no browser server key | Hosted key custody/rotation, encrypted backups and recovery access |
+| V12 | Loopback-only synthetic CI; external app/provider requires HTTPS | Actual TLS/certificate/transport configuration and provider communication review |
+| V13; V13.3.2 | Server-only credentials, pinned workflow actions/lock/runtime, script-free install; CI binding and cleanup checks | Hosted secrets, build/deploy target and dependency finding below |
+| V14; V14.2.3, V14.3.2 | No private AI enablement/analytics, no-store Edge, protected transcript cleanup; assistant/Storage integration | Actual hosted privacy/retention approvals, browser caching and off-site backup expiry |
+| V15 | Narrow shared contracts, additive migrations, independent review and native schema/upgrade checks | Human threat model and complete dependency/supply-chain review |
+| V16; V16.3.2 | Safe fixed errors, protected authorization-denial log check, SQLSTATE-only diagnostics and self-check | Hosted log retention/access/monitoring and incident ownership |
+| V17 | No WebRTC/media communication in this application | Not applicable while that capability remains absent |
+
+**Findings retained for qualified disposition:** private pilot admission is blocked until actual named security/privacy, business/safety and recovery owners approve the destination and residual findings; hosted SMTP/TLS/configuration, encrypted off-site backup/7+4 retention, protected monitoring and an enforced intake-pause procedure remain unverified. POR-43 device/AT/zoom/manual and POR-27 live-provider observations remain deferred, not executed PASS. The existing shadcn development dependency advisory remains open; no dependency upgrade, automatic audit fix or clean-audit claim is included. A synthetic PASS cannot dispose of any of these findings.
+
+Payment processing, native applications, direct machine control and autonomous AI actuation are outside the product. These exclusions do not exempt relevant browser/Auth/API/data controls. Keep application record/audit/receipt history until an authorized disposition decision; transcript and orphan cleanup use their explicit bounded policies. CI keeps dumps/bytes/credentials in memory or ephemeral job storage and uploads only the generated type contract.
+
+## Historical baseline evidence
 
 ## POR-24 candidate additions and evidence boundary
 

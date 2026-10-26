@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { createClient } from '@supabase/supabase-js';
 import { reconcileAttachments } from './reconcile-attachments.mjs';
+import { assertRecoveryObjectives } from './operational-controls.mjs';
 
 function canonicalPermissions(rows) {
   return rows.map((row) => ({
@@ -366,6 +367,16 @@ const ownerChecksum = owners();
 const originalPermissions = permissions(); const originalDefaults = defaultPermissions();
 const authConfig = await (await fetch(`${url}/auth/v1/settings`, { headers: { apikey: anon }, cache: 'no-store' })).json();
 // Restore in the same cluster with its existing provider roles: retain owners and ACLs.
+// Compare all application rows, including private receipts/history, before reconciliation changes them.
+const applicationFingerprint = () => sql(`
+ create temporary table recovery_fingerprints(name text, rows bigint, checksum text);
+ do $$ declare t record; begin
+  for t in select schemaname,tablename from pg_tables where schemaname in ('public','private') order by schemaname,tablename loop
+   execute format('insert into recovery_fingerprints select %L,count(*),md5(coalesce(string_agg(to_jsonb(r)::text,''|'' order by to_jsonb(r)::text),'''')) from %I.%I r',t.schemaname||'.'||t.tablename,t.schemaname,t.tablename);
+  end loop;
+ end $$;
+ select jsonb_agg(to_jsonb(f) order by name) from recovery_fingerprints f;`).trim();
+const applicationBefore = applicationFingerprint();
 const dump = execute(['exec', container, 'pg_dump', '-U', 'postgres', '-d', 'postgres', '--clean', '--if-exists']);
 assert(dump.length > 1000);
 const objectSnapshot = [];
@@ -396,6 +407,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin IN SCHEMA public REVOKE ALL ON 
 ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin IN SCHEMA public REVOKE ALL ON FUNCTIONS FROM anon, authenticated, service_role;
 ${dump}
 COMMIT;`, 'supabase_admin');
+assert.equal(applicationFingerprint(), applicationBefore, 'Full application row/count fingerprint differs after restore; contents withheld');
 const restoredRawChecksum = owners(); const restoredPermissions = permissions(); const restoredDefaults = defaultPermissions();
 const canonicalHash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 console.log(JSON.stringify({ recovery_permission_comparison: permissionDifferences(originalPermissions, restoredPermissions), default_acl_restored: JSON.stringify(originalDefaults) === JSON.stringify(restoredDefaults), original_canonical_sha256: canonicalHash(originalPermissions), restored_canonical_sha256: canonicalHash(restoredPermissions), original_raw_fingerprint: ownerChecksum, restored_raw_fingerprint: restoredRawChecksum, representation_only: ownerChecksum !== restoredRawChecksum && JSON.stringify(originalPermissions) === JSON.stringify(restoredPermissions) }));
@@ -498,4 +510,6 @@ sql(`update public.attachments set created_at=now()-interval '25 hours' where id
 await reconcileAttachments(admin);
 assert.equal((await admin.from('attachments').select('status,cleanup_completed_at').eq('id', stale.data.data.id).single()).data.status, 'rejected');
 assert.equal((await admin.from('attachments').select('status').eq('id', item.id).single()).data.status, 'ready');
-console.log(JSON.stringify({ rehearsal: 'synthetic-job-owned-loopback', database_auth_receipts_restored: true, maintenance_history_cursors_receipts_restored: true, assistant_history_admission_deletion_restored: true, source_configuration_checksum: configChecksum, storage_objects_verified: objectSnapshot.length, current_revocation_reconciled: true, snapshot_to_incident_ms: Math.round(restoreStarted - checkpoint), observed_rpo_ms: 0, observed_rto_ms: Math.round(performance.now() - restoreStarted), total_ms: Math.round(performance.now() - started), boundary: 'RPO zero for pre-checkpoint fixture facts; no private/hosted or business acceptance' }));
+const observedRto = Math.round(performance.now() - restoreStarted);
+assertRecoveryObjectives(0, observedRto);
+console.log(JSON.stringify({ rehearsal: 'synthetic-job-owned-loopback', database_auth_receipts_restored: true, maintenance_history_cursors_receipts_restored: true, assistant_history_admission_deletion_restored: true, source_configuration_checksum: configChecksum, storage_objects_verified: objectSnapshot.length, current_revocation_reconciled: true, snapshot_to_incident_ms: Math.round(restoreStarted - checkpoint), observed_rpo_ms: 0, observed_rto_ms: observedRto, lab_objectives_met: true, total_ms: Math.round(performance.now() - started), boundary: 'RPO zero for pre-checkpoint fixture facts; no private/hosted or business acceptance' }));
