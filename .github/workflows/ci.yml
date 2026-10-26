@@ -36,6 +36,9 @@ jobs:
           npm run lint
           npm test
           python3 .github/ci-diagnostics.py --self-test
+          node --test .github/operational-controls.test.mjs
+          node .github/rehearse-recovery.mjs --diagnostics-self-test
+          node .github/rehearse-load.mjs --self-test
           npm run build
           npm exec --no -- playwright install chromium
       - name: Start job-owned loopback services
@@ -129,6 +132,7 @@ jobs:
       - name: Rehearse isolated backup and recovery
         run: |
           node .github/rehearse-recovery.mjs
+          node .github/rehearse-load.mjs
       - name: Verify generated schema matches source
         run: |
           diff -u src/lib/database.types.ts .cache/database.types.ts
