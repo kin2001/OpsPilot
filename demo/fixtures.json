@@ -1,0 +1,12 @@
+{
+  "classification": "SYNTHETIC DEMO — invented, not operational records",
+  "accounts": [
+    { "email": "demo-owner@example.test", "role": "owner", "workspace": "Synthetic Demo Alpha" },
+    { "email": "demo-tech@example.test", "role": "technician", "workspace": "Synthetic Demo Alpha" },
+    { "email": "demo-other@example.test", "role": "owner", "workspace": "Synthetic Demo Beta" }
+  ],
+  "asset": { "code": "DEMO-PUMP-01", "name": "Synthetic training pump", "category": "pump" },
+  "request": { "description": "Synthetic exercise: inspect the training pump seal", "category": "pump" },
+  "work_order": { "title": "Synthetic seal inspection", "description": "Training exercise only; record an invented observation", "category": "pump", "priority": "normal" },
+  "part": { "code": "DEMO-SEAL-01", "name": "Synthetic training seal", "unit": "each", "reorder_threshold": null }
+}
