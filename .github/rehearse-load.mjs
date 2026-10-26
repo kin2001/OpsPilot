@@ -67,6 +67,25 @@ for (let t = 0; t < 3; t++) {
   assert.equal(sql(`select jsonb_build_array((select count(*) from public.organization_members where organization_id='${org}'),(select count(*) from public.assets where organization_id='${org}'),(select count(*) from public.work_orders where organization_id='${org}'),(select count(*) from public.work_order_events where organization_id='${org}'));`), '[30, 500, 10000, 100000]');
   tenants.push({ org, owner, asset });
 }
+const fixtureStatistics = () => JSON.parse(sql(`select jsonb_agg(jsonb_build_object('table',relname,'live_rows',n_live_tup,'modified_since_analyze',n_mod_since_analyze,'analyzed',last_analyze is not null,'autoanalyzed',last_autoanalyze is not null) order by relname) from pg_stat_all_tables where schemaname='public' and relname in ('work_orders','assets','organization_members','work_order_events');`));
+const statisticsBefore = fixtureStatistics();
+// Bulk fixtures need current statistics before representative planner and latency observations.
+sql('analyze public.work_orders; analyze public.assets; analyze public.organization_members; analyze public.work_order_events;');
+function authenticatedPlan(withoutPageIndex = false) {
+  return JSON.parse(sql(`begin;
+ ${withoutPageIndex ? 'drop index public.work_orders_tenant_page_idx;' : ''}
+ set local role authenticated;
+ do $$ begin perform set_config('request.jwt.claims','{"sub":"${tenants[0].owner.id}","role":"authenticated"}',true); end $$;
+ explain (format json) select * from public.work_orders where organization_id='${tenants[0].org}' order by created_at desc,id desc limit 25;
+ rollback;`));
+}
+function nodes(plan) { return [plan, ...(plan.Plans ?? []).flatMap(nodes)]; }
+// A rolled-back index removal compares the accepted predecessor on this same isolated fixture only.
+const baselineNodes = nodes(authenticatedPlan(true)[0].Plan);
+const planNodes = nodes(authenticatedPlan()[0].Plan);
+assert(baselineNodes.some((node) => ['Sort', 'Incremental Sort'].includes(node['Node Type'])), 'Predecessor plan must expose the missing ordered path');
+assert(planNodes.some((node) => node['Index Name'] === 'work_orders_tenant_page_idx'), 'Authenticated list plan must use the tenant/date/id index');
+console.log(JSON.stringify({ authenticated_list_page_index_verified: true, predecessor_requires_sort: true, analyzed_bulk_fixture: true, statistics_before: statisticsBefore, statistics_after: fixtureStatistics() }));
 const lists = []; const details = []; const commands = [];
 await Promise.all(readers.map(async ({ org, client }) => {
   const tenant = tenants.find((item) => item.org === org);
