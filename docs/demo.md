@@ -16,6 +16,20 @@ npm exec --no -- supabase start --network-id opspilot-synthetic-demo
 
 Supabase uses the existing `supabase/config.toml` (`opspilot-t1`, API `http://127.0.0.1:54321`). Inspect the newly created network and every published container port before proceeding; HostIp must be `127.0.0.1` or `::1`, matching the existing CI loopback recipe. A pre-existing network/name or a non-loopback port is a stop condition. Keep Docker access restricted to that machine. Do not link a hosted project or supply service/provider keys. Obtain **only this newly generated local instance's legacy `ANON_KEY` JWT** from `npm exec --no -- supabase status`; enter it as `DEMO_PUBLISHABLE_KEY` in the current shell. The build accepts only a token declaring local issuer `supabase-demo` and anonymous role; it rejects empty, malformed, hosted, service-role and opaque keys. The local service still verifies the token signature. Do not save status output, service keys, passwords or session URLs in source, screenshots, logs or exports. Use a new password per synthetic account, entered through the normal sign-up form; no fixed password is shipped.
 
+In a second terminal on that same dedicated machine, start the native Edge functions using the checked-in **non-secret local-only** configuration. Keep this foreground process running throughout the walkthrough:
+
+```sh
+npm exec --no -- supabase functions serve --network-id opspilot-synthetic-demo --env-file demo/functions.env.example
+```
+
+The file sets `APP_ORIGIN=http://127.0.0.1:5173` and enables invitation delivery **only to this stack's local mail inbox**. It contains no provider key, SMTP credentials or AI enablement. Supabase supplies its own local service configuration; never copy service keys into this file. Without these settings, the invitation/export/upload handlers correctly reject the browser origin or report a disabled dependency. Before building or signing up, verify all four function preflights from the preview origin (this prints no tokens or bodies):
+
+```sh
+node --input-type=module -e "for (const name of ['organization-invite','attachment-upload','report-export','assistant']) { const r = await fetch('http://127.0.0.1:54321/functions/v1/' + name, {method:'OPTIONS',headers:{Origin:'http://127.0.0.1:5173'}}); if (r.status !== 204 || r.headers.get('access-control-allow-origin') !== 'http://127.0.0.1:5173') throw new Error('Local Edge readiness failed'); }"
+```
+
+Stop if readiness fails; do not bypass Origin checks or enable external email/provider services. Build and run the preview in the first terminal:
+
 ```sh
 npm exec --no -- vite build --config demo/vite.config.ts
 npm exec --no -- vite preview --config demo/vite.config.ts

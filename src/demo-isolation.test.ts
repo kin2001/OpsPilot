@@ -4,8 +4,17 @@ import { resolve } from 'node:path';
 import { build } from 'vite';
 import { demoTarget, demoHtml, demoPublicKey } from '../demo/isolation';
 import { partFields } from './contracts/inventory';
+import { handleInvitation } from '../supabase/functions/organization-invite/handler';
 
 describe('isolated synthetic demo', () => {
+  it('supplies the local Edge origin and mail configuration required by the native invitation flow', async () => {
+    const config = Object.fromEntries(readFileSync('demo/functions.env.example', 'utf8').trim().split(/\r?\n/).map((line) => line.split('=')));
+    expect(config).toEqual({ APP_ORIGIN: 'http://127.0.0.1:5173', INVITATION_EMAIL_ENABLED: 'true' });
+    const request = new Request('http://127.0.0.1:54321/functions/v1/organization-invite', { method: 'OPTIONS', headers: { Origin: config.APP_ORIGIN! } });
+    const response = await handleInvitation(request, { apiUrl: demoTarget('http://127.0.0.1:54321'), publishableKey: '', appOrigin: config.APP_ORIGIN!, emailEnabled: config.INVITATION_EMAIL_ENABLED === 'true' });
+    expect(response.status).toBe(204);
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe(config.APP_ORIGIN);
+  });
   it('ships only classified synthetic identities and valid inventory inputs', () => {
     const fixture = JSON.parse(readFileSync('demo/fixtures.json', 'utf8'));
     expect(fixture.classification).toContain('SYNTHETIC DEMO');
