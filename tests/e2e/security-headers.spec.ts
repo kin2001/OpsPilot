@@ -14,7 +14,7 @@ test('invite and recovery documents return private no-store and no-referrer head
 });
 
 test('static-host baseline defines SPA fallback, CSP and private auth routes', async () => {
-  const headers = await readFile('public/_headers', 'utf8');
+  const headers = (await readFile('public/_headers', 'utf8')).replace(/\r\n/g, '\n');
   const redirects = await readFile('public/_redirects', 'utf8');
   expect(headers).toContain('Content-Security-Policy:');
   expect(headers).toMatch(/img-src 'self' data: blob:/);
