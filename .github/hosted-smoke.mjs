@@ -147,10 +147,17 @@ async function main() {
   const target = `${endpoint}?organization_id=${orgs.owner}&attachment_id=${attachment.id}`;
   const uploaded = await fetch(target, { method: 'PUT', headers: { ...headers, 'Content-Type': 'image/png' }, body: image });
   assert.equal(uploaded.status, 200, 'Hosted validated evidence upload failed');
+  mark('private_evidence_download');
   const downloaded = await success(people.owner.client.storage.from('repair-evidence').download(attachment.object_key));
   assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), image, 'Hosted private evidence bytes differ');
+  mark('private_evidence_bearer_denials');
   assert((await people.owner.client.storage.from('repair-evidence').createSignedUrl(attachment.object_key, 60)).error, 'Bearer evidence link unexpectedly allowed');
-  checks.push('validated_private_evidence_bytes_and_signed_link_denial');
+  const listed = await people.owner.client.storage.from('repair-evidence').list(attachment.object_key.slice(0, attachment.object_key.lastIndexOf('/')));
+  assert(listed.error || listed.data?.length === 0, 'Evidence listing unexpectedly allowed');
+  const publicUrl = people.owner.client.storage.from('repair-evidence').getPublicUrl(attachment.object_key).data.publicUrl;
+  assert.equal((await fetch(publicUrl, { cache: 'no-store' })).ok, false, 'Public evidence bytes unexpectedly allowed');
+  for (const name of ['other', 'outsider']) assert((await people[name].client.storage.from('repair-evidence').download(attachment.object_key)).error, 'Wrong-tenant or outsider evidence download unexpectedly allowed');
+  checks.push('validated_private_evidence_bytes_and_sign_list_public_cross_tenant_denials');
   mark('technician_own_request_visibility');
   const reported = await success(people.technician.client.rpc('save_request', { ctx: ctx(orgs.owner), id: null, asset_id: asset.id, description: 'Synthetic technician-owned request for visibility', category: 'pump' }));
   assert(reported.data.id, 'Technician own-request fixture failed');
@@ -159,6 +166,8 @@ async function main() {
   fixture(`UPDATE public.organization_members SET active=false WHERE organization_id=${quote(orgs.owner)} AND user_id=${quote(people.technician.id)};`);
   const after = await success(people.technician.client.from('assets').select('id').eq('id', asset.id));
   assert.equal(after.length, 0, 'Retained JWT bypassed current membership revocation');
+  fixture(`UPDATE public.organization_members SET active=false WHERE organization_id=${quote(orgs.owner)} AND user_id=${quote(people.owner.id)};`);
+  assert((await people.owner.client.storage.from('repair-evidence').download(attachment.object_key)).error, 'Revoked owner retained evidence access');
   checks.push('retained_jwt_revocation');
   activeReceipt.status = 'PASS';
   mark('complete');
