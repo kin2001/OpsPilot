@@ -50,6 +50,7 @@ async function main() {
   const admin = createClient(url, service, options);
   const publicClient = createClient(url, anon, options);
   const people = {};
+  const orgs = {};
   const checks = [];
   const run = randomUUID();
   receiptPath = process.env.OPSPILOT_SMOKE_RECEIPT;
@@ -83,15 +84,21 @@ async function main() {
     people[name] = { id: created.user.id, email, client };
     if (name === 'owner') {
       fixture(`INSERT INTO private.pilot_onboarding_allowlist(user_id,email,allowed_organization_count) VALUES (${quote(created.user.id)},${quote(email)},1);`);
-      await denied(client.rpc('create_organization', { name: 'Denied before MFA', timezone: 'Asia/Manila', currency: 'PHP', request_id: randomUUID() }), 'FORBIDDEN');
-      checks.push('aal1_command_denied');
+      mark('create_allowlisted_owner_organization_before_mfa');
+      const bootstrapped = await success(client.rpc('create_organization', { name: `Synthetic hosted smoke owner ${run}`, timezone: 'Asia/Manila', currency: 'PHP', request_id: requestId() }));
+      orgs.owner = bootstrapped.data.id;
+      assert(/^[a-f0-9-]{36}$/.test(orgs.owner), 'Synthetic owner organization identity missing');
+      activeReceipt.organizations.push({ name: 'owner', id: orgs.owner });
+      mark('aal1_privileged_membership_denial');
+      await denied(client.rpc('create_organization_invitation', { ctx: ctx(orgs.owner), email: `opspilot-smoke-aal1-${run}@example.test`, role: 'technician' }), 'FORBIDDEN');
+      checks.push('aal1_privileged_membership_command_denied');
     }
     mark(`native_mfa_${name}`);
     await enrollMfa(client);
     mark(`native_mfa_verified_${name}`);
   }
-  const orgs = {};
   for (const name of ['owner', 'other']) {
+    if (orgs[name]) continue;
     const person = people[name];
     if (name !== 'owner') fixture(`INSERT INTO private.pilot_onboarding_allowlist(user_id,email,allowed_organization_count) VALUES (${quote(person.id)},${quote(person.email)},1);`);
     mark(`create_synthetic_organization_${name}`);
