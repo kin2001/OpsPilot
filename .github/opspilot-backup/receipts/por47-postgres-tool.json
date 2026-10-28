@@ -1,0 +1,7 @@
+{
+  "version": "17.11-5",
+  "archive_sha256": "80379b2c04d51c30225532e0ae04509899141e9957ed096fe749d7fd9df8f82f",
+  "source": "https://get.enterprisedb.com/postgresql/postgresql-17.11-5-windows-x64-binaries.zip",
+  "checksum_source": "https://github.com/EnterpriseDB/edb-installers/issues/731#issuecomment",
+  "extracted": "pgsql/bin,lib,share"
+}
