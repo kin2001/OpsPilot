@@ -1,0 +1,6 @@
+{
+  "version": "restic 0.19.1 compiled with go1.26.4 on windows/amd64",
+  "archive_sha256": "da948ad707ed690426473aaba2046cd61f8f90f6f0e7dab6be0d5796531de67d",
+  "verification": "Matches official release SHA256SUMS over HTTPS; PGP signature not independently verified",
+  "source": "https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_windows_amd64.zip"
+}
