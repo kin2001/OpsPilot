@@ -3,6 +3,7 @@ import io
 import json
 import tarfile
 import unittest
+from unittest.mock import patch
 import cloud_runner as c
 
 class CloudBoundary(unittest.TestCase):
@@ -38,5 +39,13 @@ class CloudBoundary(unittest.TestCase):
         for value in ['test','a@example.com\nBcc:x@example.com','x y@example.com']:
             with self.assertRaises(ValueError):c.check_email(value)
         with self.assertRaises(ValueError):c.verify_recovered(b'x'*(20*1024*1024+1))
+    def test_smtp_uses_verified_git_bundle_on_both_windows_layouts(self):
+        for prefix in ('ucrt64','mingw64'):
+            with patch.object(c.Path,'is_file',lambda path: prefix in path.parts), patch.object(c.ssl,'create_default_context') as create:
+                c.smtp_context()
+                self.assertIn(prefix,create.call_args.kwargs['cafile'])
+        with patch.object(c.Path,'is_file',return_value=False), patch.object(c.ssl,'create_default_context') as create:
+            with self.assertRaises(ValueError):c.smtp_context()
+            create.assert_not_called()
 
 if __name__=='__main__':unittest.main()
