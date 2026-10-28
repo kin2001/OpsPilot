@@ -207,6 +207,27 @@ def hydrate(runtime, backup, env):
     return snapshots
 
 
+def smtp_context():
+    # Git 2.56 moved its Windows trust bundle from mingw64 to ucrt64.
+    for prefix in ('ucrt64', 'mingw64'):
+        bundle = Path('C:/Program Files/Git') / prefix / 'etc/ssl/certs/ca-bundle.crt'
+        if bundle.is_file():
+            return ssl.create_default_context(cafile=str(bundle))
+    raise ValueError('Verified Git certificate bundle is unavailable')
+
+
+def preflight():
+    check_host(os.environ, dt.datetime.now(dt.timezone.utc), backup=False)
+    package_files()
+    print('Trusted event and reviewed package verified.')
+    for prefix in ('ucrt64', 'mingw64'):
+        print('Git ' + prefix + ' CA exists: ' + str((Path('C:/Program Files/Git') / prefix / 'etc/ssl/certs/ca-bundle.crt').is_file()))
+    context = smtp_context()
+    if not context.check_hostname or context.verify_mode != ssl.CERT_REQUIRED:
+        raise ValueError('SMTP certificate and hostname verification required')
+    print('SMTP trust context verified; no connection or email sent.')
+
+
 def alert(test=False):
     check_host(os.environ, dt.datetime.now(dt.timezone.utc), backup=False)
     package_files()
@@ -220,7 +241,7 @@ def alert(test=False):
     message['To'] = recipient
     message['Subject'] = 'OpsPilot backup test alert' if test else 'OpsPilot backup needs attention'
     message.set_content('Test of the owner-authorized backup alert channel.' if test else 'The protected backup workflow failed. Review its sanitized run status before any retry. No private data is included in this message.')
-    context = ssl.create_default_context(cafile='C:/Program Files/Git/mingw64/etc/ssl/certs/ca-bundle.crt')
+    context = smtp_context()
     with smtplib.SMTP_SSL('smtp.resend.com', 465, context=context, timeout=30) as smtp:
         smtp.login('resend', os.environ['OPSPILOT_SMTP_KEY'])
         smtp.send_message(message)
@@ -229,6 +250,9 @@ def alert(test=False):
 
 def main():
     operation = sys.argv[1:]
+    if operation == ['preflight']:
+        preflight()
+        return 0
     if operation == ['alert'] or operation == ['alert-test']:
         alert(test=operation == ['alert-test'])
         return 0

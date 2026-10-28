@@ -8,7 +8,7 @@ on:
         required: true
         default: backup
         type: choice
-        options: [backup, alert-test]
+        options: [backup, alert-test, preflight]
   schedule:
     - cron: '0 17 * * 6' # Sunday 01:00 Asia/Manila
 
@@ -43,7 +43,10 @@ jobs:
         with:
           python-version: '3.14'
       - name: Verify local contracts without secrets
-        run: python -m unittest discover -s .github/opspilot-backup -p test_cloud_runner.py
+        run: |
+          python -m unittest discover -s .github/opspilot-backup -p test_cloud_runner.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python .github/opspilot-backup/cloud_runner.py preflight
       - name: Encrypted backup, verification, and scoped retention
         if: github.event_name == 'schedule' || inputs.operation == 'backup'
         env:
