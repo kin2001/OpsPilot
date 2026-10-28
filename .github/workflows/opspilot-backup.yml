@@ -1,0 +1,69 @@
+name: OpsPilot protected weekly backup
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Reviewed operation (test alert requires separate approval)
+        required: true
+        default: backup
+        type: choice
+        options: [backup, alert-test]
+  schedule:
+    - cron: '0 17 * * 6' # Sunday 01:00 Asia/Manila
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opspilot-protected-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    # Repo variable is OFF until the owner approves the publication/activation package.
+    if: vars.OPSPILOT_CLOUD_ENABLED == 'true' && github.ref == 'refs/heads/main'
+    runs-on: windows-2025
+    timeout-minutes: 45
+    environment: opspilot-backups
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      OPSPILOT_CLOUD_ENABLED: ${{ vars.OPSPILOT_CLOUD_ENABLED }}
+      OPSPILOT_APPROVED_OPERATOR_SHA: ${{ vars.OPSPILOT_APPROVED_OPERATOR_SHA }}
+      OPSPILOT_ALERTS_APPROVED: ${{ vars.OPSPILOT_ALERTS_APPROVED }}
+      OPSPILOT_TEST_ALERT_APPROVED: ${{ vars.OPSPILOT_TEST_ALERT_APPROVED }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.14'
+      - name: Verify local contracts without secrets
+        run: python -m unittest discover -s .github/opspilot-backup -p test_cloud_runner.py
+      - name: Encrypted backup, verification, and scoped retention
+        if: github.event_name == 'schedule' || inputs.operation == 'backup'
+        env:
+          OPSPILOT_SUPABASE_TOKEN: ${{ secrets.OPSPILOT_SUPABASE_TOKEN }}
+          OPSPILOT_DATABASE_PASSWORD: ${{ secrets.OPSPILOT_DATABASE_PASSWORD }}
+          OPSPILOT_ANON_KEY: ${{ secrets.OPSPILOT_ANON_KEY }}
+          OPSPILOT_SERVICE_ROLE_KEY: ${{ secrets.OPSPILOT_SERVICE_ROLE_KEY }}
+          OPSPILOT_B2_KEY_ID: ${{ secrets.OPSPILOT_B2_KEY_ID }}
+          OPSPILOT_B2_KEY: ${{ secrets.OPSPILOT_B2_KEY }}
+          OPSPILOT_RESTIC_PASSWORD: ${{ secrets.OPSPILOT_RESTIC_PASSWORD }}
+        run: python .github/opspilot-backup/cloud_runner.py backup
+      - name: Approved test alert
+        if: github.event_name == 'workflow_dispatch' && inputs.operation == 'alert-test'
+        env:
+          OPSPILOT_ALERT_TO: ${{ secrets.OPSPILOT_ALERT_TO }}
+          OPSPILOT_SMTP_KEY: ${{ secrets.OPSPILOT_SMTP_KEY }}
+        run: python .github/opspilot-backup/cloud_runner.py alert-test
+      - name: Approved failure alert
+        if: failure() && (github.event_name == 'schedule' || inputs.operation == 'backup')
+        env:
+          OPSPILOT_ALERT_TO: ${{ secrets.OPSPILOT_ALERT_TO }}
+          OPSPILOT_SMTP_KEY: ${{ secrets.OPSPILOT_SMTP_KEY }}
+        run: python .github/opspilot-backup/cloud_runner.py alert

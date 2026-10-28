@@ -1,0 +1,31 @@
+{
+  "purpose": "local review candidate only; not published or activated",
+  "files": {
+    "ACTIVATION.md": "705ea08bb46548e99d540d2ddc56b64dccbe5d60ad56e41c01774394957fe30c",
+    "cloud_runner.py": "0bb7d5b00048e4b33d21a68f00720841db8d2d0b8d4db0b53b03cbd9f92944a6",
+    "opspilot-backup.yml": "0c3b0e113f4a9564f01e687a3c65a55ef92a10ffc2110f1e7df69c7968f7222b",
+    "receipts/por47-managed-restore-target.json": "fcdc97bd6bc903255e068d7920f0008e05e6a6382d4c0f8f2156295578c64fa0",
+    "receipts/por47-postgres-tool.json": "dc6143c4d71996c0b8d26d99d8ada9d70351ad84d56b684add8c94da97c8d251",
+    "receipts/por47-restic-tool.json": "3093711b4a68d7f4091bc5627384e11de90a53026442fc73071e8d76950e87de",
+    "runtime/backup_runtime.py": "df270786a216db6d9d713b5cc1b9a9967dda0b7e70738b254ef5655bdf4d4cfc",
+    "runtime/capture_opspilot_checkpoint.py": "b4908a65cda25ee4c767ea150b7c83c7b40fce2b635ed299993529a061aa19b0",
+    "runtime/capture_populated_checkpoint.py": "d910f1169695f02af32bc86a5583677a19181b2a86af2e543e92495b4d7bef20",
+    "runtime/connect_opspilot_b2.py": "0e8eb7b47a5a09a5264963b46110608081669d40c518b393311dff1941910d3e",
+    "runtime/continuous_backup_opspilot.py": "50e0c24ee1f844ee3285bfe2c817dc78675f48bf38c7e2d0da19290ef2306ffe",
+    "runtime/deploy_opspilot.py": "773efbb44c20794fc535599d2ef36cb8a8f7a8559a73cc1f9737cad360fb6bde",
+    "runtime/hosted_smoke_runtime.py": "92318a324b2241de15dba0e429708209f12f935231dc3752e534c9af2963ce52",
+    "runtime/managed_restore_opspilot.py": "71ff30ce804634c7ddd9d7b254209561def00da5244c3a238c561abdefa28e6d",
+    "runtime/provision_opspilot.py": "d1b3acc34cd0d64475d4cc1cd0bee01bd1ff8c5880f91ec63e66169392c9de56",
+    "test_cloud_runner.py": "83fbcac4598ec9511c72d8e60e0a44ec4331df51450656ec6a5952c97102a89d",
+    "tools/dump_data.sh": "c07789cbeab465d488b372a2da06537b78ca473ad25e76bb114db93b22d1e031",
+    "tools/dump_role.sh": "50281797c885f2b4674005536f65aa7617eb1b9deba3e7959baae3663d0cf3b1",
+    "tools/dump_schema.sh": "591e6d9c52dfd0fdb39ea4739c59d329a78d1481c81e78100fd647aa9f6500ad",
+    "tools/supabase-dump.go": "d7cfe10e8b61ef015a724eff73d84f3c1047e4e1d8ff06ef6d39eb3819cc1a30",
+    "tools/supabase-prod-ca-2021.crt": "700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7"
+  },
+  "source_project": "lhlizmdhxjspnxadtzsm",
+  "organization_id": "woyvnmwsxtjesyvdvfkp",
+  "source_head": "3608204b9d6be3f589d4b086c4a6070531e29a4b",
+  "authority_expiry": "2026-11-02T23:35:00+08:00",
+  "created_at": "2026-10-27T23:59:39.772607+00:00"
+}
