@@ -37,6 +37,7 @@ jobs:
           npm test
           python3 .github/ci-diagnostics.py --self-test
           node --test .github/operational-controls.test.mjs
+          node --test .github/hosted-smoke.test.mjs
           node .github/rehearse-recovery.mjs --diagnostics-self-test
           node .github/rehearse-load.mjs --self-test
           npm run build
