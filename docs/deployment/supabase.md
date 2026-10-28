@@ -20,7 +20,7 @@ Four accepted functions are deployed: `organization-invite`, `attachment-upload`
 
 Hosted Auth readback verifies one-hour JWT lifetime, password minimum 12, email confirmation, secure email changes, TOTP enrollment/verification and exact `/invite` and `/reset-password` callback paths. Custom SMTP and a verified sender are still required. Do not enable invitation delivery based solely on saved configuration; verify actual confirmation, recovery and recipient-bound invitation flows. Retained JWTs require current-membership checks; logout alone does not revoke every issued JWT immediately.
 
-Independent Lens checks verified exact migration history, selected RLS/grant boundaries, bucket settings, Cron/function metadata, Auth settings and 16 actual unauthenticated Edge cases. Authenticated service tests remain a separate gate. Current runtime evidence and failures live in the ignored controller reports; this document does not declare POR-47 complete.
+Independent Lens checks verified exact migration history, selected RLS/grant boundaries, bucket settings, Cron/function metadata, Auth settings and 16 actual unauthenticated Edge cases. Authenticated service tests have separate scoped receipts in the ignored controller reports. The October 28 owner-accepted testing-phase closure and its deferred controls are recorded below and in the linked acceptance document.
 
 ## Hosted synthetic smoke
 
@@ -46,11 +46,13 @@ The new target lacks provider-owned `supabase_realtime_admin`. The rehearsal omi
 
 Plain PostgreSQL local attempts did not establish Supabase recoverability. Those local servers are stopped, but their owner-only directories remain because automatic approval review rejected recursive cleanup. They are not active recovery destinations or passing evidence.
 
-## Remaining operational gates
+## Deferred operational controls
 
 The initial capture script refuses populated projects. It must not be treated as the recurring backup implementation after deployment. A complete operational backup must include private operational schemas and secrets needed for recovery, Auth-supported data, configuration/release references, migration history, and actual Storage file bytes with checksums. Establish a deliberate consistency boundary and reconcile post-checkpoint revocations before restoring access or restarting external effects.
 
-Daily encrypted backups, seven daily plus four weekly recovery points, periodic populated isolated restores, RPO at most 24 hours and RTO at most four working hours remain required. A successful initial archive and one empty restore do not establish those controls. Preserve the last recoverable point when a backup or retention job fails. The setup B2 key expires November 2, 2026 at 23:35 Asia/Manila; a job cannot assume credentials remain valid indefinitely.
+The owner-approved recovery-time target is now at most one week (168 elapsed hours), replacing four working hours; see [the October 28 POR-47 acceptance](../por47-owner-acceptance.md). Weekly encrypted backup scheduling is accepted for the current no-real-user testing phase. Daily backups, seven daily plus four weekly recovery points, periodic populated isolated restores and RPO at most 24 hours remain prerequisites before private intake. A successful initial archive and one empty restore do not establish those controls. Preserve the last recoverable point when a backup or retention job fails. The setup B2 key expires November 2, 2026 at 23:35 Asia/Manila; a job cannot assume credentials remain valid indefinitely.
+
+POR-47 is owner-accepted as Done for that testing scope. Cloud workflow publication and protected secret provisioning are complete, but cloud execution is disabled; the corrected hosted preflight, confirmed alert delivery, accepted manual cloud backup, independent missed-run alerts and automated quota/dependency monitoring are deferred work. This closure does not mark those controls passed or authorize private admission.
 
 GitHub standard hosted runners are free for this public repository and can provide a trusted default-branch backup runner. Any implementation must keep permanent credentials out of pull-request jobs, restrict its secret environment to protected main, pin reviewed actions/tool versions, avoid public dumps/artifacts, verify real free-capacity/transfer headroom, observe an actual scheduled run, and handle GitHub schedule delays or inactivity suspension. A sleeping laptop does not establish daily protection.
 

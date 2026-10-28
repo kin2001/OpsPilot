@@ -32,8 +32,9 @@ test('unknown, invalid and future measurements cannot authorize intake', () => {
   assert.throws(() => assessOperations(healthy(), NaN));
 });
 test('measured recovery objectives reject missing, negative and exceeded observations', () => {
-  assert.doesNotThrow(() => assertRecoveryObjectives(24 * hour, 4 * hour));
-  for (const [rpo, rto] of [[24 * hour + 1, 1], [1, 4 * hour + 1], [-1, 1], [1, NaN], [undefined, 1]]) {
+  assert.doesNotThrow(() => assertRecoveryObjectives(24 * hour, 7 * 24 * hour));
+  assert.doesNotThrow(() => assertRecoveryObjectives(0, 24081917.789));
+  for (const [rpo, rto] of [[24 * hour + 1, 1], [1, 7 * 24 * hour + 1], [-1, 1], [1, -1], [1, NaN], [1, Infinity], [undefined, 1]]) {
     assert.throws(() => assertRecoveryObjectives(rpo, rto));
   }
 });
