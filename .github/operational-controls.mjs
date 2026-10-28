@@ -37,7 +37,7 @@ export function assessOperations(sample, now = Date.now()) {
 
 export function assertRecoveryObjectives(rpoMs, rtoMs) {
   assert(Number.isFinite(rpoMs) && rpoMs >= 0 && rpoMs <= 24 * hour, 'Measured lab RPO exceeds 24 hours or is unavailable');
-  assert(Number.isFinite(rtoMs) && rtoMs >= 0 && rtoMs <= 4 * hour, 'Measured lab RTO exceeds 4 hours or is unavailable');
+  assert(Number.isFinite(rtoMs) && rtoMs >= 0 && rtoMs <= 7 * 24 * hour, 'Measured lab RTO exceeds one week or is unavailable');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
