@@ -124,6 +124,12 @@ table.sr-only { width: 1px; min-width: 1px; max-width: 1px; table-layout: fixed;
 .field textarea { min-height: 118px; resize: vertical; line-height: 1.45; }
 .field input:hover, .field select:hover, .field textarea:hover { border-color: #77817b; }
 .field input[aria-invalid="true"], .field select[aria-invalid="true"], .field textarea[aria-invalid="true"] { border-color: var(--danger); }
+.password-input { position: relative; }
+.password-input input { padding-right: 56px; }
+.password-toggle { position: absolute; top: 0; right: 0; width: 44px; height: 100%; min-height: 44px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 4px; color: var(--muted); background: transparent; }
+.password-toggle:hover { color: var(--action-dark); }
+.password-toggle:focus-visible { outline-offset: -4px; }
+.password-toggle:disabled { cursor: default; opacity: .5; }
 .field-hint { margin: 0; color: var(--muted); font-size: .82rem; line-height: 1.4; }
 .field-error { margin: 0; color: var(--danger); font-size: .82rem; }
 .button-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 5px; }
