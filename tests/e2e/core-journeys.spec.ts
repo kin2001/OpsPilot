@@ -137,7 +137,7 @@ test('owner onboards with native TOTP, creates maintenance records and invites a
   await onboardingProgress(testInfo, progress, 'Owner sign-in');
   await page.goto('/');
   await page.getByLabel('Email').fill(owner.email);
-  await page.getByLabel('Password').fill(owner.password);
+  await page.getByLabel('Password', { exact: true }).fill(owner.password);
   await page.getByRole('button', { name: 'Sign in' }).click();
 
   await onboardingProgress(testInfo, progress, 'Primary authenticator enrollment and verification');
@@ -244,7 +244,7 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   const admin = createClient(url, service, { auth: { persistSession: false, autoRefreshToken: false } });
   await ownerPage.goto('/');
   await ownerPage.getByLabel('Email').fill(owner.email);
-  await ownerPage.getByLabel('Password').fill(owner.password);
+  await ownerPage.getByLabel('Password', { exact: true }).fill(owner.password);
   await ownerPage.getByRole('button', { name: 'Sign in' }).click();
   await enrollTOTP(ownerPage, 'POR-24 owner authenticator');
   await expect(ownerPage.getByRole('heading', { name: 'Create your workspace' })).toBeVisible();
@@ -263,7 +263,7 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   const reviewerPage = await reviewerContext.newPage();
   await reviewerPage.goto('/');
   await reviewerPage.getByLabel('Email').fill(reviewer.email);
-  await reviewerPage.getByLabel('Password').fill(reviewer.password);
+  await reviewerPage.getByLabel('Password', { exact: true }).fill(reviewer.password);
   await reviewerPage.getByRole('button', { name: 'Sign in' }).click();
   await reviewerPage.getByRole('link', { name: 'Account security' }).click();
   await enrollTOTP(reviewerPage, 'POR-24 reviewer authenticator');
@@ -371,7 +371,7 @@ test('synthetic service completes a repair correction, preserves ambiguous creat
   });
   await technicianPage.goto('/');
   await technicianPage.getByLabel('Email').fill(technician.email);
-  await technicianPage.getByLabel('Password').fill(technician.password);
+  await technicianPage.getByLabel('Password', { exact: true }).fill(technician.password);
   await technicianPage.getByRole('button', { name: 'Sign in' }).click();
   await expect(technicianPage.getByRole('heading', { name: 'Dashboard not available for this role' })).toBeVisible();
   const technicianNavigation = technicianPage.getByRole('navigation', { name: 'Primary navigation' });
@@ -692,7 +692,7 @@ test('workspace switching changes the visible tenant records', async ({ page }) 
 
   await page.goto('/');
   await page.getByLabel('Email').fill(ownerA.email);
-  await page.getByLabel('Password').fill(ownerA.password);
+  await page.getByLabel('Password', { exact: true }).fill(ownerA.password);
   await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(page.getByRole('heading', { name: 'Operations at a glance' })).toBeVisible();
   const primaryNavigation = page.getByRole('navigation', { name: 'Primary navigation' });
