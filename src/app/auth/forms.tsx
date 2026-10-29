@@ -3,8 +3,8 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from './session';
 import { AppButton, BrandLogo, ErrorNotice, Field, SuccessNotice } from '../ui';
 
-function AuthLayout({ children, slogan = 'Keep every maintenance decision connected.' }: { children: React.ReactNode; slogan?: string }) {
-  return <div className="auth-layout"><main className="auth-panel"><section className="auth-card">{children}</section></main><aside className="auth-illustration" aria-label="OpsPilot product introduction"><BrandLogo /><h2>Maintenance, with a clear record.</h2><p>{slogan}</p></aside></div>;
+function AuthLayout({ children, slogan = 'Keep every maintenance decision connected.', className = '' }: { children: React.ReactNode; slogan?: string; className?: string }) {
+  return <div className={`auth-layout ${className}`}><main className="auth-panel"><section className="auth-card">{children}</section></main><aside className="auth-illustration" aria-label="OpsPilot product introduction"><BrandLogo /><h2>Maintenance, with a clear record.</h2><p>{slogan}</p></aside></div>;
 }
 
 export function SignInForm({ invitation = false }: { invitation?: boolean }) {
@@ -30,7 +30,7 @@ export function SignInForm({ invitation = false }: { invitation?: boolean }) {
     navigate(invitation ? '/invite' : '/', { replace: true });
   };
 
-  return <AuthLayout slogan={invitation ? 'Sign in with the verified email address that received this invitation.' : undefined}>
+  return <AuthLayout className="auth-layout--sign-in" slogan={invitation ? 'Sign in with the verified email address that received this invitation.' : undefined}>
     <div className="auth-brand"><BrandLogo small /></div>
     <h1>Sign in to OpsPilot</h1>
     <p className="auth-intro">Use your verified account to continue to a workspace.</p>
