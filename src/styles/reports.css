@@ -14,7 +14,6 @@
 .reports-source p { margin-top: 5px; color: var(--ink); }
 .reports-note { grid-column: 1 / -1; margin: 0; }
 .reports-unapplied { grid-column: 1 / -1; margin: 0; }
-.reports-loading { color: var(--muted); }
 .reports-error p { max-width: 680px; color: var(--muted); line-height: 1.5; }
 .reports-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); gap: 12px; }
 .reports-metric { display: grid; align-content: start; gap: 10px; min-height: 138px; padding: 16px; }

@@ -1,4 +1,4 @@
-import { Children, cloneElement, isValidElement, useState, type ReactElement, type ReactNode } from 'react';
+import { Children, cloneElement, isValidElement, useEffect, useState, type ReactElement, type ReactNode } from 'react';
 import logo from '../assets/opspilot-logo.png';
 import { domainError } from '../lib/domain-errors';
 
@@ -14,8 +14,18 @@ export function SuccessNotice({ children }: { children: ReactNode }) {
   return <div className="inline-success" role="status">{children}</div>;
 }
 
-export function LoadingNotice({ label = 'Loading your workspace…' }: { label?: string }) {
-  return <div className="loading-state" role="status" aria-live="polite"><span>{label}</span></div>;
+export function LoadingNotice({ label = 'Loading your workspace…', layout = 'section' }: { label?: string; layout?: 'screen' | 'section' }) {
+  const [longWait, setLongWait] = useState(false);
+  useEffect(() => {
+    setLongWait(false);
+    const timeout = window.setTimeout(() => setLongWait(true), 8_000);
+    return () => window.clearTimeout(timeout);
+  }, [label]);
+  return <div className={`loading-state${layout === 'screen' ? ' loading-state--screen' : ''}`} role="status" aria-live="polite" aria-label={label}>
+    <span className="brand-loader" aria-hidden="true"><span className="brand-loader__mark" /></span>
+    <span className="sr-only">{label}</span>
+    {longWait && <span className="loading-hint" aria-hidden="true">{label}</span>}
+  </div>;
 }
 
 export function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: ReactNode }) {
