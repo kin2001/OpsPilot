@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { reportRange, type ReportKind } from '../contracts/reporting';
-import { AppButton, ErrorNotice, PageHeader, SuccessNotice } from './ui';
+import { AppButton, ErrorNotice, LoadingNotice, PageHeader, SuccessNotice } from './ui';
 import { useWorkspace } from './workspace';
 import { getReport } from './report-client';
 import { reportDefinitions, reportMetrics, reportTable } from './report-export';
@@ -200,7 +200,7 @@ export function ReportsPage() {
       {hasUnappliedFilters && <p className="field-hint reports-unapplied" role="status">Apply filters to load the selected report. The definition and data below still show the current report.</p>}
     </section>
 
-    {query.isLoading && <div className="panel reports-loading" role="status" aria-live="polite">Loading report facts…</div>}
+    {query.isLoading && <LoadingNotice label="Loading report facts…" />}
     {query.error && <section className="panel reports-error" aria-labelledby="report-error-title">
       <h2 id="report-error-title">Report could not be loaded</h2>
       <p>{query.error instanceof Error && query.error.message === 'REPORT_TIMEOUT'

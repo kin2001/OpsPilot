@@ -53,7 +53,7 @@ function AuthLanding({ authRedirect }: { authRedirect: CapturedAuthRedirect }) {
   const [accepted, setAccepted] = useState(false);
   const commandId = useRef(crypto.randomUUID());
 
-  if (loading) return <LoadingNotice label="Preparing your secure session…" />;
+  if (loading) return <LoadingNotice layout="screen" label="Preparing your secure session…" />;
 
   if (authRedirect.route === 'invite') {
     const invitationValid = Boolean(authRedirect.invitation && !authRedirect.invalid && !callbackError);
@@ -375,13 +375,13 @@ function WorkspaceApp() {
     navigate('/', { replace: true });
   };
 
-  if (memberships.isPending) return <LoadingNotice />;
+  if (memberships.isPending) return <LoadingNotice layout="screen" />;
   if (memberships.isError) return <main className="auth-panel"><section className="auth-card"><BrandLogo small /><h1>Workspace unavailable</h1><ErrorNotice>We could not confirm your current workspace access. Try again before continuing.</ErrorNotice><div className="button-row"><AppButton onClick={() => void memberships.refetch()}>Retry</AppButton><AppButton variant="secondary" onClick={() => void client.auth.signOut()}>Sign out</AppButton></div></section></main>;
   if (!memberships.data?.length) {
     if (previousCount.current > 0) return <main className="auth-panel"><section className="auth-card"><BrandLogo small /><h1>No active workspace</h1><p className="auth-intro">Your previous workspace access is no longer active. Ask an owner for an invitation.</p><AppButton onClick={() => void client.auth.signOut()}>Sign out</AppButton></section></main>;
     return <WorkspaceOnboarding user={user!} client={client} onCreated={refreshMemberships} />;
   }
-  if (!selected) return <LoadingNotice />;
+  if (!selected) return <LoadingNotice layout="screen" />;
   const value: WorkspaceContextValue = {
     client, user: user!, organization: selected.organization, role: selected.role, memberships: memberships.data,
     refreshMemberships, switchWorkspace,
@@ -392,7 +392,7 @@ function WorkspaceApp() {
 export function AppRoutes({ authRedirect }: { authRedirect: CapturedAuthRedirect }) {
   const { user, session, loading } = useAuth();
   const location = useLocation();
-  if (loading) return <LoadingNotice label="Preparing your secure session…" />;
+  if (loading) return <LoadingNotice layout="screen" label="Preparing your secure session…" />;
   if (location.pathname === '/invite') return <AuthLanding authRedirect={authRedirect} />;
   if (location.pathname === '/reset-password') return <ResetPageRoute authRedirect={authRedirect} />;
   return <Routes>
